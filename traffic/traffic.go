@@ -768,6 +768,17 @@ func sanitize(s string) string {
 	return out
 }
 
+// hostTreePath derives a legacy host directory, excluding dot components rather
+// than aliasing them to a valid host's directory. Their exact index rows can
+// still be deleted, but they never identify the traffic root or its parent.
+func (t *Traffic) hostTreePath(host string) (string, bool) {
+	component := sanitize(host)
+	if component == "." || component == ".." {
+		return "", false
+	}
+	return filepath.Join(t.dir, component), true
+}
+
 var blobHashRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // blobPath locates a stored blob. Current writes use one bucket level; blobs
@@ -1332,7 +1343,9 @@ func (t *Traffic) hostTrees(where string, args ...any) ([]string, error) {
 		if err := rows.Scan(&h); err != nil {
 			return nil, err
 		}
-		dirs = append(dirs, filepath.Join(t.dir, sanitize(h)))
+		if path, ok := t.hostTreePath(h); ok {
+			dirs = append(dirs, path)
+		}
 	}
 	return dirs, rows.Err()
 }
@@ -1565,7 +1578,9 @@ func (t *Traffic) stageDeleteHostsExact(hosts []string, archiveID, taskID int64)
 	// own an orphaned directory that this deletion should take with it.
 	legacy := make([]string, 0, len(unique))
 	for _, h := range unique {
-		legacy = append(legacy, filepath.Join(t.dir, sanitize(h)))
+		if path, ok := t.hostTreePath(h); ok {
+			legacy = append(legacy, path)
+		}
 	}
 
 	tx, err := t.db.Begin()

@@ -59,7 +59,7 @@ jobs:
             database="artex_ci_${index}"
             docker exec "$POSTGRES_CONTAINER" psql -U artex_ci -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE ${database}"
             fixture_dsn="postgres://artex_ci:fixture_only@127.0.0.1:5432/${database}?sslmode=disable"
-            ARTEX_PG_DSN="$fixture_dsn" ARTEX_INTERCEPT_TEST_DSN="$fixture_dsn" \
+            ARTEX_PG_DSN="$fixture_dsn" ARTEX_INTERCEPT_TEST_DSN="$fixture_dsn" ARTEX_AUTH_TEST_DSN="$fixture_dsn" \
               go test -race -count=1 -skip '^TestLiveContextReview$' "$package"
           done
       - name: Build CLI
@@ -202,6 +202,15 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: skills/api-recon/scripts/package-lock.json
+      - name: Check recon dependencies
+        run: |
+          npm ci --ignore-scripts --prefix skills/api-recon/scripts
+          npm audit --audit-level=high --prefix skills/api-recon/scripts
       - name: Check publication inputs
         run: python3 scripts/check-publication-inputs.py
       - name: Install verified Gitleaks 8.30.1

@@ -23,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Autumn-27/artex/internal/httpsecurity"
 	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/permission"
 	actool "github.com/Autumn-27/norma/tool"
@@ -101,7 +102,7 @@ func New(ctx context.Context, server, url string, headers map[string]string, ins
 	if err != nil {
 		return nil, err
 	}
-	hc := &http.Client{Timeout: 120 * time.Second}
+	hc := &http.Client{Timeout: 120 * time.Second, CheckRedirect: httpsecurity.SameOriginRedirect}
 	if insecure {
 		hc.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
 	}
@@ -126,7 +127,7 @@ func NewSSE(ctx context.Context, server, sseURL string, headers map[string]strin
 	if err != nil {
 		return nil, err
 	}
-	hc := &http.Client{} // the SSE stream is intentionally long-lived.
+	hc := &http.Client{CheckRedirect: httpsecurity.SameOriginRedirect} // the SSE stream is intentionally long-lived.
 	if insecure {
 		hc.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
 	}
@@ -197,13 +198,15 @@ func readSSEEndpoint(r *bufio.Reader, base string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("mcp sse endpoint URL: %w", err)
 		}
-		if !u.IsAbs() {
-			b, err := url.Parse(base)
-			if err != nil {
-				return "", err
-			}
-			candidate = b.ResolveReference(u).String()
+		b, err := url.Parse(base)
+		if err != nil {
+			return "", err
 		}
+		u = b.ResolveReference(u)
+		if !httpsecurity.SameOrigin(b, u) {
+			return "", fmt.Errorf("mcp sse endpoint has a different origin")
+		}
+		candidate = u.String()
 		return candidate, nil
 	}
 }

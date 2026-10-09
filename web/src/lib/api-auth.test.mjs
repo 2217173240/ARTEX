@@ -7,11 +7,14 @@ import { runInNewContext } from "node:vm";
 
 // Run the actual client with browser state and fetch controlled at its boundary.
 const source = readFileSync(new URL("./api.ts", import.meta.url), "utf8");
+const authCompiled = ts.transpileModule(readFileSync(new URL("./auth.ts", import.meta.url), "utf8"), {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+}).outputText;
 const compiled = ts.transpileModule(source, {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
 }).outputText;
 
-function apiHarness(response, browser = true) {
+function apiHarness(response, browser = true, env = {}) {
   const storage = new Map([
     ["artex_token", "expired-token"],
     ["theme", "dark"],
@@ -25,10 +28,13 @@ function apiHarness(response, browser = true) {
   const downloads = [];
   const blobs = [];
   const revoked = [];
-  const location = { href: "/function/tasks" };
+  const location = { href: "/function/tasks", protocol: "http:", hostname: "localhost" };
   const document = {
     get cookie() {
-      return Array.from(cookies, ([key, value]) => `${key}=${value}`).join("; ");
+      return Array.from(cookies)
+        .filter(([key]) => key !== "artex_token" || env.LEGACY_COOKIE)
+        .map(([key, value]) => `${key}=${value}`)
+        .join("; ");
     },
     set cookie(value) {
       cookieWrites.push(value);
@@ -61,10 +67,13 @@ function apiHarness(response, browser = true) {
   }
   const module = { exports: {} };
   const modules = {
-    "@/lib/mock/enabled": { MOCK: false },
-    "@/lib/mock/handler": { mockHandle: () => assert.fail("unexpected mock request") },
+    "@/lib/mock/enabled": { MOCK: env.NEXT_PUBLIC_MOCK === "1" },
+    "@/lib/mock/handler": {
+      mockHandle: () =>
+        env.NEXT_PUBLIC_MOCK === "1" ? { token: "mock-demo" } : assert.fail("unexpected mock request"),
+    },
   };
-  runInNewContext(compiled, {
+  const context = {
     module,
     exports: module.exports,
     require(name) {
@@ -75,11 +84,18 @@ function apiHarness(response, browser = true) {
     localStorage: {
       getItem: (key) => storage.get(key) ?? null,
       removeItem: (key) => storage.delete(key),
+      setItem: (key, value) => storage.set(key, value),
     },
     document,
     fetch: async (url, init) => {
       requests.push({ url, init });
       return typeof response === "function" ? response(url, init) : response;
+    },
+    crypto: {
+      getRandomValues(values) {
+        for (let index = 0; index < values.length; index++) values[index] = Math.floor(Math.random() * 0x100000000);
+        return values;
+      },
     },
     Blob,
     File,
@@ -88,11 +104,27 @@ function apiHarness(response, browser = true) {
     URL: BrowserURL,
     URLSearchParams,
     setTimeout: (callback) => callback(),
-  });
-  return { ...module.exports, storage, cookies, cookieWrites, location, requests, downloads, blobs, revoked };
+  };
+  context.process = { env: { NODE_ENV: "production", ...env } };
+  const authModule = { exports: {} };
+  runInNewContext(authCompiled, { ...context, module: authModule, exports: authModule.exports });
+  modules["@/lib/auth"] = authModule.exports;
+  runInNewContext(compiled, context);
+  return {
+    ...module.exports,
+    auth: authModule.exports.auth,
+    storage,
+    cookies,
+    cookieWrites,
+    location,
+    requests,
+    downloads,
+    blobs,
+    revoked,
+  };
 }
 
-test("an expired workspace upload clears both login stores and redirects to login", async () => {
+test("an expired workspace upload removes legacy storage and redirects to login", async () => {
   const client = apiHarness(new Response('{"error":"expired token"}', { status: 401 }));
   await assert.rejects(client.api.workspaceUpload("uploads", [new File(["file"], "note.txt")]), (error) => {
     assert.ok(error instanceof client.ApiError);
@@ -100,76 +132,58 @@ test("an expired workspace upload clears both login stores and redirects to logi
     return true;
   });
   assert.equal(client.storage.has("artex_token"), false);
-  assert.equal(client.cookies.has("artex_token"), false);
+  assert.equal(client.cookies.has("artex_token"), true);
   assert.equal(client.location.href, "/login");
   assert.equal(client.storage.get("theme"), "dark");
   assert.equal(client.cookies.get("theme"), "dark");
-  assert.match(client.cookieWrites[0], /path=\/; max-age=0/);
+  assert.equal(client.cookieWrites.length, 0);
   assert.equal(client.downloads.length, 0);
 });
 
-for (const [name, initialToken, currentToken, cleanup] of [
-  ["unchanged login", "expired-token", "expired-token", true],
-  ["newer login", "expired-token", "new-valid-token", false],
-  ["cleared login", "expired-token", null, false],
-  ["new login after an anonymous request", null, "new-valid-token", false],
-  ["unchanged anonymous state", null, null, true],
-]) {
-  test(`a delayed write 401 respects ${name} and never replays the request`, async () => {
-    let resolveResponse;
-    const response = new Promise((resolve) => {
-      resolveResponse = resolve;
-    });
-    const client = apiHarness(() => response);
-    if (initialToken === null) client.storage.delete("artex_token");
-    else client.storage.set("artex_token", initialToken);
-    const pending = client.api.interceptSetToolConfig(["bash"]);
-    if (currentToken === null) {
-      client.storage.delete("artex_token");
-      client.cookies.delete("artex_token");
-    } else {
-      client.storage.set("artex_token", currentToken);
-      client.cookies.set("artex_token", currentToken);
-    }
-    resolveResponse(new Response(null, { status: 401 }));
-    await assert.rejects(pending, (error) => {
-      assert.ok(error instanceof client.ApiError);
-      return error.status === 401 && error.message === "未授权";
-    });
-    assert.equal(client.requests.length, 1);
-    assert.equal(
-      new Headers(client.requests[0].init.headers).get("Authorization"),
-      initialToken === null ? null : `Bearer ${initialToken}`,
-    );
-    assert.equal(client.storage.get("artex_token") ?? null, cleanup ? null : currentToken);
-    assert.equal(client.cookies.get("artex_token") ?? null, cleanup ? null : currentToken);
-    assert.equal(client.cookieWrites.length, cleanup ? 1 : 0);
-    assert.equal(client.location.href, cleanup ? "/login" : "/function/tasks");
+test("a delayed write 401 preserves a newer login and never replays the write", async () => {
+  let resolveResponse;
+  const pendingResponse = new Promise((resolve) => {
+    resolveResponse = resolve;
   });
-}
+  let sessionValid = false;
+  const client = apiHarness((url) =>
+    url === "/api/auth/session"
+      ? new Response(sessionValid ? JSON.stringify({ user: { username: "ARTEX" } }) : null, {
+          status: sessionValid ? 200 : 401,
+        })
+      : pendingResponse,
+  );
+  const pending = client.api.interceptSetToolConfig(["bash"]);
+  sessionValid = true;
+  await client.auth.signedIn();
+  resolveResponse(new Response(null, { status: 401 }));
+  await assert.rejects(pending, (error) => error.status === 401);
+  assert.equal(client.location.href, "/function/tasks");
+  assert.equal(client.requests.filter((request) => request.url !== "/api/auth/session").length, 1);
+  assert.equal(client.cookieWrites.length, 0);
+});
 
-for (const [authorization, cleanup] of [
-  ["Bearer expired-token", true],
-  ["Bearer old-token", false],
-  ["Bearer different-token", false],
-  ["Basic custom-credentials", false],
-  ["", false],
-]) {
-  test(`a 401 with explicit Authorization ${JSON.stringify(authorization)} only clears its own session`, async () => {
+test("401 revalidates a cookie session established by another tab", async () => {
+  const client = apiHarness((url) =>
+    url === "/api/auth/session"
+      ? new Response(JSON.stringify({ user: { username: "ARTEX" } }))
+      : new Response(null, { status: 401 }),
+  );
+  await assert.rejects(client.http("/settings"), (error) => error.status === 401);
+  assert.equal(client.location.href, "/function/tasks");
+  assert.equal(client.cookieWrites.length, 0);
+});
+
+for (const authorization of ["Bearer expired-token", "Bearer old-token", "Basic custom-credentials", ""]) {
+  test(`explicit Authorization ${JSON.stringify(authorization)} cannot log out a cookie session`, async () => {
     const client = apiHarness(new Response(null, { status: 401 }));
     await assert.rejects(
       client.http("/settings", { method: "POST", headers: { Authorization: authorization } }),
-      (error) => {
-        assert.ok(error instanceof client.ApiError);
-        return error.status === 401 && error.message === "未授权";
-      },
+      (error) => error.status === 401,
     );
     assert.equal(client.requests.length, 1);
-    assert.equal(new Headers(client.requests[0].init.headers).get("Authorization"), authorization);
-    assert.equal(client.storage.get("artex_token") ?? null, cleanup ? null : "expired-token");
-    assert.equal(client.cookies.get("artex_token") ?? null, cleanup ? null : "expired-token");
-    assert.equal(client.cookieWrites.length, cleanup ? 1 : 0);
-    assert.equal(client.location.href, cleanup ? "/login" : "/function/tasks");
+    assert.equal(client.location.href, "/function/tasks");
+    assert.equal(client.cookieWrites.length, 0);
   });
 }
 
@@ -197,7 +211,7 @@ const unauthorizedCalls = [
 ];
 
 for (const [name, invoke] of unauthorizedCalls) {
-  test(`an expired ${name} clears both login stores and redirects before consuming success data`, async () => {
+  test(`an expired ${name} removes legacy storage and redirects before consuming success data`, async () => {
     const client = apiHarness(new Response('{"error":"expired token"}', { status: 401 }));
     let message;
     await assert.rejects(invoke(client.api), (error) => {
@@ -207,7 +221,7 @@ for (const [name, invoke] of unauthorizedCalls) {
       return true;
     });
     assert.equal(client.storage.has("artex_token"), false);
-    assert.equal(client.cookies.has("artex_token"), false);
+    assert.equal(client.cookies.has("artex_token"), true);
     assert.equal(client.location.href, "/login");
     assert.equal(message, "未授权");
     assert.equal(client.downloads.length, 0);
@@ -251,7 +265,7 @@ for (const upload of uploads) {
     const headers = new Headers(init.headers);
     assert.equal(url, upload.url);
     assert.equal(init.method, "POST");
-    assert.equal(headers.get("Authorization"), "Bearer expired-token");
+    assert.equal(headers.get("Authorization"), null);
     assert.equal(headers.has("Content-Type"), false);
     assert.ok(init.body instanceof FormData);
     assert.deepEqual(init.body.getAll("file"), upload.single ? files.slice(0, 1) : files);
@@ -332,7 +346,7 @@ for (const download of [
     );
     await download.invoke(client.api);
     assert.equal(client.requests[0].url, download.url);
-    assert.equal(new Headers(client.requests[0].init.headers).get("Authorization"), "Bearer expired-token");
+    assert.equal(new Headers(client.requests[0].init.headers).get("Authorization"), null);
     assert.equal(client.blobs.length, 1);
     assert.ok(client.blobs[0] instanceof Blob);
     assert.equal(client.blobs[0].type, "application/octet-stream");
@@ -355,13 +369,13 @@ test("JSON requests retain headers, JSON content type, response parsing and 204 
   );
   const headers = new Headers(client.requests[0].init.headers);
   assert.equal(headers.get("Content-Type"), "application/json");
-  assert.equal(headers.get("Authorization"), "Bearer expired-token");
+  assert.equal(headers.get("Authorization"), null);
   assert.equal(headers.get("X-Request-ID"), "1");
   const empty = apiHarness(new Response(null, { status: 204 }));
   assert.equal(await empty.http("/settings", { method: "DELETE" }), undefined);
 });
 
-test("a JSON 401 keeps the same login cleanup and unauthorized error contract", async () => {
+test("a JSON 401 keeps the same session revalidation and unauthorized error contract", async () => {
   const client = apiHarness(new Response(null, { status: 401 }));
   await assert.rejects(client.http("/settings"), (error) => {
     assert.ok(error instanceof client.ApiError);
@@ -369,7 +383,7 @@ test("a JSON 401 keeps the same login cleanup and unauthorized error contract", 
     return error.message === "未授权";
   });
   assert.equal(client.storage.has("artex_token"), false);
-  assert.equal(client.cookies.has("artex_token"), false);
+  assert.equal(client.cookies.has("artex_token"), true);
   assert.equal(client.location.href, "/login");
 });
 
@@ -383,4 +397,98 @@ test("report and tool config retain their text, JSON and void success responses"
   assert.equal(setConfig.requests[0].init.method, "PUT");
   assert.equal(new Headers(setConfig.requests[0].init.headers).get("Content-Type"), "application/json");
   assert.deepEqual(JSON.parse(setConfig.requests[0].init.body), { enabled_tools: ["bash"] });
+});
+
+test("reload recovers verified display data, removes legacy storage, and logout awaits the server", async () => {
+  let finishLogout;
+  const logout = new Promise((resolve) => {
+    finishLogout = resolve;
+  });
+  const client = apiHarness((url) =>
+    url === "/api/auth/logout" ? logout : new Response(JSON.stringify({ user: { username: "ARTEX" } })),
+  );
+  assert.equal((await client.auth.loadSession()).username, "ARTEX");
+  assert.equal(client.storage.has("artex_token"), false);
+  const pending = client.auth.logout();
+  assert.equal(client.auth.getCurrentUser().username, "ARTEX");
+  finishLogout(new Response(JSON.stringify({ ok: true })));
+  await pending;
+  assert.equal(client.auth.getCurrentUser(), null);
+  assert.equal(
+    client.requests.every(({ init }) => init.credentials === "include"),
+    true,
+  );
+  assert.equal(client.cookieWrites.length, 0);
+});
+
+test("SSE URLs never expose tokens and default to same origin in production", () => {
+  const client = apiHarness(new Response(null));
+  assert.equal(client.sseUrl("/api/logs/stream?since=0"), "/api/logs/stream?since=0");
+});
+
+test("development SSE connects directly to backend and never reads legacy JWT storage", () => {
+  const client = apiHarness(new Response(null), true, { NODE_ENV: "development" });
+  assert.equal(client.sseUrl("/api/logs/stream"), "http://localhost:8787/api/logs/stream");
+});
+
+test("mock mode recovers a display session without real requests", async () => {
+  const client = apiHarness(new Response(null), true, { NEXT_PUBLIC_MOCK: "1" });
+  assert.equal((await client.auth.loadSession()).username, "ARTEX");
+  assert.equal(client.requests.length, 0);
+  assert.equal((await client.api.login("ARTEX", "password")).token, "mock-demo");
+  await client.auth.logout();
+  assert.equal(client.requests.length, 0);
+});
+
+test("session revalidation network failure retains typed original 401 without redirect", async () => {
+  const client = apiHarness((url) => {
+    if (url === "/api/auth/session") throw new Error("offline");
+    return new Response(null, { status: 401 });
+  });
+  await assert.rejects(client.http("/settings"), (error) => error instanceof client.ApiError && error.status === 401);
+  assert.equal(client.location.href, "/function/tasks");
+});
+
+test("bootstrap removes an old readable JWT cookie without reissuing it", async () => {
+  const client = apiHarness(new Response(null, { status: 401 }), true, { LEGACY_COOKIE: true });
+  assert.equal(await client.auth.loadSession(), null);
+  assert.equal(client.storage.has("artex_token"), false);
+  assert.equal(client.cookies.has("artex_token"), false);
+  assert.equal(client.cookieWrites.length, 1);
+  assert.match(client.cookieWrites[0], /max-age=0/);
+});
+
+test("a cross-tab login during pending failed session revalidation preserves the newer session", async () => {
+  let finishOldSession;
+  const oldSession = new Promise((resolve) => {
+    finishOldSession = resolve;
+  });
+  let sessionReads = 0;
+  const client = apiHarness((url) => {
+    if (url !== "/api/auth/session") return new Response(null, { status: 401 });
+    sessionReads++;
+    return sessionReads === 1 ? oldSession : new Response(JSON.stringify({ user: { username: "ARTEX" } }));
+  });
+  const pending = client.http("/settings");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(sessionReads, 1);
+  client.storage.set("artex_session_epoch", "different-tab-new-login");
+  finishOldSession(new Response(null, { status: 401 }));
+  await assert.rejects(pending, (error) => error.status === 401);
+  assert.equal(client.location.href, "/function/tasks");
+  assert.equal(client.auth.getCurrentUser().username, "ARTEX");
+  assert.equal(client.cookieWrites.length, 0);
+  assert.equal(client.storage.get("artex_session_epoch"), "different-tab-new-login");
+});
+
+test("HTTP LAN login and logout work when crypto.randomUUID is unavailable", async () => {
+  const client = apiHarness(new Response(JSON.stringify({ user: { username: "ARTEX" } })));
+  await client.auth.signedIn();
+  const loginEpoch = client.storage.get("artex_session_epoch");
+  assert.ok(loginEpoch);
+  assert.equal(client.storage.has("artex_token"), false);
+  await client.auth.logout();
+  assert.ok(client.storage.get("artex_session_epoch"));
+  assert.notEqual(client.storage.get("artex_session_epoch"), loginEpoch);
+  assert.equal(client.auth.getCurrentUser(), null);
 });

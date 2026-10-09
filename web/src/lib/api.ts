@@ -3,6 +3,7 @@
 // a few fields the backend serializes differently (e.g. created_at as a unix int)
 // are passed through and formatted at the call site.
 
+import { auth } from "@/lib/auth";
 import type { ChatMention } from "@/lib/chat-mentions";
 import { MOCK } from "@/lib/mock/enabled";
 import { mockHandle } from "@/lib/mock/handler";
@@ -106,11 +107,6 @@ import type {
   WorkspaceListing,
 } from "@/lib/types";
 
-function getToken(): string | null {
-  if (typeof window === "undefined") return null;
-  return localStorage.getItem("artex_token");
-}
-
 export class ApiError extends Error {
   constructor(
     public readonly status: number,
@@ -123,24 +119,23 @@ export class ApiError extends Error {
 
 // Keep auth/errors shared while callers choose JSON, text, or binary success data.
 async function request(path: string, init?: RequestInit): Promise<Response> {
-  const token = getToken();
+  const generation = auth.generation();
   const headers = new Headers(init?.headers);
   if (init?.body && !(init.body instanceof FormData) && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
-  if (token && !headers.has("Authorization")) headers.set("Authorization", `Bearer ${token}`);
-  const sessionAuthorization = token ? `Bearer ${token}` : null;
-  const usesSessionCredential = headers.get("Authorization") === sessionAuthorization;
   const r = await fetch(`/api${path}`, {
     ...init,
     headers,
+    credentials: "include",
   });
   if (r.status === 401) {
-    // A delayed response for an older session must preserve a newer login.
-    if (typeof window !== "undefined" && usesSessionCredential && getToken() === token) {
-      localStorage.removeItem("artex_token");
-      document.cookie = "artex_token=; path=/; max-age=0";
-      window.location.href = "/login";
+    if (typeof window !== "undefined" && !headers.has("Authorization") && !path.startsWith("/auth/")) {
+      try {
+        await auth.handleUnauthorized(generation);
+      } catch {
+        // A failed session check gives no evidence to redirect; preserve the API error.
+      }
     }
     throw new ApiError(r.status, "未授权");
   }
@@ -179,10 +174,10 @@ export async function http<T>(path: string, init?: RequestInit): Promise<T> {
 // Dev (next dev): SSE must NOT go through the Next.js `/api` rewrite — that proxy
 // buffers the streamed response, so event frames never reach the browser (the
 // EventSource opens but receives 0 messages). So in dev only we connect straight
-// to the Go backend on :8787, whose CORS is open.
+// to the Go backend on :8787, whose CORS allows the same local/LAN host on :3000.
 //
 // Override either default with NEXT_PUBLIC_SSE_BASE (set it to "" to force same-origin).
-// Token is appended as ?token= because SSE can't carry cookies cross-origin.
+// EventSource callers use credentials for the same-host development cookie.
 // mockReport returns a canned Markdown report for the demo.
 function mockReport(_task?: string): string {
   return `# ARTEX 渗透测试报告 — Acme Corp
@@ -212,9 +207,7 @@ export function sseUrl(path: string): string {
     (process.env.NODE_ENV !== "production" && typeof window !== "undefined"
       ? `${window.location.protocol}//${window.location.hostname}:8787`
       : "");
-  const token = getToken();
-  const sep = path.includes("?") ? "&" : "?";
-  return token ? `${base}${path}${sep}token=${encodeURIComponent(token)}` : `${base}${path}`;
+  return `${base}${path}`;
 }
 
 const get = <T>(p: string) => http<T>(p);

@@ -25,6 +25,7 @@ import (
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/internal/httpsecurity"
 	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/skill"
 )
@@ -2056,7 +2057,7 @@ func (s *Server) pgListModels(w http.ResponseWriter, r *http.Request) {
 			transport.Proxy = http.ProxyURL(pu)
 		}
 	}
-	client := &http.Client{Transport: transport, Timeout: 30 * time.Second}
+	client := &http.Client{Transport: transport, Timeout: 30 * time.Second, CheckRedirect: httpsecurity.SameOriginRedirect}
 
 	// Try each candidate; return the first that yields a non-empty model list.
 	var lastErr string

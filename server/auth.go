@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"log"
 	"math/big"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -101,7 +103,7 @@ func verifyJWT(tokenStr string, key []byte) bool {
 }
 
 // extractToken reads the JWT from Authorization: Bearer header,
-// artex_token cookie, or ?token= query param (for SSE connections).
+// artex_token HttpOnly cookie. Tokens in URLs are deliberately not accepted.
 func extractToken(r *http.Request) string {
 	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
 		return strings.TrimPrefix(h, "Bearer ")
@@ -109,13 +111,17 @@ func extractToken(r *http.Request) string {
 	if c, err := r.Cookie("artex_token"); err == nil && c.Value != "" {
 		return c.Value
 	}
-	return r.URL.Query().Get("token")
+	return ""
 }
 
 // requireAuth wraps h with JWT validation.
 // /api/auth/* and /api/health are exempt.
 func (s *Server) requireAuth(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !allowBrowserMutation(r) {
+			writeErr(w, 403, "请求来源不允许")
+			return
+		}
 		p := r.URL.Path
 		if strings.HasPrefix(p, "/api/auth/") || p == "/api/health" {
 			h.ServeHTTP(w, r)
@@ -202,6 +208,7 @@ func (s *Server) authInit(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, "token 生成失败")
 		return
 	}
+	setAuthCookie(w, r, tok, int(jwtTTL.Seconds()))
 	writeJSON(w, 200, map[string]any{"token": tok})
 }
 
@@ -297,5 +304,58 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, "token 生成失败")
 		return
 	}
+	setAuthCookie(w, r, tok, int(jwtTTL.Seconds()))
 	writeJSON(w, 200, map[string]any{"token": tok})
+}
+
+// Cookies remain opaque to browser JavaScript; CLI clients can still use Bearer.
+func setAuthCookie(w http.ResponseWriter, r *http.Request, token string, age int) {
+	w.Header().Set("Cache-Control", "no-store")
+	http.SetCookie(w, &http.Cookie{Name: "artex_token", Value: token, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https"), MaxAge: age})
+}
+func (s *Server) authSession(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if !verifyJWT(extractToken(r), s.jwtKey) {
+		writeErr(w, 401, "未授权")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"user": map[string]string{"id": "1", "name": "ARTEX", "username": "ARTEX", "email": "", "avatar": "", "role": "operator"}})
+}
+func (s *Server) authLogout(w http.ResponseWriter, r *http.Request) {
+	setAuthCookie(w, r, "", -1)
+	writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
+// Allow same origin, plus the same-host local/LAN Next dev frontend on port 3000.
+func allowedBrowserOrigin(r *http.Request, origin string) bool {
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return false
+	}
+	scheme := "http"
+	if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+		scheme = "https"
+	}
+	host := r.Host
+	if peer, _, err := net.SplitHostPort(r.RemoteAddr); err == nil && net.ParseIP(peer).IsLoopback() {
+		if forwarded := r.Header.Get("X-Forwarded-Host"); forwarded != "" && !strings.Contains(forwarded, ",") {
+			host = forwarded
+		}
+	}
+	if u.Scheme == scheme && u.Host == host {
+		return true
+	}
+	backend, err := url.Parse("http://" + r.Host)
+	ip := net.ParseIP(u.Hostname())
+	local := u.Hostname() == "localhost" || ip.IsLoopback() || ip.IsPrivate()
+	return err == nil && local && scheme == "http" && u.Scheme == "http" && backend.Port() == "8787" && u.Port() == "3000" && u.Hostname() == backend.Hostname()
+}
+func allowBrowserMutation(r *http.Request) bool {
+	if r.Method == "GET" || r.Method == "HEAD" || r.Method == "OPTIONS" || strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+		return true
+	}
+	if origin := r.Header.Get("Origin"); origin != "" {
+		return allowedBrowserOrigin(r, origin)
+	}
+	return r.Header.Get("Sec-Fetch-Site") != "cross-site"
 }
