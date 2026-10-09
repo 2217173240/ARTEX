@@ -363,19 +363,29 @@ func rowExists(tx *sql.Tx, table string, id int64) bool {
 
 func insertArchiveRows(tx *sql.Tx, table string, raw json.RawMessage) error {
 	// json_populate_recordset inserts NULL for absent columns, bypassing SQL
-	// defaults. Preserve compatibility with v3 archives predating side memory.
-	if (table == "side_question_sessions" || table == "side_question_requests") && len(raw) > 0 {
+	// defaults. Supply fields introduced after supported archives were written.
+	if (table == "exploration_nodes" || table == "side_question_sessions" || table == "side_question_requests") && len(raw) > 0 {
 		var rows []map[string]json.RawMessage
 		if err := json.Unmarshal(raw, &rows); err != nil {
 			return err
 		}
 		field := "memory"
-		if table == "side_question_requests" {
+		fallback := json.RawMessage(`{}`)
+		switch table {
+		case "exploration_nodes":
+			field = "content_version"
+			fallback = json.RawMessage(`0`)
+		case "side_question_requests":
 			field = "context_info"
 		}
 		for _, row := range rows {
-			if len(row[field]) == 0 || string(row[field]) == "null" {
-				row[field] = json.RawMessage(`{}`)
+			if row == nil {
+				return errors.New("archive row must be a JSON object")
+			}
+			// content_version has always been NOT NULL since its introduction;
+			// only an absent historical field may receive the schema default.
+			if _, present := row[field]; !present || (table != "exploration_nodes" && string(row[field]) == "null") {
+				row[field] = fallback
 			}
 		}
 		var err error

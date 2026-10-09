@@ -53,6 +53,8 @@ type taskLLMRuntime struct {
 	agentKey string
 }
 
+// taskLLMError marks task-router failures that must not replay a worker intent.
+// This includes stream failures after output that may already have executed tools.
 type taskLLMError struct {
 	taskID         string
 	chainExhausted bool
@@ -272,7 +274,7 @@ func completeTaskLLM(ctx context.Context, taskID string, req llm.CompletionReque
 		}
 		transition, markErr := hooks.exhaust(selection, callErr)
 		if markErr != nil {
-			return llm.Message{}, "", llm.Usage{}, fmt.Errorf("mark profile quota exhausted after %v: %w", callErr, markErr)
+			return llm.Message{}, "", llm.Usage{}, fmt.Errorf("mark profile quota exhausted after %w: %w", callErr, markErr)
 		}
 		if transition.Advanced && !transition.Stale && hooks.transition != nil {
 			hooks.transition(selection, transition, callErr)
@@ -346,20 +348,25 @@ func streamTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest
 				return
 			}
 			// profileID=0 means the explicit chain was cleared while this stable task
-			// bundle was still in use. Agent/global fallback errors follow the legacy
-			// behavior and never mutate task failover state.
+			// bundle was still in use. Agent/global fallback errors never mutate
+			// task failover state, but committed output still forbids worker replay.
 			if selection.profileID == 0 || !isQuotaExhaustedError(streamErr) {
 				for _, buffered := range pending {
 					if !yield(buffered, nil) {
 						return
 					}
 				}
+				if committed {
+					// The SDK may execute tools before persisting this incomplete turn.
+					// Preserve the cause while preventing the worker from replaying it.
+					streamErr = &taskLLMError{taskID: taskID, cause: streamErr}
+				}
 				yield(llm.StreamEvent{}, streamErr)
 				return
 			}
 			transition, markErr := hooks.exhaust(selection, streamErr)
 			if markErr != nil {
-				cause := fmt.Errorf("mark profile quota exhausted after %v: %w", streamErr, markErr)
+				cause := fmt.Errorf("mark profile quota exhausted after %w: %w", streamErr, markErr)
 				if committed {
 					// Output may already have driven tool execution. Report the persistence
 					// failure, but classify it as router-handled so the worker does not
@@ -383,14 +390,20 @@ func streamTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest
 	}
 }
 
+// Lifecycle/usage metadata and empty deltas can be discarded before any
+// assistant content is delivered. Tool starts create content even without input.
 func streamEventCommitsOutput(event llm.StreamEvent) bool {
 	switch event.Type {
 	case llm.SETextDelta, llm.SEThinkingDelta, llm.SEToolInputJSON:
 		return event.Text != ""
-	case llm.SEToolUseStart, llm.SEMessageDelta, llm.SEMessageStop:
+	case llm.SEMessageStart, llm.SEMessageDelta, llm.SEMessageStop, llm.SEThinkingSignature:
+		return false
+	case llm.SEToolUseStart:
 		return true
 	default:
-		return false
+		// An adapter extension may carry output or trigger execution; keep
+		// unknown future events outside the safe replay window.
+		return true
 	}
 }
 
@@ -585,7 +598,11 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	// cold-digest §7: 冷节点后台压缩。引擎经权威解析器实际驱动的就是这套 per-task planner
 	// (agentsForTask),Compactor 必须接在这里。走任务路由的 planner provider(§4:与 agent
 	// 同模型,随任务 LLM 链解析),压缩用 Complete 一次性生成 body。
-	pl.SetCompactor(agent.NewCompactor(plannerRuntime, "task-router"))
+	compactor := agent.NewCompactor(plannerRuntime, "task-router")
+	compactor.SetTaskAdmission(func() (func(), bool) {
+		return s.engine.beginTaskCompaction(t.ID)
+	})
+	pl.SetCompactor(compactor)
 	main := agent.NewMainAgent(mainRuntime, "task-router", s.m.dir, tx, mainRuntime.CompactionWindow(), s.agentMaxTurns("mainagent"))
 	main.SetFindingRecorder(s.evidenceStore())
 	main.SetCompactionWindowResolver(mainRuntime.CompactionWindow)

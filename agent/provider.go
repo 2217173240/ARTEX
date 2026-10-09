@@ -280,7 +280,11 @@ func (c Config) NewProvider() (llm.Provider, error) {
 	if c.RatePerSecond > 0 || c.RatePerMinute > 0 {
 		lc.RateLimit = &llm.RateLimit{PerSecond: c.RatePerSecond, PerMinute: c.RatePerMinute}
 	}
-	return llm.NewProvider(lc)
+	prov, err := llm.NewProvider(lc)
+	if err != nil {
+		return nil, err
+	}
+	return wrapCallTimeout(prov, c), nil
 }
 
 // IsQuotaExhaustedMessage deliberately recognizes only explicit balance,
@@ -350,7 +354,9 @@ func (t quotaAwareTransport) RoundTrip(req *http.Request) (*http.Response, error
 	// them: norma builds the request body internally and decodes the SSE response
 	// before either reaches the recorder.
 	capt := llmrec.CaptureFrom(req.Context())
-	capt.SetRequest(requestBodySnapshot(req))
+	if capt != nil {
+		capt.SetRequest(requestBodySnapshot(req))
+	}
 
 	resp, err := t.base.RoundTrip(req)
 	if err != nil || resp == nil {

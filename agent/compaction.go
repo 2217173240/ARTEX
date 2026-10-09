@@ -33,16 +33,27 @@ import (
 
 // Compactor performs background cold-node compaction for many explorations.
 type Compactor struct {
-	prov     llm.Provider
-	model    string
-	params   coldParams
-	n, m     int           // minor / major thresholds (§7 N=20, M=8)
-	cooldown time.Duration // min gap between compactions per task (§7 60s)
-	maxDur   time.Duration // hard cap on one background compaction
+	prov      llm.Provider
+	model     string
+	params    coldParams
+	n, m      int           // minor / major thresholds (§7 N=20, M=8)
+	cooldown  time.Duration // min gap between compactions per task (§7 60s)
+	maxDur    time.Duration // hard cap on one background compaction
+	admitTask func() (release func(), admitted bool)
 
 	mu      sync.Mutex
 	running map[int64]bool
 	lastRun map[int64]time.Time
+}
+
+// SetTaskAdmission registers each whole background fold with its task owner.
+// Admission runs before the goroutine starts; release runs after all provider
+// cleanup and digest writes. The owner can reject shutdown/deletion and share a
+// single-flight gate across replacement Compactor instances. Configure before
+// calling OnPlannerRound. Admitted calls must return a non-nil release function.
+// A nil hook leaves standalone compactors unmanaged.
+func (c *Compactor) SetTaskAdmission(admit func() (release func(), admitted bool)) {
+	c.admitTask = admit
 }
 
 // NewCompactor builds a compactor. prov/model are used for the §4 body LLM call
@@ -66,7 +77,7 @@ func NewCompactor(prov llm.Provider, model string) *Compactor {
 // no compaction is running / cooling down) launches a background compaction that
 // outlives this planner round.
 func (c *Compactor) OnPlannerRound(ctx context.Context, ts *db.ExplorationStore) {
-	if c == nil || c.prov == nil || ts == nil {
+	if c == nil || c.prov == nil || ts == nil || ctx.Err() != nil {
 		return
 	}
 	round, uncompressed, activeDigests, err := c.maintain(ts)
@@ -82,9 +93,21 @@ func (c *Compactor) OnPlannerRound(ctx context.Context, ts *db.ExplorationStore)
 	if !c.tryStart(ts.ID()) {
 		return // already running, or within cooldown —派生态最终一致，下轮再压
 	}
+	release := func() {}
+	if c.admitTask != nil {
+		var admitted bool
+		release, admitted = c.admitTask()
+		if !admitted {
+			c.mu.Lock()
+			delete(c.running, ts.ID())
+			c.mu.Unlock()
+			return
+		}
+	}
 	go func() {
+		defer release()
 		defer c.finish(ts.ID())
-		bg, cancel := context.WithTimeout(context.WithoutCancel(ctx), c.maxDur)
+		bg, cancel := context.WithTimeout(ctx, c.maxDur)
 		defer cancel()
 		// 压缩是裸 provider 调用（compress 里直接 prov.Complete），不经过 agentcore
 		// 的会话循环，所以 ctx 上没有 session id；按 session-id 头做提示缓存/粘性
@@ -146,6 +169,9 @@ func (c *Compactor) maintain(ts *db.ExplorationStore) (round int64, uncompressed
 // minor folds the not-yet-covered eligible-cold set into new digest segments
 // (tiered append, §5). Existing digests are untouched.
 func (c *Compactor) minor(ctx context.Context, ts *db.ExplorationStore) {
+	if ctx.Err() != nil {
+		return
+	}
 	round, err := ts.RoundNo()
 	if err != nil {
 		return
@@ -179,9 +205,15 @@ func (c *Compactor) minor(ctx context.Context, ts *db.ExplorationStore) {
 		return // this batch has no ≥2 connected/shared-parent block — nothing to fold (§7)
 	}
 	for _, b := range blocks {
+		if ctx.Err() != nil {
+			return
+		}
 		c.foldBlock(ctx, ts, g, b, nodeByID, cvers, c.generationFor(b, nil))
 	}
 	// A minor may have pushed the segment count over M → merge in the same run.
+	if ctx.Err() != nil {
+		return
+	}
 	if ad, e := ts.ActiveDigests(); e == nil && len(ad) >= c.m {
 		c.major(ctx, ts)
 	}
@@ -193,6 +225,9 @@ func (c *Compactor) minor(ctx context.Context, ts *db.ExplorationStore) {
 // new/changed blocks are compressed afresh. This is where tiered fragments of one
 // direction merge and where "later became connected" blocks unify (§5.2).
 func (c *Compactor) major(ctx context.Context, ts *db.ExplorationStore) {
+	if ctx.Err() != nil {
+		return
+	}
 	round, err := ts.RoundNo()
 	if err != nil {
 		return
@@ -232,8 +267,8 @@ func (c *Compactor) major(ctx context.Context, ts *db.ExplorationStore) {
 		}
 		toCreate = append(toCreate, b)
 	}
-	// Supersede stale digests FIRST (atomic drop of their covers edges) so a member
-	// is never covered by both an old and a new digest (§5.1 one-member-one-digest).
+	// Build every replacement before changing active coverage. A cancelled or
+	// failed compression leaves the previous bodies and covers available.
 	var stale []int64
 	for _, d := range active {
 		sig, _ := digestSigGen(d)
@@ -241,11 +276,34 @@ func (c *Compactor) major(ctx context.Context, ts *db.ExplorationStore) {
 			stale = append(stale, d.ID)
 		}
 	}
-	if err := ts.SupersedeDigests(stale); err != nil {
-		log.Printf("[compaction] supersede exp=%d: %v", ts.ID(), err)
-	}
+	replacements := make([]db.DigestReplacement, 0, len(toCreate))
 	for _, b := range toCreate {
-		c.foldBlock(ctx, ts, g, b, nodeByID, cvers, c.generationFor(b, active))
+		replacement, err := c.prepareBlock(ctx, ts, g, b, nodeByID, cvers, c.generationFor(b, active))
+		if err != nil || replacement == nil {
+			return
+		}
+		replacements = append(replacements, *replacement)
+	}
+	if ctx.Err() != nil {
+		return
+	}
+	// Earlier blocks may revive while a later provider call is running. Keep
+	// the old coverage if any prepared member is now hot; render-time revival
+	// already exposes those members directly.
+	fresh, _, err := loadColdGraph(ts)
+	if err != nil {
+		return
+	}
+	freshHot := fresh.hotSet()
+	for _, replacement := range replacements {
+		for _, id := range replacement.MemberIDs {
+			if freshHot[id] {
+				return
+			}
+		}
+	}
+	if err := ts.ReplaceDigests(ctx, stale, replacements); err != nil {
+		log.Printf("[compaction] replace digests exp=%d: %v", ts.ID(), err)
 	}
 }
 
@@ -254,15 +312,32 @@ func (c *Compactor) major(ctx context.Context, ts *db.ExplorationStore) {
 // changed, so any member that has since gone hot (revived) is dropped from the
 // covers set. If the block dissolves below K it is skipped.
 func (c *Compactor) foldBlock(ctx context.Context, ts *db.ExplorationStore, g *coldGraph, b block, nodeByID map[int64]*db.Node, cvers map[int64]int, generation int) {
+	replacement, err := c.prepareBlock(ctx, ts, g, b, nodeByID, cvers, generation)
+	if err != nil || replacement == nil {
+		return
+	}
+	if _, err := ts.AddDigest(replacement.Payload, replacement.MemberIDs); err != nil {
+		log.Printf("[compaction] add digest exp=%d: %v", ts.ID(), err)
+	}
+}
+
+// prepareBlock produces a replacement without publishing it.
+func (c *Compactor) prepareBlock(ctx context.Context, ts *db.ExplorationStore, g *coldGraph, b block, nodeByID map[int64]*db.Node, cvers map[int64]int, generation int) (*db.DigestReplacement, error) {
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	body, err := c.compress(ctx, g, b, nodeByID)
 	if err != nil {
 		log.Printf("[compaction] compress exp=%d block=%v: %v", ts.ID(), b.Members, err)
-		return
+		return nil, err
+	}
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
 	}
 	// Re-read fresh state and drop any member that revived while we compressed.
 	fresh, _, err := loadColdGraph(ts)
 	if err != nil {
-		return
+		return nil, err
 	}
 	freshHot := fresh.hotSet()
 	members := make([]int64, 0, len(b.Members))
@@ -272,13 +347,14 @@ func (c *Compactor) foldBlock(ctx context.Context, ts *db.ExplorationStore, g *c
 		}
 	}
 	if len(members) < c.params.K {
-		return // block revived out from under us — leave those nodes hot, don't fold
+		return nil, nil // A major keeps old coverage until every replacement is ready.
 	}
 	final := block{Members: members, Anchors: b.Anchors}
 	payload := digestPayload(body, final, nodeByID, generation, blockSignature(final, cvers))
-	if _, err := ts.AddDigest(payload, members); err != nil {
-		log.Printf("[compaction] add digest exp=%d: %v", ts.ID(), err)
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
 	}
+	return &db.DigestReplacement{Payload: payload, MemberIDs: members}, nil
 }
 
 // generationFor computes a digest's重摘代次 (§1): 1 for a fresh fold; for a major

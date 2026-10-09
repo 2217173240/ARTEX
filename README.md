@@ -218,6 +218,8 @@ CGO_ENABLED=0 go build -tags embedui -o artex ./cmd/artex
 **LLM**：`export ANTHROPIC_API_KEY=sk-...`（或 `OPENAI_API_KEY`），也可在 UI 的「LLM 配置」页填写。
 可选：`ARTEX_LLM_PROVIDER` / `ARTEX_LLM_MODEL` / `ARTEX_LLM_BASE_URL` / `ARTEX_LLM_PROXY`。
 
+单次模型调用默认最多等待 600 秒，覆盖内部重试和流式响应。可设置 `ARTEX_LLM_CALL_TIMEOUT`（秒）；`0` 关闭这项限制，Docker Compose 可在 `.env` 中配置。父任务的取消和更短截止时间仍优先。超时依靠 provider 遵循 context 取消；已交付正文或工具事件的流不会切换模型重放。
+
 **并发**：每个任务的 work agent 数在「系统设置」里配置（默认 3）。
 
 **常用参数**：`./start.sh -addr :8787 -proxy :8788`（`-addr` 前端+API，`-proxy` 流量录制代理）。启动脚本会把参数原样透传给 `artex`。
@@ -462,6 +464,8 @@ flowchart TB
 
 ---
 ## 参考
+
+参与开发请阅读 [贡献指南](CONTRIBUTING.md)；安全问题请阅读 [安全报告说明](SECURITY.md)。
 
 https://github.com/oritera/Cairn
 

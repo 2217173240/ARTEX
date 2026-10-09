@@ -1,0 +1,56 @@
+# Exact audited synthetic fixture lines; no entire tests or paths are excluded.
+[extend]
+useDefault = true
+
+[[rules]]
+id = "curl-auth-user"
+
+[[rules.allowlists]]
+description = "Audited deterministic test/mock fixture lines"
+condition = "AND"
+regexTarget = "line"
+paths = ["(^|/)web/src/lib/mock/data\\.ts$"]
+regexes = [
+  "(?m)^    \\{ ts: T\\(\"2026-07-26T03:33:00Z\"\\), tool: \"bash\", action: \"allow\", command: \"curl -s -d 'username=admin\\.\\.\\.' https://admin\\.acme\\.com/login\" \\},$",
+  "(?m)^  \\{ id: 1, exploration_id: 1, worker: \"worker-1\", tool: \"bash\", command: JSON\\.stringify\\(\\{ command: \"curl -s 'https://www\\.acme\\.com/search\\?q=test'\" \\}\\), output: \"HTTP/1\\.1 200 OK\\\\nContent-Length: 12034\\\\n<html>… 搜索结果页 …</html>\", is_error: false, created_at: T\\(\"2026-08-09T02:10:00Z\"\\) \\},$",
+  "(?m)^  \\{ seq: 41, worker: \"work#4\", intent_id: \"i4\", ts: T\\(\"2026-07-25T22:02:00Z\"\\), kind: \"tool_use\", tool: \"bash\", tool_use_id: \"t41\", summary: \"curl -s \\\\\"https://www\\.acme\\.com/search\\?q=1'\\\\\" \\| grep -i 'sql\\\\\\\\\\|syntax'\" \\},$",
+]
+
+[[rules]]
+id = "generic-api-key"
+
+[[rules.allowlists]]
+description = "Documented empty API-key environment reset; contains no credential"
+condition = "AND"
+regexTarget = "line"
+paths = ["(^|/)CONTRIBUTING\\.md$"]
+regexes = ["(?m)^export OPENAI_API_KEY='' ANTHROPIC_API_KEY=''$"]
+
+[[rules.allowlists]]
+description = "Audited deterministic test/mock fixture lines"
+condition = "AND"
+regexTarget = "line"
+paths = ["(^|/)notify/redact_test\\.go$"]
+regexes = [
+  "(?m)^const leakProbeToken = \"LEAKPROBE0123456789abcdef\"$",
+]
+
+[[rules.allowlists]]
+description = "Audited deterministic test/mock fixture lines"
+condition = "AND"
+regexTarget = "line"
+paths = ["(^|/)server/notify_api_test\\.go$"]
+regexes = [
+  "(?m)^\\\t\\\t\"config\": map\\[string\\]any\\{\"webhook\": \"https://oapi\\.dingtalk\\.com/robot/send\\?access_token=abc123456\", \"secret\": \"SECabcdef123456\"\\},$",
+]
+
+[[rules.allowlists]]
+description = "Audited deterministic test/mock fixture lines"
+condition = "AND"
+regexTarget = "line"
+paths = ["(^|/)notify/mask_test\\.go$"]
+regexes = [
+  "(?m)^\\\t\\\t\"secret\":  \"SECtest123456\",$",
+  "(?m)^\\\tcfg := map\\[string\\]any\\{\"webhook\": \"https://example\\.com/hook\", \"secret\": \"SECtest123456\"\\}$",
+  "(?m)^\\\tconst secret = \"https://oapi\\.dingtalk\\.com/robot/send\\?access_token=abcdef123456\"$",
+]

@@ -1,0 +1,245 @@
+name: quality
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: artex_ci
+          POSTGRES_PASSWORD: fixture_only
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U artex_ci -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      ARTEX_CONFIG: /dev/null
+      ARTEX_REVIEW_LIVE_CONFIG: ""
+      OPENAI_API_KEY: ""
+      ANTHROPIC_API_KEY: ""
+      ARTEX_LLM_PROVIDER: ""
+      ARTEX_LLM_BASE_URL: ""
+      ARTEX_LLM_MODEL: ""
+      ARTEX_LLM_PROXY: ""
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+      - name: Race tests with a fresh database for each package
+        env:
+          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          packages=$(go list ./...)
+          index=0
+          for package in $packages; do
+            index=$((index + 1))
+            database="artex_ci_${index}"
+            docker exec "$POSTGRES_CONTAINER" psql -U artex_ci -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE ${database}"
+            fixture_dsn="postgres://artex_ci:fixture_only@127.0.0.1:5432/${database}?sslmode=disable"
+            ARTEX_PG_DSN="$fixture_dsn" ARTEX_INTERCEPT_TEST_DSN="$fixture_dsn" \
+              go test -race -count=1 -skip '^TestLiveContextReview$' "$package"
+          done
+      - name: Build CLI
+        env:
+          CGO_ENABLED: "0"
+        run: go build -o "$RUNNER_TEMP/artex" ./cmd/artex
+      - name: Cross-compile supported CLI platforms
+        env:
+          CGO_ENABLED: "0"
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Linux amd64 is built above; these check the remaining release targets.
+          for target in linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+            GOOS="${target%/*}" GOARCH="${target#*/}" \
+              go build -o "$RUNNER_TEMP/artex-${target//\//-}" ./cmd/artex
+          done
+      - name: Static harvest regression tests
+        run: python3 -m unittest discover -s skills/api-recon/scripts -p 'test_harvest_static.py'
+
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --ignore-scripts
+      - run: node --test src/lib/*.test.mjs
+      - run: npx --no-install tsc --noEmit
+      - name: Build static mock UI
+        env:
+          NEXT_EXPORT: "1"
+          NEXT_PUBLIC_MOCK: "1"
+        run: npm run build
+      - run: npm audit --audit-level=high
+      - name: Upload CI-only static mock UI for image checks
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ci-only-mock-ui
+          path: web/out
+          retention-days: 1
+          if-no-files-found: error
+
+  image:
+    needs: frontend
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ci-only-mock-ui
+          path: server/webui/dist
+      - name: Build embedded Linux CLI
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          mkdir -p "$RUNNER_TEMP/image-context/dist/amd64"
+          go build -tags embedui -o "$RUNNER_TEMP/image-context/dist/amd64/artex" ./cmd/artex
+      - name: Prepare isolated context with synthetic private-file canaries
+        run: |
+          git archive HEAD | tar -x -C "$RUNNER_TEMP/image-context"
+          python3 - <<'PY'
+          import json
+          import os
+          import pathlib
+          import secrets
+
+          root = pathlib.Path(os.environ["RUNNER_TEMP"])
+          context = root / "image-context"
+          canaries = []
+          for prefix in ("", "skills/ci-private-fixtures/"):
+              for name in (".env", "config.json", "jwt.key", "data/private", "sessions/private", ".cache/private"):
+                  path = context / (prefix + name)
+                  path.parent.mkdir(parents=True, exist_ok=True)
+                  value = "ARTEX_CI_CANARY_" + secrets.token_hex(24)
+                  with path.open("x") as fixture:
+                      fixture.write(value)
+                  canaries.append(value)
+          (root / "image-canaries.json").write_text(json.dumps(canaries))
+          PY
+      - name: Build runtime image without publishing
+        run: docker build --build-arg TARGETARCH=amd64 --label artex.ci-only.mock-ui=true -t artex:ci-only "$RUNNER_TEMP/image-context"
+      - name: Check startup and pinned browser tool provisioning
+        run: |
+          docker run --rm --network none --entrypoint /app/artex artex:ci-only -h
+          docker run --rm --network none --entrypoint sh artex:ci-only -ec '
+            playwright-cli --help > /dev/null
+            playwright-mcp --help > /dev/null
+            playwright --version
+            playwright install --dry-run chromium
+            test -d /root/.cache/ms-playwright
+            find /root/.cache/ms-playwright -type f -name chrome -print -quit | grep -q .
+            npm list -g --depth=0 @playwright/mcp @playwright/cli playwright
+          '
+          docker run --rm -i --network none --entrypoint node artex:ci-only <<'JS'
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const { createRequire } = require("node:module");
+          const { execFileSync } = require("node:child_process");
+          const root = execFileSync("npm", ["root", "-g"], { encoding: "utf8" }).trim();
+          for (const name of ["playwright", "@playwright/mcp", "@playwright/cli"]) {
+            const packageRoot = path.join(root, name);
+            const packageRequire = createRequire(path.join(packageRoot, "package.json"));
+            const playwright = name === "playwright" ? require(packageRoot) : packageRequire("playwright");
+            const executable = playwright.chromium.executablePath();
+            if (!fs.existsSync(executable) || !fs.statSync(executable).isFile()) {
+              throw new Error(`Chromium executable is missing for ${name}: ${executable}`);
+            }
+            console.log(`Chromium executable provisioned for ${name}.`);
+          }
+          JS
+      - name: Verify every image layer excludes private-file canaries
+        run: |
+          python3 scripts/check-image-layers.py --self-test
+          docker save artex:ci-only -o "$RUNNER_TEMP/image.tar"
+          python3 scripts/check-image-layers.py "$RUNNER_TEMP/image.tar" --canaries "$RUNNER_TEMP/image-canaries.json"
+
+  security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Check publication inputs
+        run: python3 scripts/check-publication-inputs.py
+      - name: Install verified Gitleaks 8.30.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/gitleaks.tar.gz"
+          curl --fail --silent --show-error --location https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz -o "$archive"
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $archive" | sha256sum --check
+          mkdir "$RUNNER_TEMP/gitleaks-bin"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/gitleaks-bin" gitleaks
+      - name: Scan current tracked files and full HEAD history
+        shell: bash
+        run: |
+          set -euo pipefail
+          current="$RUNNER_TEMP/publication-inputs"
+          mkdir "$current"
+          git archive HEAD | tar -x -C "$current"
+          result=0
+          "$RUNNER_TEMP/gitleaks-bin/gitleaks" dir "$current" --redact=100 --no-banner || result=1
+          "$RUNNER_TEMP/gitleaks-bin/gitleaks" git . --log-opts=HEAD --redact=100 --no-banner || result=1
+          exit "$result"
+
+  quality:
+    name: quality
+    if: always()
+    needs: [backend, frontend, security, image]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all checks to succeed
+        env:
+          BACKEND_RESULT: ${{ needs.backend.result }}
+          FRONTEND_RESULT: ${{ needs.frontend.result }}
+          SECURITY_RESULT: ${{ needs.security.result }}
+          IMAGE_RESULT: ${{ needs.image.result }}
+        run: |
+          set -euo pipefail
+          test "$BACKEND_RESULT" = success
+          test "$FRONTEND_RESULT" = success
+          test "$SECURITY_RESULT" = success
+          test "$IMAGE_RESULT" = success

@@ -54,7 +54,7 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectVa
 import { Spinner } from "@/components/ui/spinner";
 import { useSideQuestions } from "@/hooks/use-side-questions";
 import { mergeActivities } from "@/lib/activity-merge";
-import { api } from "@/lib/api";
+import { ApiError, api } from "@/lib/api";
 import { shouldSubmitOnKey, useChatSendMode } from "@/lib/chat-send-mode";
 import { getLocalStorageValue, setLocalStorageValue } from "@/lib/local-storage.client";
 import { isBtwCommand } from "@/lib/side-questions";
@@ -408,13 +408,19 @@ function DraftChat({
   async function pickFiles(files: File[]) {
     if (files.length === 0 || !agentKey || uploading || sending) return;
     setUploading(true);
+    let c: Conversation | undefined;
     try {
-      const c = await api.createConversation(agentKey, "", llmProfileId);
+      c = await api.createConversation(agentKey, "", llmProfileId);
       const r = await api.chatUpload("session", `conv-${c.id}`, files);
       onStarted(c, { input, attachments: r.attachments });
     } catch (e) {
       toast.error("上传失败：" + (e as Error).message);
       setUploading(false);
+      // Keep the created conversation for retry, while allowing a 401's login
+      // redirect to take precedence over the conversation handoff.
+      if (c && !(e instanceof ApiError && e.status === 401)) {
+        onStarted(c, { input, attachments: [] });
+      }
     }
   }
 

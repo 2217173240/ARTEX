@@ -1,5 +1,7 @@
 import type { ResolvedThemeMode, ThemeMode } from "./theme";
 
+let themeApplication = 0;
+
 export function resolveThemeMode(mode: ThemeMode): ResolvedThemeMode {
   if (mode === "system") {
     const prefersDark = window.matchMedia?.("(prefers-color-scheme: dark)")?.matches;
@@ -9,6 +11,7 @@ export function resolveThemeMode(mode: ThemeMode): ResolvedThemeMode {
 }
 
 export function applyThemeMode(mode: ThemeMode): ResolvedThemeMode {
+  const application = ++themeApplication;
   const resolved = resolveThemeMode(mode);
   const doc = document.documentElement;
   doc.setAttribute("data-theme-mode", mode);
@@ -16,7 +19,11 @@ export function applyThemeMode(mode: ThemeMode): ResolvedThemeMode {
   doc.classList.toggle("dark", resolved === "dark");
   doc.style.colorScheme = resolved;
   requestAnimationFrame(() => {
-    doc.classList.remove("disable-transitions");
+    // Animation-frame callbacks run before paint. Keep transitions disabled
+    // through the first theme frame, then restore only the latest application.
+    requestAnimationFrame(() => {
+      if (application === themeApplication) doc.classList.remove("disable-transitions");
+    });
   });
   return resolved;
 }

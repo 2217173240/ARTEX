@@ -53,7 +53,7 @@ export function TablePagination({
     <div className="flex flex-wrap items-center justify-between gap-2 border-t px-4 py-2 lg:px-6">
       <div className="text-muted-foreground flex items-center gap-2 text-xs">
         <Select value={String(pageSize)} onValueChange={(v) => onPageSizeChange(Number(v))}>
-          <SelectTrigger size="sm" className="h-7 w-16">
+          <SelectTrigger size="sm" className="h-8 w-16" aria-label="每页条数">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -99,6 +99,7 @@ export function TablePagination({
                     variant={p === safePage ? "outline" : "ghost"}
                     size="icon-sm"
                     onClick={() => onPageChange(p)}
+                    aria-label={`第 ${p} 页`}
                     aria-current={p === safePage ? "page" : undefined}
                   >
                     {p}

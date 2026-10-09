@@ -72,26 +72,39 @@ func (p *Pool) Head() *Member { return p.members[0] }
 
 // Stream implements llm.Provider with failover.
 //
-// The one hard rule: a member may only be abandoned BEFORE it has yielded any
-// event. Once text or a tool_use has reached the caller, re-sending the same
-// request to another model would duplicate output and corrupt the conversation
-// history — so a mid-stream failure is surfaced as-is and left to the agent
-// harness's resume logic. Fortunately the failures this exists for (402 no
-// credit, 401 bad key, 429, 5xx) all surface during request establishment,
-// before the body is read, so they always land in the safe window.
+// A member may only be abandoned before model output reaches the caller. Headers
+// and usage are buffered until text, thinking, or a tool event commits the
+// attempt, so a failure after metadata alone can still use the next member
+// without mixing usage from different models. Once output has been delivered,
+// a mid-stream failure is surfaced as-is to avoid duplicating the assistant turn
+// or tool execution. A clean stream flushes any remaining metadata, including a
+// completion with no content.
 func (p *Pool) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
 	order := p.order(req)
 	return func(yield func(llm.StreamEvent, error) bool) {
 		var lastErr error
 		for i, m := range order {
-			emitted := false
+			committed := false
+			var pending []llm.StreamEvent
 			var failed error
 			for ev, err := range m.Prov.Stream(ctx, req) {
-				if err != nil && !emitted && shouldFailover(ctx, err) {
+				if err != nil && !committed && shouldFailover(ctx, err) {
 					failed = err
-					break // safe window: nothing reached the caller yet
+					break // discard this attempt's metadata; no output reached the caller
 				}
-				emitted = true
+				if !committed && err == nil && !streamEventCommitsOutput(ev) {
+					pending = append(pending, ev)
+					continue
+				}
+				if !committed {
+					for _, buffered := range pending {
+						if !yield(buffered, nil) {
+							return
+						}
+					}
+					pending = nil
+					committed = true
+				}
 				if !yield(ev, err) {
 					return // caller stopped consuming (cancel / early exit)
 				}
@@ -100,7 +113,12 @@ func (p *Pool) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[
 				}
 			}
 			if failed == nil {
-				p.health.Pass(m.ID) // completed (or failed in a non-failover way)
+				for _, buffered := range pending {
+					if !yield(buffered, nil) {
+						return
+					}
+				}
+				p.health.Pass(m.ID) // completed successfully
 				return
 			}
 			lastErr = failed
@@ -118,7 +136,24 @@ func (p *Pool) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[
 			lastErr = ErrExhausted
 		}
 		log.Printf("[llmpool] 轮询链已耗尽(%d 个配置全部失败)，最后错误：%s", len(order), trimErr(lastErr))
-		yield(llm.StreamEvent{}, fmt.Errorf("%w：%v", ErrExhausted, lastErr))
+		yield(llm.StreamEvent{}, fmt.Errorf("%w：%w", ErrExhausted, lastErr))
+	}
+}
+
+// streamEventCommitsOutput marks events that cannot be discarded once delivered.
+// Empty deltas and lifecycle/usage metadata do not create assistant content.
+func streamEventCommitsOutput(ev llm.StreamEvent) bool {
+	switch ev.Type {
+	case llm.SETextDelta, llm.SEThinkingDelta, llm.SEToolInputJSON:
+		return ev.Text != ""
+	case llm.SEMessageStart, llm.SEThinkingSignature, llm.SEMessageDelta, llm.SEMessageStop:
+		return false
+	case llm.SEToolUseStart:
+		return true // creates a tool content block even before its input arrives
+	default:
+		// Treat unknown future events conservatively, so an adapter extension
+		// cannot replay output.
+		return true
 	}
 }
 
@@ -157,7 +192,7 @@ func (p *Pool) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Mes
 		lastErr = ErrExhausted
 	}
 	log.Printf("[llmpool] 轮询链已耗尽(%d 个配置全部失败)，最后错误：%s", len(order), trimErr(lastErr))
-	return llm.Message{}, "", llm.Usage{}, fmt.Errorf("%w：%v", ErrExhausted, lastErr)
+	return llm.Message{}, "", llm.Usage{}, fmt.Errorf("%w：%w", ErrExhausted, lastErr)
 }
 
 // order picks the members to try, in order: skip those in a cooling-off window
@@ -232,7 +267,14 @@ func shouldFailover(ctx context.Context, err error) bool {
 	if err == nil {
 		return false
 	}
-	if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if ctx.Err() != nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	var timeout interface{ LLMCallTimeout() bool }
+	if errors.As(err, &timeout) && timeout.LLMCallTimeout() {
+		return true
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
 	switch code := statusOf(err); {

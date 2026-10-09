@@ -131,6 +131,7 @@ export function FindingsTable({
   onDelete,
   selectAllLabel = "选择当前页全部",
 }: FindingsTableProps) {
+  const tableId = React.useId();
   const selectableIds = items.map((finding) => finding.finding_id).filter((id): id is string => Boolean(id));
   const selectedCount = selectableIds.filter((id) => selectedIds.has(id)).length;
   let headerChecked: boolean | "indeterminate" = false;
@@ -140,9 +141,28 @@ export function FindingsTable({
     headerChecked = "indeterminate";
   }
 
+  if (items.length === 0) {
+    return (
+      <div className="flex min-h-40 flex-col items-center justify-center gap-2 px-6 py-8 text-center" role="status">
+        <FileTextIcon className="size-6 text-muted-foreground" aria-hidden="true" />
+        <p className="text-sm font-medium">当前条件下暂无发现</p>
+        <p className="text-xs text-muted-foreground">可调整关键词、严重度或任务筛选。</p>
+      </div>
+    );
+  }
+
   return (
     /* 固定列宽保证展开内容不撑开表格；窄屏只在表格内部横向滚动。 */
-    <Table className="min-w-[60rem] table-fixed">
+    <Table
+      className="min-w-[68rem] table-fixed"
+      containerProps={{
+        tabIndex: 0,
+        role: "region",
+        "aria-label": "漏洞发现列表，可横向滚动",
+        className:
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/50",
+      }}
+    >
       <TableHeader>
         <TableRow>
           <TableHead className="w-8">
@@ -152,12 +172,12 @@ export function FindingsTable({
               aria-label={selectAllLabel}
             />
           </TableHead>
-          <TableHead className="w-8" />
+          <TableHead className="w-12" />
           <TableHead className="w-20">严重度</TableHead>
-          <TableHead>漏洞名称</TableHead>
-          <TableHead className="w-44">资产</TableHead>
+          <TableHead className="w-64">漏洞名称</TableHead>
+          <TableHead className="w-40">资产</TableHead>
           <TableHead className="w-28">状态</TableHead>
-          <TableHead className="w-32">所属任务</TableHead>
+          <TableHead className="w-28">所属任务</TableHead>
           <TableHead className="w-24">时间</TableHead>
           <TableHead className="w-48">操作</TableHead>
         </TableRow>
@@ -165,52 +185,59 @@ export function FindingsTable({
       <TableBody>
         {items.map((f) => {
           const rowKey = findingRowKey(f);
+          const findingTitle = f.name || f.vulnclass || "未分类";
+          const detailsId = `${tableId}-details-${encodeURIComponent(rowKey)}`;
           const open = expandedKey === rowKey;
           const retest = f.finding_id ? activeRetests[f.finding_id] : undefined;
           return (
             <React.Fragment key={rowKey}>
-              <TableRow
-                className="cursor-pointer"
-                role="button"
-                tabIndex={0}
-                aria-expanded={open}
-                onClick={() => onToggleRow(f)}
-                onKeyDown={(event) => {
-                  if (event.target !== event.currentTarget || (event.key !== "Enter" && event.key !== " ")) return;
-                  event.preventDefault();
-                  onToggleRow(f);
-                }}
-              >
+              <TableRow className="cursor-pointer" onClick={() => onToggleRow(f)}>
                 <TableCell onClick={(e) => e.stopPropagation()}>
                   {f.finding_id && (
                     <Checkbox
                       checked={selectedIds.has(f.finding_id)}
                       onCheckedChange={(c) => onToggleSelected(f.finding_id as string, c === true)}
-                      aria-label="选择该漏洞"
+                      aria-label={`选择漏洞：${findingTitle}`}
                     />
                   )}
                 </TableCell>
-                <TableCell>
-                  <ChevronRightIcon
-                    className={cn("size-4 text-muted-foreground transition-transform", open && "rotate-90")}
-                  />
+                <TableCell onClick={(e) => e.stopPropagation()}>
+                  <Button
+                    type="button"
+                    size="icon-sm"
+                    variant="ghost"
+                    aria-label={`${open ? "收起" : "展开"}漏洞详情：${findingTitle}`}
+                    aria-expanded={open}
+                    aria-controls={detailsId}
+                    onClick={() => onToggleRow(f)}
+                  >
+                    <ChevronRightIcon
+                      aria-hidden="true"
+                      className={cn(
+                        "size-4 text-muted-foreground transition-transform motion-reduce:transition-none",
+                        open && "rotate-90",
+                      )}
+                    />
+                  </Button>
                 </TableCell>
                 <TableCell>
                   <StatusBadge domain="severity" value={f.severity} dot />
                 </TableCell>
-                <TableCell className="max-w-md">
+                <TableCell className="whitespace-normal">
                   <div className="flex min-w-0 flex-col gap-0.5">
                     {f.finding_id ? (
                       <Link
                         href={`/function/findings/detail?id=${f.finding_id}`}
                         onClick={(e) => e.stopPropagation()}
-                        className="truncate font-medium hover:text-primary hover:underline"
-                        title="查看发现详情"
+                        className="line-clamp-2 break-words font-medium hover:text-primary hover:underline"
+                        title={findingTitle}
                       >
-                        {f.name || f.vulnclass || "未分类"}
+                        {findingTitle}
                       </Link>
                     ) : (
-                      <span className="truncate font-medium">{f.name || f.vulnclass || "未分类"}</span>
+                      <span className="line-clamp-2 break-words font-medium" title={findingTitle}>
+                        {findingTitle}
+                      </span>
                     )}
                     <span className="truncate text-xs text-muted-foreground">{f.summary}</span>
                     <Badge variant="outline">流量证据 {f.traffic_count ?? 0} 条</Badge>
@@ -239,7 +266,11 @@ export function FindingsTable({
                 <TableCell onClick={(e) => e.stopPropagation()}>
                   {f.finding_id ? (
                     <Select value={f.status} onValueChange={(v) => onStatusChange(f, v as FindingStatus)}>
-                      <SelectTrigger size="sm" className="h-7 w-full border-none px-1 shadow-none focus-visible:ring-0">
+                      <SelectTrigger
+                        size="sm"
+                        className="h-7 w-full border-none px-1 shadow-none"
+                        aria-label={`更新漏洞状态：${findingTitle}`}
+                      >
                         <StatusBadge domain="finding" value={f.status} dot />
                       </SelectTrigger>
                       <SelectContent position="popper" align="end">
@@ -263,7 +294,7 @@ export function FindingsTable({
                       title={f.task_description}
                     >
                       <span className="truncate">{f.task_description}</span>
-                      <ArrowUpRightIcon className="size-3 shrink-0" />
+                      <ArrowUpRightIcon aria-hidden="true" className="size-3 shrink-0" />
                     </Link>
                   ) : (
                     <span className="text-muted-foreground">—</span>
@@ -275,20 +306,20 @@ export function FindingsTable({
                     {retest ? (
                       <Button asChild size="sm" variant="ghost">
                         <Link href={`/chat?c=${retest.conversation_id}`} title="查看正在进行的复测会话">
-                          <Spinner data-icon="inline-start" />
+                          <Spinner aria-hidden="true" data-icon="inline-start" />
                           复测中
                         </Link>
                       </Button>
                     ) : null}
                     {!retest && f.finding_id && !f.inherited ? (
                       <Button size="sm" variant="ghost" onClick={() => onRetest(f)} title="在独立会话中复测该漏洞">
-                        <RotateCcwIcon data-icon="inline-start" />
+                        <RotateCcwIcon aria-hidden="true" data-icon="inline-start" />
                         复测
                       </Button>
                     ) : null}
                     {f.finding_id && f.task_id && (
                       <Button size="sm" variant="ghost" onClick={() => onDeepen(f)}>
-                        <FlaskConicalIcon data-icon="inline-start" />
+                        <FlaskConicalIcon aria-hidden="true" data-icon="inline-start" />
                         深入
                       </Button>
                     )}
@@ -299,9 +330,9 @@ export function FindingsTable({
                             size="icon"
                             variant="ghost"
                             className="size-7 text-muted-foreground hover:text-destructive"
-                            aria-label="删除漏洞"
+                            aria-label={`删除漏洞：${findingTitle}`}
                           >
-                            <Trash2Icon className="size-4" />
+                            <Trash2Icon aria-hidden="true" className="size-4" />
                           </Button>
                         </AlertDialogTrigger>
                         <AlertDialogContent>
@@ -325,11 +356,11 @@ export function FindingsTable({
                   </div>
                 </TableCell>
               </TableRow>
-              {open && (
-                <TableRow className="hover:bg-transparent">
-                  {/* whitespace-normal 覆盖 TableCell 默认的 nowrap,否则展开区文字
+              <TableRow id={detailsId} hidden={!open} className="hover:bg-transparent">
+                {/* whitespace-normal 覆盖 TableCell 默认的 nowrap,否则展开区文字
                       被强制单行、直接溢出单元格。 */}
-                  <TableCell colSpan={COLUMN_COUNT} className="bg-muted/30 whitespace-normal">
+                <TableCell colSpan={COLUMN_COUNT} className="bg-muted/30 whitespace-normal">
+                  {open && (
                     <div className="flex flex-col gap-2 px-2 py-1">
                       {/* 行内编辑:名称/类别/严重等级,可改并保存(仅独立 finding 行)。 */}
                       {f.finding_id && edit && (
@@ -374,7 +405,7 @@ export function FindingsTable({
                         </div>
                       )}
                       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                        <ShieldAlertIcon className="size-3.5" />
+                        <ShieldAlertIcon aria-hidden="true" className="size-3.5" />
                         证据
                         {f.vulnclass && (
                           <span>
@@ -403,7 +434,7 @@ export function FindingsTable({
                         <div className="flex flex-col gap-1.5">
                           <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
                             <span className="flex items-center gap-2">
-                              <FileTextIcon className="size-3.5" />
+                              <FileTextIcon aria-hidden="true" className="size-3.5" />
                               详细报告
                             </span>
                             {reports[rowKey]?.status === "done" && reports[rowKey]?.text.trim() && (
@@ -435,9 +466,9 @@ export function FindingsTable({
                         </div>
                       )}
                     </div>
-                  </TableCell>
-                </TableRow>
-              )}
+                  )}
+                </TableCell>
+              </TableRow>
             </React.Fragment>
           );
         })}

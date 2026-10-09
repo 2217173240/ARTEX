@@ -1,7 +1,13 @@
 package traffic
 
 import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -183,6 +189,13 @@ func TestLargeBodySpillsButStaysSearchable(t *testing.T) {
 	if st.Size() != int64(len(big)) {
 		t.Fatalf("blob 大小 %d，应为 %d", st.Size(), len(big))
 	}
+	sum := sha256.Sum256(big)
+	if want := hex.EncodeToString(sum[:]); hash != want {
+		t.Fatalf("blob hash=%s, want SHA256 %s", hash, want)
+	}
+	if stored, err := os.ReadFile(blob); err != nil || !bytes.Equal(stored, big) {
+		t.Fatalf("blob content does not match captured body: %v", err)
+	}
 
 	// The reference is registered, which is what GC consults.
 	var refs int
@@ -233,6 +246,83 @@ func TestLargeBodySpillsButStaysSearchable(t *testing.T) {
 	}
 	if _, _, err := tr.BlobRange("../../etc/passwd", 0, 10); err == nil {
 		t.Fatal("非法 hash 应被拒绝")
+	}
+}
+
+func TestBlobStorageFailureKeepsCompleteBodies(t *testing.T) {
+	for _, failure := range []string{"bucket-is-file", "blob-is-directory", "blob-write-fails", "blob-is-truncated"} {
+		t.Run(failure, func(t *testing.T) {
+			tr, dir := openTraffic(t)
+			const host = "storage.example"
+			body := []byte(strings.Repeat("complete captured body\n", maxInlineBody/20) + "last-body-marker")
+			sum := sha256.Sum256(body)
+			hash := hex.EncodeToString(sum[:])
+			bucket := filepath.Join(dir, "_blobs", "sha256", hash[:2])
+			if failure == "bucket-is-file" {
+				if err := os.MkdirAll(filepath.Dir(bucket), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(bucket, []byte("block directory creation"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if err := os.MkdirAll(bucket, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				blobPath := filepath.Join(bucket, hash+".bin")
+				var err error
+				switch failure {
+				case "blob-is-directory":
+					err = os.MkdirAll(blobPath, 0o755)
+				case "blob-write-fails":
+					// Stat sees a missing target, then WriteFile fails because the
+					// symlink points into a missing parent directory.
+					err = os.Symlink(filepath.Join(dir, "missing-parent", "body.bin"), blobPath)
+				case "blob-is-truncated":
+					err = os.WriteFile(blobPath, []byte("partial failed write"), 0o644)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			tr.record(newFlow(host, "POST", "/capture", body, body))
+			id := onlyExchangeID(t, tr)
+			var reqBody, respBody []byte
+			var reqBlob, respBlob sql.NullString
+			if err := tr.DB().QueryRow(`SELECT req_body,resp_body,req_blob,resp_blob FROM exchange_bodies WHERE id=?`, id).
+				Scan(&reqBody, &respBody, &reqBlob, &respBlob); err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(reqBody, body) || !bytes.Equal(respBody, body) || reqBlob.Valid || respBlob.Valid {
+				t.Fatalf("fallback body lengths=(%d,%d) blobs=(%v,%v), want complete %d-byte inline bodies", len(reqBody), len(respBody), reqBlob, respBlob, len(body))
+			}
+			req, resp, err := tr.Get(id)
+			if err != nil || !strings.HasSuffix(req, string(body)) || !strings.HasSuffix(resp, string(body)) {
+				t.Fatalf("Get did not preserve complete inline bodies: %v", err)
+			}
+			if err := tr.ReadEvidence(context.Background(), []string{id}, func(e EvidenceExchange) error {
+				req, reqErr := io.ReadAll(e.Request)
+				resp, respErr := io.ReadAll(e.Response)
+				if reqErr != nil || respErr != nil || !bytes.Equal(req, body) || !bytes.Equal(resp, body) || e.ReqLen != int64(len(body)) || e.RespLen != int64(len(body)) {
+					return fmt.Errorf("evidence did not preserve complete bodies: lengths=(%d,%d) errors=(%v,%v)", len(req), len(resp), reqErr, respErr)
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			archiveDir := filepath.Join(t.TempDir(), "archive")
+			if count, err := tr.ExportHosts([]string{host}, archiveDir); err != nil || count != 1 {
+				t.Fatalf("ExportHosts=(%d,%v), want (1,nil)", count, err)
+			}
+			restored, _ := openTraffic(t)
+			if count, err := restored.ImportArchive(archiveDir); err != nil || count != 1 {
+				t.Fatalf("ImportArchive=(%d,%v), want (1,nil)", count, err)
+			}
+			req, resp, err = restored.Get(id)
+			if err != nil || !strings.HasSuffix(req, string(body)) || !strings.HasSuffix(resp, string(body)) {
+				t.Fatalf("archive round trip did not preserve complete bodies: %v", err)
+			}
+		})
 	}
 }
 

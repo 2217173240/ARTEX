@@ -2,6 +2,7 @@ package server
 
 import (
 	"log"
+	"sync"
 	"time"
 
 	"github.com/Autumn-27/artex/agent"
@@ -23,22 +24,33 @@ func newLLMHealthRegistry(pg *db.DB) *llmpool.Registry {
 	if pg == nil {
 		return llmpool.NewRegistry(nil, nil)
 	}
-	persist := func(id int64, st llmpool.State) {
-		h := db.LLMHealth{ProfileID: id, Fails: st.Fails, Trips: st.Trips, LastError: st.LastError}
-		if !st.OpenUntil.IsZero() {
-			t := st.OpenUntil
-			h.OpenUntil = &t
-		}
+	var reg *llmpool.Registry
+	var writeMu sync.Mutex
+	writeCurrent := func(id int64) {
 		go func() {
+			writeMu.Lock()
+			defer writeMu.Unlock()
+			// Hooks run after Registry unlocks, so even their arrival order can
+			// differ from the state changes. Serialize SQL and read the current
+			// state here rather than allowing an old snapshot to win a late write.
+			st := reg.Get(id)
+			if st == (llmpool.State{}) {
+				if err := pg.ClearLLMHealth(id); err != nil {
+					log.Printf("[llmpool] 熔断状态清除失败: %v", err)
+				}
+				return
+			}
+			h := db.LLMHealth{ProfileID: id, Fails: st.Fails, Trips: st.Trips, LastError: st.LastError}
+			if !st.OpenUntil.IsZero() {
+				t := st.OpenUntil
+				h.OpenUntil = &t
+			}
 			if err := pg.SaveLLMHealth(h); err != nil {
 				log.Printf("[llmpool] 熔断状态落库失败: %v", err)
 			}
 		}()
 	}
-	forget := func(id int64) {
-		go func() { _ = pg.ClearLLMHealth(id) }()
-	}
-	reg := llmpool.NewRegistry(persist, forget)
+	reg = llmpool.NewRegistry(func(id int64, _ llmpool.State) { writeCurrent(id) }, writeCurrent)
 	// Restore only windows that haven't expired (LoadLLMHealth filters), so a
 	// profile that finished cooling while we were down comes back healthy.
 	if rows, err := pg.LoadLLMHealth(); err == nil {

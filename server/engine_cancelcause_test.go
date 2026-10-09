@@ -159,7 +159,7 @@ func TestResumeYieldsFreshContext(t *testing.T) {
 	if old.Err() == nil {
 		t.Fatal("Pause did not cancel old context")
 	}
-	e.paused.Delete("t1")
+	e.Resume(&Task{ID: "t1", notify: make(chan struct{}, 1)})
 	if fresh := e.execContextFor(context.Background(), "t1"); fresh.Err() != nil {
 		t.Fatal("resume did not create a fresh execution context")
 	}

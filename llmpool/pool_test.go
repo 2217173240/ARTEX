@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"iter"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +22,16 @@ type fakeProv struct {
 	events [][]llm.StreamEvent // events emitted before the error, per call
 	errs   []error             // error to end each call with (nil = clean finish)
 }
+
+type fakeProviderError struct {
+	provider int
+	cause    error
+}
+
+func (e *fakeProviderError) Error() string {
+	return fmt.Sprintf("provider %d: %v", e.provider, e.cause)
+}
+func (e *fakeProviderError) Unwrap() error { return e.cause }
 
 // at returns script entry n, repeating the last one once the script runs out, so
 // a provider defined as "always succeeds" / "always 402" keeps behaving that way
@@ -110,6 +122,182 @@ func TestFailoverOnNoCredit(t *testing.T) {
 	}
 }
 
+// A header or usage update has not delivered model output. Discard metadata
+// from the failed attempt so the caller accumulates only the backup's usage.
+func TestFailoverAfterMetadata(t *testing.T) {
+	for _, streamErr := range []error{io.ErrUnexpectedEOF, errors.New("anthropic: overloaded")} {
+		t.Run(streamErr.Error(), func(t *testing.T) {
+			a := &fakeProv{
+				name: "a",
+				events: [][]llm.StreamEvent{{
+					{Type: llm.SEMessageStart, Usage: llm.Usage{InputTokens: 100}},
+					{Type: llm.SETextDelta},
+					{Type: llm.SEThinkingDelta},
+					{Type: llm.SEToolInputJSON},
+					{Type: llm.SEThinkingSignature, Text: "discarded-signature"},
+					{Type: llm.SEMessageDelta, Usage: llm.Usage{OutputTokens: 10}},
+				}},
+				errs: []error{streamErr},
+			}
+			backupEvents := []llm.StreamEvent{
+				{Type: llm.SEMessageStart, Usage: llm.Usage{InputTokens: 20}},
+				{Type: llm.SETextDelta, Text: "backup"},
+				{Type: llm.SEMessageDelta, StopReason: "end_turn", Usage: llm.Usage{OutputTokens: 2}},
+			}
+			b := &fakeProv{name: "b", events: [][]llm.StreamEvent{backupEvents}}
+			reg := NewRegistry(nil, nil)
+			p := New([]*Member{member(1, "a", 10, a), member(2, "b", 5, b)}, reg)
+
+			var got []llm.StreamEvent
+			acc := llm.NewAccumulator()
+			for ev, err := range p.Stream(context.Background(), llm.CompletionRequest{}) {
+				if err != nil {
+					t.Fatalf("expected failover to succeed, got %v", err)
+				}
+				got = append(got, ev)
+				acc.Add(ev)
+			}
+			want := append(append([]llm.StreamEvent(nil), backupEvents...), llm.StreamEvent{Type: llm.SEMessageStop})
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("events = %#v, want only backup events %#v", got, want)
+			}
+			if acc.Usage.InputTokens != 20 || acc.Usage.OutputTokens != 2 {
+				t.Fatalf("usage = %#v, want backup usage 20 input / 2 output", acc.Usage)
+			}
+			if a.calls != 1 || b.calls != 1 {
+				t.Fatalf("calls: a=%d b=%d, want 1/1", a.calls, b.calls)
+			}
+			if got := reg.Get(1).Fails; got != 1 {
+				t.Fatalf("failed profile count = %d, want 1", got)
+			}
+		})
+	}
+}
+
+func TestMetadataOnlyCompletion(t *testing.T) {
+	events := []llm.StreamEvent{
+		{Type: llm.SEMessageStart, Usage: llm.Usage{InputTokens: 4}},
+		{Type: llm.SETextDelta},
+		{Type: llm.SEThinkingDelta},
+		{Type: llm.SEToolInputJSON},
+		{Type: llm.SEThinkingSignature, Text: "signature"},
+		{Type: llm.SEMessageDelta, StopReason: "end_turn", Usage: llm.Usage{OutputTokens: 1}},
+	}
+	a := &fakeProv{name: "a", events: [][]llm.StreamEvent{events}}
+	b := okProv("b", "backup")
+	p := New([]*Member{member(1, "a", 10, a), member(2, "b", 5, b)}, NewRegistry(nil, nil))
+
+	var got []llm.StreamEvent
+	for ev, err := range p.Stream(context.Background(), llm.CompletionRequest{}) {
+		if err != nil {
+			t.Fatalf("metadata-only completion returned error: %v", err)
+		}
+		got = append(got, ev)
+	}
+	want := append(append([]llm.StreamEvent(nil), events...), llm.StreamEvent{Type: llm.SEMessageStop})
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("events = %#v, want completed stream %#v", got, want)
+	}
+	if b.calls != 0 {
+		t.Fatalf("backup calls = %d, want 0 for a clean empty completion", b.calls)
+	}
+}
+
+func TestMetadataFailureExhausted(t *testing.T) {
+	for _, count := range []int{1, 2} {
+		t.Run(fmt.Sprintf("%d-members", count), func(t *testing.T) {
+			reg := NewRegistry(nil, nil)
+			var members []*Member
+			var provs []*fakeProv
+			var lastErr *fakeProviderError
+			for i := range count {
+				lastErr = &fakeProviderError{provider: i, cause: io.ErrUnexpectedEOF}
+				prov := &fakeProv{
+					name:   fmt.Sprintf("p%d", i),
+					events: [][]llm.StreamEvent{{{Type: llm.SEMessageStart, Usage: llm.Usage{InputTokens: 100}}}},
+					errs:   []error{lastErr},
+				}
+				provs = append(provs, prov)
+				members = append(members, member(int64(i+1), prov.name, count-i, prov))
+			}
+			p := New(members, reg)
+			var streamErr error
+			for ev, err := range p.Stream(context.Background(), llm.CompletionRequest{}) {
+				if err == nil {
+					t.Fatalf("failed attempt leaked event: %#v", ev)
+				}
+				streamErr = err
+			}
+			if !errors.Is(streamErr, ErrExhausted) || !strings.Contains(streamErr.Error(), lastErr.Error()) {
+				t.Fatalf("error = %v, want ErrExhausted with last failure %v", streamErr, lastErr)
+			}
+			if !errors.Is(streamErr, io.ErrUnexpectedEOF) {
+				t.Errorf("error = %v, want original unexpected EOF in the error chain", streamErr)
+			}
+			var providerErr *fakeProviderError
+			if !errors.As(streamErr, &providerErr) || providerErr != lastErr {
+				t.Errorf("typed cause = %v, want original provider error %v", providerErr, lastErr)
+			}
+			for i, prov := range provs {
+				if prov.calls != 1 || reg.Get(int64(i+1)).Fails != 1 {
+					t.Fatalf("provider %d: calls=%d fails=%d, want 1/1", i, prov.calls, reg.Get(int64(i+1)).Fails)
+				}
+			}
+		})
+	}
+}
+
+func TestCompleteExhaustedPreservesCause(t *testing.T) {
+	for _, count := range []int{1, 2} {
+		t.Run(fmt.Sprintf("%d-members", count), func(t *testing.T) {
+			var members []*Member
+			var lastErr *fakeProviderError
+			for i := range count {
+				lastErr = &fakeProviderError{provider: i, cause: io.ErrUnexpectedEOF}
+				prov := &fakeProv{name: fmt.Sprintf("p%d", i), errs: []error{lastErr}}
+				members = append(members, member(int64(i+1), prov.name, count-i, prov))
+			}
+			p := New(members, NewRegistry(nil, nil))
+			_, _, _, err := p.Complete(context.Background(), llm.CompletionRequest{})
+			if !errors.Is(err, ErrExhausted) || !errors.Is(err, io.ErrUnexpectedEOF) {
+				t.Errorf("error = %v, want ErrExhausted and original unexpected EOF in the error chain", err)
+			}
+			var providerErr *fakeProviderError
+			if !errors.As(err, &providerErr) || providerErr != lastErr {
+				t.Errorf("typed cause = %v, want original provider error %v", providerErr, lastErr)
+			}
+		})
+	}
+}
+
+func TestMetadataFailureNonFailover(t *testing.T) {
+	for _, streamErr := range []error{context.Canceled, context.DeadlineExceeded, errors.New("anthropic: status 400: bad request")} {
+		t.Run(streamErr.Error(), func(t *testing.T) {
+			want := []llm.StreamEvent{{Type: llm.SEMessageStart, Usage: llm.Usage{InputTokens: 4}}}
+			a := &fakeProv{name: "a", events: [][]llm.StreamEvent{want}, errs: []error{streamErr}}
+			b := okProv("b", "backup")
+			reg := NewRegistry(nil, nil)
+			p := New([]*Member{member(1, "a", 10, a), member(2, "b", 5, b)}, reg)
+
+			var got []llm.StreamEvent
+			var gotErr error
+			for ev, err := range p.Stream(context.Background(), llm.CompletionRequest{}) {
+				if err != nil {
+					gotErr = err
+					break
+				}
+				got = append(got, ev)
+			}
+			if gotErr != streamErr || !reflect.DeepEqual(got, want) {
+				t.Fatalf("events/error = %#v / %v, want original %#v / %v", got, gotErr, want, streamErr)
+			}
+			if b.calls != 0 || reg.Get(1).Fails != 0 {
+				t.Fatalf("backup calls=%d fails=%d, want 0/0", b.calls, reg.Get(1).Fails)
+			}
+		})
+	}
+}
+
 // A 402 is deterministic: one failure must open the breaker, so the NEXT request
 // skips that profile entirely instead of paying for another round-trip.
 func TestHardFailureTripsBreakerImmediately(t *testing.T) {
@@ -186,23 +374,41 @@ func TestBackoffLadderGrows(t *testing.T) {
 // The safety rule: once output has reached the caller, a mid-stream failure must
 // NOT be retried on another model — that would duplicate the assistant turn.
 func TestNoFailoverAfterEmit(t *testing.T) {
-	a := &fakeProv{
-		name:   "a",
-		events: [][]llm.StreamEvent{{{Type: llm.SETextDelta, Text: "partial"}}},
-		errs:   []error{fmt.Errorf("anthropic: status 500: mid-stream drop")},
-	}
-	b := okProv("b", "full")
-	p := New([]*Member{member(1, "a", 10, a), member(2, "b", 5, b)}, NewRegistry(nil, nil))
+	for _, output := range []llm.StreamEvent{
+		{Type: llm.SETextDelta, Text: "partial"},
+		{Type: llm.SEThinkingDelta, Text: "partial reasoning"},
+		{Type: llm.SEToolUseStart, ToolID: "call-1", ToolName: "run_shell"},
+		{Type: llm.SEToolInputJSON, Text: `{"command":`},
+	} {
+		t.Run(string(output.Type), func(t *testing.T) {
+			streamErr := fmt.Errorf("anthropic: status 500: mid-stream drop")
+			want := []llm.StreamEvent{
+				{Type: llm.SEMessageStart, Usage: llm.Usage{InputTokens: 10}},
+				output,
+			}
+			a := &fakeProv{name: "a", events: [][]llm.StreamEvent{want}, errs: []error{streamErr}}
+			b := okProv("b", "full")
+			p := New([]*Member{member(1, "a", 10, a), member(2, "b", 5, b)}, NewRegistry(nil, nil))
 
-	got, err := drain(p.Stream(context.Background(), llm.CompletionRequest{}))
-	if err == nil {
-		t.Fatal("mid-stream error should surface, not be swallowed by a failover")
-	}
-	if got != "partial" {
-		t.Fatalf("text = %q, want the partial output %q", got, "partial")
-	}
-	if b.calls != 0 {
-		t.Fatalf("fell over to the backup after emitting output (calls=%d) — would duplicate the turn", b.calls)
+			var got []llm.StreamEvent
+			var gotErr error
+			for ev, err := range p.Stream(context.Background(), llm.CompletionRequest{}) {
+				if err != nil {
+					gotErr = err
+					break
+				}
+				got = append(got, ev)
+			}
+			if gotErr != streamErr {
+				t.Fatalf("error = %v, want original mid-stream error %v", gotErr, streamErr)
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("events = %#v, want original partial output %#v", got, want)
+			}
+			if b.calls != 0 {
+				t.Fatalf("fell over to the backup after emitting output (calls=%d) — would duplicate the turn", b.calls)
+			}
+		})
 	}
 }
 

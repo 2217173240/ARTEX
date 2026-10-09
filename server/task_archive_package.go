@@ -165,9 +165,9 @@ func (s *taskArchiveFileStage) applyMoves() error {
 		}
 		if _, err := os.Lstat(move.Source); err != nil {
 			if os.IsNotExist(err) {
-				// Neither side exists: the path was removed outside the archive flow
-				// after the journal was written. Nothing can be staged for it.
-				continue
+				// A journal entry is the complete archive plan. Silently omitting a
+				// planned path would produce a successful but incomplete archive.
+				return fmt.Errorf("archive source %s disappeared: %w", move.Source, fs.ErrNotExist)
 			}
 			return err
 		}
@@ -582,6 +582,12 @@ func writeTaskArchivePackage(path, payloadDir string, snapshot *pgdb.TaskArchive
 			// 无法还原符号链接。跳过而非整包失败：不读取链接目标(lstat，不越出目录树)，
 			// 也不写入 symlink 条目；链接指向树内时目标文件本身仍会被单独遍历归档。
 			log.Printf("[task-archive] 跳过符号链接（归档不支持，不影响其它文件）：%s", current)
+			return nil
+		}
+		if !info.Mode().IsRegular() && !info.IsDir() {
+			// The restore path supports only regular files and directories. In
+			// particular, opening an unattended FIFO here would block the queue.
+			log.Printf("[task-archive] 跳过不支持的文件类型 %s：%s", info.Mode().Type(), current)
 			return nil
 		}
 		header, err := tar.FileInfoHeader(info, "")
