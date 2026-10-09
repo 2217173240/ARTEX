@@ -4,6 +4,7 @@
 # DB 迁移无需手动执行——artex 每次启动都会幂等重跑 schema.sql（含 ADD COLUMN/CREATE
 # INDEX IF NOT EXISTS），所以“重启即迁移”。数据（pgdata 卷、./data、./skills）不受影响。
 set -euo pipefail
+umask 077
 cd "$(cd "$(dirname "$0")" && pwd)"
 
 info(){ printf '\033[36m[*]\033[0m %s\n' "$*"; }
@@ -30,11 +31,9 @@ update_docker(){
   # 可选：升级到指定版本 tag（不填则沿用 .env 中的 ARTEX_TAG，缺省为 latest）
   local tag; tag="$(ask '目标镜像 tag（回车沿用 .env / latest）' '')"
   if [ -n "$tag" ]; then
-    if grep -q '^ARTEX_TAG=' .env; then
-      sed -i.bak "s|^ARTEX_TAG=.*|ARTEX_TAG=${tag}|" .env && rm -f .env.bak
-    else
-      printf '\nARTEX_TAG=%s\n' "$tag" >> .env
-    fi
+    [[ "$tag" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || die "无效的镜像 tag"
+    command -v python3 >/dev/null 2>&1 || die "请先安装 Python 3（安全更新 .env 需要）"
+    printf '%s\0' "$tag" | python3 scripts/install-config.py tag
     ok "已将 ARTEX_TAG 设为 ${tag}"
   fi
 

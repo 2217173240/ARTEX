@@ -74,19 +74,19 @@ AI 自主渗透测试系统（Go 后端 + Next.js 前端）
 
 ## 安装
 
-> 本 fork `2217173240/ARTEX` 尚无新的 Release；以下上游发布包与镜像不保证包含本 fork 的改动，使用本 fork 请从源码构建。
+本 fork 的源码、发布包和在线更新源均为 [2217173240/ARTEX](https://github.com/2217173240/ARTEX)，Docker 镜像为 `ghcr.io/2217173240/artex`。正式版本及对应下载文件见本仓库 [Releases](https://github.com/2217173240/ARTEX/releases)；Docker 和 ZIP 的安装方式如下。
 
 > 依赖数据库 **PostgreSQL**；探索需配置 **LLM**（`ANTHROPIC_API_KEY` 或 `OPENAI_API_KEY`，也可在 UI 里配）。
 
 ### 方式一：一键安装脚本（推荐）
 
 ```bash
-git clone https://github.com/Autumn-27/ARTEX.git
+git clone https://github.com/2217173240/ARTEX.git
 cd ARTEX
 ./install.sh
 ```
 
-脚本会：检测 / 自动安装 Docker → 让你选 **① 全部 Docker** 或 **② 本地编译运行**：
+源码安装脚本需要 Python 3 来安全生成配置；已有 `.env` 和 `config.json` 会沿用，新配置仅允许当前用户读写。脚本会：检测 / 自动安装 Docker → 让你选 **① 全部 Docker** 或 **② 本地编译运行**：
 
 - **① 全部 Docker**：填一个 Postgres 密码（可回车随机）→ 自动写 `.env` → `docker compose up -d`。
 - **② 本地运行**：选数据库（连已有 / 用 Docker 起一个）→ 生成 `config.json` → `go` 编译内嵌单二进制 → 启动。
@@ -96,12 +96,14 @@ cd ARTEX
 ### 方式二：Docker Compose（手动）
 
 ```bash
-git clone https://github.com/Autumn-27/ARTEX.git
+git clone https://github.com/2217173240/ARTEX.git
 cd ARTEX
 cp .env.example .env          # 填 POSTGRES_PASSWORD、可选 ANTHROPIC_API_KEY
-docker compose up -d          # 拉取 autumn27/artex 镜像 + postgres
+docker compose up -d          # 拉取 ghcr.io/2217173240/artex 镜像 + postgres
 # → http://localhost:8787
 ```
+
+手动填写 `.env` 时，若数据库用户名或密码包含 URL 特殊字符，请同时设置百分号编码的完整 `ARTEX_PG_DSN`；安装脚本会自动生成它。镜像提供 Linux AMD64 / ARM64，Docker 自动选择架构，可用 `ARTEX_TAG=v0.3.17` 固定版本。
 
 镜像已含常用工具（ripgrep/curl/vim/npm/nmap…）；`./skills` 与 `./data` 以绑定挂载持久化。
 
@@ -112,12 +114,14 @@ docker compose up -d          # 拉取 autumn27/artex 镜像 + postgres
 
 ### 方式三：下载预编译二进制（Releases）
 
-到 [Releases](https://github.com/Autumn-27/ARTEX/releases) 下载对应平台的 zip，解压后得到 `artex` + `start.sh`（Windows 为 `start.bat`）+ `skills/` + `config.example.json`：
+到 [Releases](https://github.com/2217173240/ARTEX/releases) 下载对应平台的 zip，解压后得到 `artex` + `start.sh`（Windows 为 `start.bat`）+ `skills/` + `config.example.json`：
 
 ```bash
 cp config.example.json config.json   # 填好 database 连接
 ./start.sh                           # → http://localhost:8787
 ```
+
+ZIP 是运行包，不包含源码安装、更新脚本；`install.sh` / `update.sh` 用于源码克隆目录。Linux、macOS 提供 AMD64 / ARM64，Windows 提供 AMD64；Release 附 `SHA256SUMS` 和容器清单的 `IMAGE_DIGEST`。
 
 > 请用 `start.sh` / `start.bat` 启动，而不是直接跑 `./artex`。它是个守护脚本：程序退出后按退出码决定是否重新拉起，**页面上的[一键更新](#方式一页面一键更新推荐)靠它完成换装**。直接运行 `./artex` 时更新完就不会被拉起了。
 > 后台常驻：`nohup ./start.sh >artex.log 2>&1 &`。
@@ -162,7 +166,7 @@ ARTEX_TARGETS=linux/amd64,windows/amd64 ./build.sh --release
 
 在 **系统配置** 页（侧边栏「系统配置」→ `/system/settings`）的**版本与更新**卡片里，可以直接检查并安装新版本，无需登录服务器。
 
-点「更新」后：下载当前平台的发布包 → 比对 Release 的 `SHA256SUMS` → 用 `-h` 冒烟测试新二进制 → 暂存为 `artex.new` → 程序退出，由 `start.sh` / `start.bat` 重新拉起并完成换装。页面会自动等到新版本上线后刷新。
+更新源固定为 `2217173240/ARTEX` 的最新正式 Release，跳过草稿和预发布版本。点「更新」后：下载当前平台的发布包 → 比对 Release 的 `SHA256SUMS` → 用 `-h` 冒烟测试新二进制 → 暂存为 `artex.new` → 程序退出，由 `start.sh` / `start.bat` 重新拉起并完成换装。页面会自动等到新版本上线后刷新。
 
 - **失败不会留下坏程序**：校验或冒烟不通过就丢弃暂存件、继续跑当前版本；换装后的新版若连续 3 次启动失败，会自动回滚到 `artex.old`（失败的那个留作 `artex.failed` 供排查）。
 - **随时可回退**：上一版本保留为 `artex.old`，卡片上有「回滚到上一版本」。注意数据库结构不会回退。
@@ -188,7 +192,7 @@ cd ARTEX
 ```bash
 cd ARTEX
 git pull                       # 更新 compose / 脚本（可选）
-# 指定版本：在 .env 设 ARTEX_TAG=v0.2.0；不设则用 latest
+# 指定版本：在 .env 设 ARTEX_TAG=v0.3.17；不设则用 latest
 docker compose pull artex
 docker compose up -d artex     # 换新镜像重启 → 自动迁移 schema
 docker image prune -f          # 清理旧镜像（可选）
@@ -196,7 +200,7 @@ docker image prune -f          # 清理旧镜像（可选）
 
 ### 方式四：预编译二进制（Releases）
 
-到 [Releases](https://github.com/Autumn-27/ARTEX/releases) 下载新版本 zip，停掉旧进程后覆盖 `artex` 与 `skills/`（保留你的 `config.json` 与 `data/`），重启即可：
+到 [Releases](https://github.com/2217173240/ARTEX/releases) 下载新版本 zip，停掉旧进程后覆盖 `artex` 与 `skills/`（保留你的 `config.json` 与 `data/`），重启即可：
 
 ```bash
 cp -r <解压目录>/skills ./ && cp <解压目录>/artex ./
@@ -237,6 +241,8 @@ CGO_ENABLED=0 go build -tags embedui -o artex ./cmd/artex
 可选：`ARTEX_LLM_PROVIDER` / `ARTEX_LLM_MODEL` / `ARTEX_LLM_BASE_URL` / `ARTEX_LLM_PROXY`。
 
 单次模型调用默认最多等待 600 秒，覆盖内部重试和流式响应。可设置 `ARTEX_LLM_CALL_TIMEOUT`（秒）；`0` 关闭这项限制，Docker Compose 可在 `.env` 中配置。父任务的取消和更短截止时间仍优先。超时依靠 provider 遵循 context 取消；已交付正文或工具事件的流不会切换模型重放。
+
+**额外访问密码（可选）**：在「系统设置」开启 HTTP Basic Auth，设置用户名和密码，浏览器先通过访问验证，再使用现有管理员登录。默认关闭；它不替代管理员认证。
 
 **并发**：每个任务的 work agent 数在「系统设置」里配置（默认 3）。
 

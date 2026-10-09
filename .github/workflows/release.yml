@@ -1,58 +1,50 @@
 name: release
 on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "已存在的正式版本标签，例如 v0.3.15"
+        required: true
+        type: string
   push:
     tags: ["v*"]
 
 permissions:
   contents: read
 
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
-  quality-preflight:
+  prepare:
     runs-on: ubuntu-latest
     permissions:
       contents: read
       checks: read
+    outputs:
+      tag: ${{ steps.preflight.outputs.tag }}
+      commit: ${{ steps.preflight.outputs.commit }}
+      image: ${{ steps.preflight.outputs.image }}
     steps:
-      - name: Require successful quality check on the exact tagged commit
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Pin actual tag commit and require exact quality evidence
+        id: preflight
         env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
           GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          python3 - <<'PY'
-          import json
-          import os
-          import urllib.request
-
-          sha = os.environ["GITHUB_SHA"]
-          repository = os.environ["GITHUB_REPOSITORY"]
-          page = 1
-          while True:
-              url = f"https://api.github.com/repos/{repository}/commits/{sha}/check-runs?per_page=100&page={page}"
-              request = urllib.request.Request(url, headers={
-                  "Authorization": "Bearer " + os.environ["GITHUB_TOKEN"],
-                  "Accept": "application/vnd.github+json",
-                  "X-GitHub-Api-Version": "2026-03-10",
-              })
-              with urllib.request.urlopen(request, timeout=30) as response:
-                  checks = json.load(response)["check_runs"]
-              if any(check["name"] == "quality"
-                     and check["head_sha"] == sha
-                     and check["app"]["slug"] == "github-actions"
-                     and check["status"] == "completed"
-                     and check["conclusion"] == "success" for check in checks):
-                  print("The exact tagged commit has a successful GitHub Actions quality check.")
-                  break
-              if len(checks) < 100:
-                  raise SystemExit("Quality is not green on this tagged commit. Wait for main quality CI, then manually rerun this release workflow.")
-              page += 1
-          PY
+        run: python3 scripts/release-preflight.py
 
   # ① 前端静态导出（一次），产物给交叉编译各平台复用
   frontend:
-    needs: quality-preflight
+    needs: prepare
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
+          ref: ${{ needs.prepare.outputs.commit }}
           persist-credentials: false
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with:
@@ -67,10 +59,11 @@ jobs:
         with:
           name: web-dist
           path: web/out
+          if-no-files-found: error
 
   # ② 五平台交叉编译（内嵌前端）+ 打 zip
   binaries:
-    needs: [quality-preflight, frontend]
+    needs: [prepare, frontend]
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -83,6 +76,7 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
+          ref: ${{ needs.prepare.outputs.commit }}
           persist-credentials: false
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
         with:
@@ -96,7 +90,7 @@ jobs:
         env:
           ARTEX_TARGET_OS: ${{ matrix.goos }}
           ARTEX_TARGET_ARCH: ${{ matrix.goarch }}
-          ARTEX_BUILD_VERSION: ${{ github.ref_name }}
+          ARTEX_BUILD_VERSION: ${{ needs.prepare.outputs.tag }}
           ARTEX_SKIP_FRONTEND: "1"
           ARTEX_SKIP_NPM_CI: "1"
           # UPX 自解压 ELF 在部分 Linux 内核、虚拟化和安全策略下会崩溃。
@@ -113,19 +107,25 @@ jobs:
         with:
           name: pkg-${{ matrix.goos }}-${{ matrix.goarch }}
           path: "dist/*.zip"
+          if-no-files-found: error
       # Linux 生二进制单独上传，供 docker job 复用（免在镜像里重编前端+Go）
       - if: matrix.goos == 'linux'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: bin-linux-${{ matrix.goarch }}
           path: dist/artex-linux-${{ matrix.goarch }}/artex
+          if-no-files-found: error
 
   # ③ 汇总所有 zip → 创建 GitHub Release
-  release:
-    needs: [quality-preflight, binaries]
+  release-draft:
+    needs: [prepare, binaries]
     runs-on: ubuntu-latest
     permissions:
-      contents: write # 创建 Release 需要
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
@@ -134,51 +134,185 @@ jobs:
           path: dist
       - name: Generate checksums
         working-directory: dist
-        run: sha256sum *.zip > SHA256SUMS
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          test "$(find . -maxdepth 1 -name '*.zip' | wc -l)" -eq 5
+          for target in linux-amd64 linux-arm64 darwin-amd64 darwin-arm64 windows-amd64; do
+            test -s "artex-${version}-${target}.zip"
+          done
+          sha256sum *.zip > SHA256SUMS
+          sha256sum --check SHA256SUMS
+      - name: Refuse to overwrite a published release
+        run: |
+          if gh release view "$RELEASE_TAG" --json isDraft > /tmp/artex-release.json 2>/tmp/artex-release.err; then
+            test "$(jq -r .isDraft /tmp/artex-release.json)" = true || {
+              echo "该版本已发布，请使用新的版本标签" >&2
+              exit 1
+            }
+          elif ! grep -qi 'release not found\|HTTP 404' /tmp/artex-release.err; then
+            cat /tmp/artex-release.err >&2
+            exit 1
+          fi
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          target_commitish: ${{ needs.prepare.outputs.commit }}
+          draft: true
+          fail_on_unmatched_files: true
           files: |
             dist/*.zip
             dist/SHA256SUMS
           generate_release_notes: true
-
-  # ④ 多架构镜像 → 推 Docker Hub（复用 binaries 编好的 Linux 二进制，
-  #    镜像里只装工具 + 放二进制；arm64 仅需模拟 apt 层，构建快很多）
+          body: |
+            GHCR 镜像：`${{ needs.prepare.outputs.image }}:${{ needs.prepare.outputs.tag }}`，同时提供 `latest`。
+            支持 Linux AMD64 / ARM64，Docker 会自动选择宿主机架构。
+            程序包提供 Linux、macOS 的 AMD64 / ARM64 及 Windows AMD64，并附 SHA256SUMS。
+            部署和在线更新说明见本仓库 README。
+  # ④ 在原生 AMD64 / ARM64 runner 上构建和测试，再推送架构镜像。
   docker:
-    if: vars.DOCKER_IMAGE != ''
-    needs: [quality-preflight, binaries]
-    runs-on: ubuntu-latest
+    needs: [prepare, binaries, release-draft]
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, runner: ubuntu-24.04 }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: artex
+          POSTGRES_PASSWORD: artex-ci-test
+          POSTGRES_DB: artex
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U artex -d artex"
+          --health-interval 5s --health-timeout 3s --health-retries 10
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # 取 Dockerfile 与 skills/
         with:
+          ref: ${{ needs.prepare.outputs.commit }}
           persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: bin-linux-amd64
-          path: dist/amd64
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: bin-linux-arm64
-          path: dist/arm64
-      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130
+          name: bin-linux-${{ matrix.arch }}
+          path: dist/${{ matrix.arch }}
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051
-        id: meta
-        with:
-          images: ${{ vars.DOCKER_IMAGE }}
-          tags: |
-            type=ref,event=tag
-            type=raw,value=latest
-      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Build image for native smoke test
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          platforms: linux/${{ matrix.arch }}
+          load: true
+          provenance: false
+          tags: artex:smoke
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.prepare.outputs.tag }}
+            org.opencontainers.image.revision=${{ needs.prepare.outputs.commit }}
+            org.opencontainers.image.licenses=AGPL-3.0
+          cache-from: type=gha,scope=docker-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=docker-${{ matrix.arch }}
+      - name: Test application startup and embedded frontend
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint /app/artex artex:smoke -h
+          docker run -d --name artex-smoke --network host \
+            -e ARTEX_CONFIG=/dev/null \
+            -e ARTEX_PG_DSN='postgres://artex:artex-ci-test@127.0.0.1:5432/artex?sslmode=disable' artex:smoke
+          trap 'docker logs artex-smoke; docker rm -f artex-smoke' EXIT
+          curl --fail --retry 30 --retry-connrefused --retry-delay 2 --max-time 3 \
+            http://127.0.0.1:8787/api/health > /tmp/artex-health.json
+          jq -e --arg version "${RELEASE_TAG#v}" '.ok == true and .version == $version' /tmp/artex-health.json
+          curl --fail http://127.0.0.1:8787/ > /tmp/artex-index.html
+          grep -qi '<!doctype html' /tmp/artex-index.html
+      - name: Push the exact locally tested image
+        id: push
+        env:
+          IMAGE: ${{ needs.prepare.outputs.image }}
+          STAGE: stage-${{ needs.prepare.outputs.commit }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          docker tag artex:smoke "$IMAGE:$STAGE"
+          docker push "$IMAGE:$STAGE"
+          digest=$(docker inspect "$IMAGE:$STAGE" --format '{{index .RepoDigests 0}}')
+          printf 'digest=%s\n' "${digest#*@}" >> "$GITHUB_OUTPUT"
+
+      - name: Record tested architecture digest
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          mkdir -p digests
+          printf '%s\n' "$DIGEST" > "digests/$ARCH"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: digest-${{ matrix.arch }}
+          path: digests/*
+          if-no-files-found: error
+
+  publish:
+    needs: [prepare, docker, release-draft]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      packages: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      IMAGE: ${{ needs.prepare.outputs.image }}
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+      STAGE: stage-${{ needs.prepare.outputs.commit }}-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: digest-*
+          merge-multiple: true
+          path: digests
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Aggregate and verify both tested architectures before public tags
+        run: |
+          set -euo pipefail
+          amd64=$(cat digests/amd64)
+          arm64=$(cat digests/arm64)
+          [[ "$amd64" =~ ^sha256:[a-f0-9]{64}$ ]]
+          [[ "$arm64" =~ ^sha256:[a-f0-9]{64}$ ]]
+          docker buildx imagetools create --tag "$IMAGE:$STAGE" "$IMAGE@$amd64" "$IMAGE@$arm64"
+          docker buildx imagetools inspect "$IMAGE:$STAGE" --raw > manifest.json
+          jq -e --arg amd64 "$amd64" --arg arm64 "$arm64" '
+            (.manifests | length) == 2 and
+            ([.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64" and .digest == $amd64)] | length) == 1 and
+            ([.manifests[] | select(.platform.os == "linux" and .platform.architecture == "arm64" and .digest == $arm64)] | length) == 1' manifest.json
+          # Recheck the draft immediately before any public version/latest mutation.
+          gh release view "$RELEASE_TAG" --json isDraft,assets > release-assets.json
+          jq -e --arg version "${RELEASE_TAG#v}" '
+            .isDraft == true and
+            ([.assets[] | select(.size > 0) | .name] as $assets |
+              ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"] |
+              all(.[]; . as $target | $assets | index("artex-" + $version + "-" + $target + ".zip") != null)) and
+            any(.assets[]; .name == "SHA256SUMS" and .size > 0)' release-assets.json
+          docker buildx imagetools create --tag "$IMAGE:$RELEASE_TAG" --tag "$IMAGE:latest" "$IMAGE:$STAGE"
+          docker buildx imagetools inspect "$IMAGE:$RELEASE_TAG" --format '{{json .Manifest}}' > image-manifest.json
+          digest=$(jq -er '.digest | select(test("^sha256:[a-f0-9]{64}$"))' image-manifest.json)
+          printf '%s@%s\n' "$IMAGE" "$digest" > IMAGE_DIGEST
+          gh release upload "$RELEASE_TAG" IMAGE_DIGEST --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --latest
+          printf 'Image: `%s@%s`\n\nFirst GHCR publication defaults to private. Set package visibility to public, then verify anonymous pulls of both platforms.\n' "$IMAGE" "$digest" >> "$GITHUB_STEP_SUMMARY"
