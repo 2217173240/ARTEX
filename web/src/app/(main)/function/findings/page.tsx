@@ -1456,9 +1456,7 @@ export default function FindingsPage() {
 
         {view === "cases" && (
           <FindingCaseList
-            renderRecords={(items, matchedIds) => (
-              <FindingsTable items={items} matchedIds={matchedIds} hideHeader={Boolean(matchedIds)} {...rowProps} />
-            )}
+            renderCaseRows={(caseRows) => <FindingsTable items={[]} caseRows={caseRows} {...rowProps} />}
             onTotal={setCaseTotal}
             refreshToken={caseRefresh}
             query={{ severity, status, vulnclass, task, query, sort }}

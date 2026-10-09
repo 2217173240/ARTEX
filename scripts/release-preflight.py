@@ -24,7 +24,8 @@ def main():
         raise SystemExit("Release tag must be an existing stable vMAJOR.MINOR.PATCH tag.")
     repo = os.environ["GITHUB_REPOSITORY"]
     def api(path):
-        request = urllib.request.Request(f"https://api.github.com/repos/{repo}/{path}", headers={
+        url = f"https://api.github.com/repos/{repo}" + ("/" + path if path else "")
+        request = urllib.request.Request(url, headers={
             "Authorization": "Bearer " + os.environ["GITHUB_TOKEN"],
             "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2026-03-10"})
         with urllib.request.urlopen(request, timeout=30) as response:

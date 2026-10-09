@@ -379,3 +379,49 @@ test("member selection excludes nonmatches and read-only members retain viewing 
     0,
   );
 });
+
+test("a standalone case page has one header and mixed folders preserve row order and selection", () => {
+  const table = tableHarness([]);
+  const singles = Array.from({ length: 17 }, (_, i) => ({
+    finding: finding({ id: String(i), finding_id: String(i), name: `Report ${i}` }),
+    matched_ids: [],
+  }));
+  let tree = table.render({ caseRows: singles });
+  assert.equal(elements(tree).filter((node) => node.type === "table").length, 1);
+  assert.equal(elements(tree).filter((node) => node.type === "thead").length, 1);
+  assert.equal(elements(tree).filter((node) => node.type === "th").length, 9);
+  const folder = {
+    case: {
+      id: "42",
+      title: "Merged",
+      count: 2,
+      task_id: "1",
+      version: 1,
+      report_version: 1,
+      critical: 0,
+      high: 2,
+      medium: 0,
+      low: 0,
+    },
+    matched_ids: [7, 8],
+  };
+  let selected;
+  tree = table.render({
+    caseRows: [singles[0], folder, singles[1]],
+    onToggleSelectedPage: (ids) => {
+      selected = ids;
+    },
+  });
+  const links = elements(tree).filter(
+    (node) => node.type === "a" && /function\/findings\/(detail|case)/.test(node.props.href ?? ""),
+  );
+  assert.deepEqual(
+    links.slice(0, 3).map((node) => node.props.href),
+    ["/function/findings/detail?id=0", "/function/findings/case?id=42", "/function/findings/case?id=42"],
+  );
+  const header = table.find((node) => node.type === "Checkbox" && node.props["aria-label"] === "选择当前页全部");
+  header.props.onCheckedChange(true);
+  assert.deepEqual(Array.from(selected), ["0", "7", "8", "1"]);
+  assert.equal(elements(tree).filter((node) => node.type === "thead").length, 1);
+  assert.equal(elements(tree).filter((node) => node.type === "SelectTrigger").length, 2);
+});

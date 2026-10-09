@@ -37,7 +37,7 @@ class PreflightTests(unittest.TestCase):
                      details_url="https://github.com/owner/repo/actions/runs/123")
         paths = []
         def response(request, timeout):
-            path = request.full_url.split("/owner/repo/")[1]
+            path = request.full_url.split("/owner/repo", 1)[1].lstrip("/")
             paths.append(path)
             if path == "":
                 data = {"default_branch": "main"}
@@ -70,7 +70,7 @@ class PreflightTests(unittest.TestCase):
 class UnmergedTagTests(unittest.TestCase):
     def test_green_unmerged_tag_cannot_enter_privileged_build(self):
         def response(request, timeout):
-            path = request.full_url.split("/owner/repo/")[1]
+            path = request.full_url.split("/owner/repo", 1)[1].lstrip("/")
             if path.startswith("git/ref/tags/"):
                 data = {"object": {"type": "commit", "sha": "unmerged"}}
             elif path == "":

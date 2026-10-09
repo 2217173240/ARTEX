@@ -21,6 +21,7 @@ import { useI18n } from "@/lib/i18n";
 import type {
   Finding,
   FindingCase,
+  FindingCaseListRow,
   FindingCasePage,
   FindingCaseReviewRun,
   FindingCaseSuggestion,
@@ -444,6 +445,7 @@ export function FindingCaseList({
   refreshToken = 0,
   presentation = "records",
   renderRecords,
+  renderCaseRows,
 }: {
   query: Omit<FindingQuery, "page" | "pageSize">;
   selectedIds?: Set<string>;
@@ -454,6 +456,7 @@ export function FindingCaseList({
   refreshToken?: number;
   presentation?: "records" | "task" | "asset";
   renderRecords?: (items: Finding[], matchedIds?: number[]) => React.ReactNode;
+  renderCaseRows?: (rows: FindingCaseListRow[]) => React.ReactNode;
 }) {
   const { t: uiText } = useI18n();
   const [page, setPage] = React.useState(1);
@@ -462,10 +465,11 @@ export function FindingCaseList({
   const [open, setOpen] = React.useState<Set<string>>(() => new Set());
   const [refresh, setRefresh] = React.useState(0);
   const key = JSON.stringify(query);
-  const originalRows = Boolean(renderRecords);
+  const originalRows = Boolean(renderRecords ?? renderCaseRows);
   const requestKey = JSON.stringify([key, page, originalRows]);
   const data = snapshot?.key === requestKey ? snapshot.value : null;
   const error = failure?.key === requestKey ? failure.message : "";
+  const cardRows = renderCaseRows ? [] : (data?.items ?? []);
   // biome-ignore lint/correctness/useExhaustiveDependencies: reset pagination when the filter fingerprint changes.
   React.useEffect(() => {
     setPage(1);
@@ -538,7 +542,8 @@ export function FindingCaseList({
           })}
         </p>
       ) : null}
-      {data?.items.map((row) => {
+      {data && renderCaseRows ? renderCaseRows(data.items) : null}
+      {cardRows.map((row) => {
         if (row.case) {
           const group = row.case;
           return (
