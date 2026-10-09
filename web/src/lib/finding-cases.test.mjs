@@ -265,3 +265,30 @@ test("member mutation refresh reloads evidence even when the folder version is u
   assert.match(h.text(), /offline/);
   assert.deepEqual(rendered.at(-1), ["7"]);
 });
+
+test("finished review history is collapsed and failures are never duplicated", async () => {
+  const h = harness("FindingCaseReviewPanel", { taskId: "a" });
+  await h.flush();
+  await h.resolve(0, []);
+  await h.resolve(1, [
+    { conversation_id: 103, task_id: "a", state: "failed", error: "fixture failure" },
+    { conversation_id: 101, task_id: "a", state: "done", error: "" },
+  ]);
+  await h.flush();
+  const ids = () =>
+    h
+      .nodes()
+      .filter((node) => node.props?.run)
+      .map((node) => node.props.run.conversation_id);
+  assert.deepEqual(ids(), [103]);
+  h.nodes()
+    .find((node) => node.type === "Collapsible")
+    .props.onOpenChange(true);
+  await h.flush();
+  assert.deepEqual(ids(), [103, 101]);
+  h.nodes()
+    .find((node) => node.type === "Collapsible")
+    .props.onOpenChange(false);
+  await h.flush();
+  assert.deepEqual(ids(), [103]);
+});

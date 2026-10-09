@@ -4083,5 +4083,7 @@
   "至少 8 位，最多 72 字节": "At least 8 characters; up to 72 bytes",
   "与 ARTEX 登录密码独立。公网访问请使用 HTTPS。": "Separate from the ARTEX login password. Use HTTPS for public access.",
   "保存不会中断当前浏览器访问。可用无痕窗口检查验证弹窗；浏览器可能缓存凭据。关闭后保留账号密码，便于再次开启。": "Saving preserves access in this browser. Check the authentication prompt in a private window; browsers may cache credentials. Disabling retains the credentials for reuse.",
-  "保存访问验证": "Save access authentication"
+  "保存访问验证": "Save access authentication",
+  "收起整理历史（{count}）": "Hide review history ({count})",
+  "查看整理历史（{count}）": "View review history ({count})"
 }
