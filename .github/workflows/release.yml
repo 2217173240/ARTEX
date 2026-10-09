@@ -12,6 +12,9 @@ on:
 permissions:
   contents: read
 
+# Retried tag builds can restore trusted caches, but cannot overwrite main caches.
+cache-mode: read
+
 concurrency:
   group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
@@ -223,7 +226,6 @@ jobs:
             org.opencontainers.image.revision=${{ needs.prepare.outputs.commit }}
             org.opencontainers.image.licenses=AGPL-3.0
           cache-from: type=gha,scope=docker-${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=docker-${{ matrix.arch }}
       - name: Test application startup and embedded frontend
         env:
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}

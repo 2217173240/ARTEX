@@ -39,7 +39,11 @@ class PreflightTests(unittest.TestCase):
         def response(request, timeout):
             path = request.full_url.split("/owner/repo/")[1]
             paths.append(path)
-            if path.startswith("git/ref/tags/"):
+            if path == "":
+                data = {"default_branch": "main"}
+            elif path == "compare/tag-commit...main":
+                data = {"merge_base_commit": {"sha": "tag-commit"}}
+            elif path.startswith("git/ref/tags/"):
                 data = {"object": {"type": "tag", "sha": "annotated"}}
             elif path == "git/tags/annotated":
                 data = {"object": {"type": "commit", "sha": "tag-commit"}}
@@ -61,6 +65,31 @@ class PreflightTests(unittest.TestCase):
             self.assertIn("commit=tag-commit", output.read_text())
             self.assertIn("image=ghcr.io/owner/repo", output.read_text())
             self.assertFalse(any("workflow-head" in path for path in paths))
+
+
+class UnmergedTagTests(unittest.TestCase):
+    def test_green_unmerged_tag_cannot_enter_privileged_build(self):
+        def response(request, timeout):
+            path = request.full_url.split("/owner/repo/")[1]
+            if path.startswith("git/ref/tags/"):
+                data = {"object": {"type": "commit", "sha": "unmerged"}}
+            elif path == "":
+                data = {"default_branch": "main"}
+            elif path == "compare/unmerged...main":
+                data = {"merge_base_commit": {"sha": "older-common-base"}}
+            else:
+                self.fail("Unmerged code reached privileged release checks: " + path)
+            result = mock.MagicMock()
+            result.__enter__.return_value.read.return_value = json.dumps(data).encode()
+            return result
+        with tempfile.TemporaryDirectory() as directory:
+            output = pathlib.Path(directory) / "outputs"
+            with mock.patch.dict(os.environ, RELEASE_TAG="v1.2.3", GITHUB_REPOSITORY="owner/repo",
+                                 GITHUB_TOKEN="synthetic", GITHUB_OUTPUT=str(output)):
+                with mock.patch.object(preflight.urllib.request, "urlopen", side_effect=response):
+                    with self.assertRaisesRegex(SystemExit, "not been integrated"):
+                        preflight.main()
+            self.assertFalse(output.exists())
 
 
 if __name__ == "__main__":

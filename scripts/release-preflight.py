@@ -39,6 +39,13 @@ def main():
     else:
         raise SystemExit("Too many nested annotated tags.")
     sha = obj["sha"]
+    # A successful PR build alone does not authorize executing its code with
+    # release privileges. The tag must be an ancestor of the default branch.
+    metadata = api("")
+    default_branch = metadata["default_branch"]
+    comparison = api("compare/" + sha + "..." + urllib.parse.quote(default_branch, safe=""))
+    if comparison["merge_base_commit"]["sha"] != sha:
+        raise SystemExit("Release tag commit has not been integrated into the default branch.")
     for page in range(1, 1001):
         checks = api(f"commits/{sha}/check-runs?per_page=100&page={page}")["check_runs"]
         if any(qualified(check, sha, repo) for check in checks):
