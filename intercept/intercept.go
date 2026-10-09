@@ -71,6 +71,13 @@ func taskInfoFromCtx(ctx context.Context) (taskID, agentName string) {
 	return "", ""
 }
 
+// TaskIDFromContext identifies the originating task for bounded write tools.
+// An empty ID is the platform conversation context rather than a task context.
+func TaskIDFromContext(ctx context.Context) string {
+	taskID, _ := taskInfoFromCtx(ctx)
+	return taskID
+}
+
 func taskEmitFromCtx(ctx context.Context) func(db.Activity) {
 	f, _ := ctx.Value(taskEmitCtxKey).(func(db.Activity))
 	return f
@@ -340,7 +347,7 @@ const (
 // Judge default values.
 const (
 	defaultJudgeTimeoutSecs      = 15
-	defaultJudgeFailAction       = "allow"
+	defaultJudgeFailAction       = "deny"
 	defaultJudgeAskTimeoutSecs   = 300
 	defaultJudgeAskTimeoutAction = "deny"
 )
@@ -487,7 +494,9 @@ func (i *Interceptor) Judge(ctx context.Context, tool string, arguments json.Raw
 	rv := i.reviewer
 	i.mu.RUnlock()
 	if rv == nil {
-		return Decision{}, false, nil
+		rv = func(context.Context, int64, string, ReviewInput) (Decision, error) {
+			return Decision{}, errors.New("模型审批器未配置")
+		}
 	}
 
 	cctx := ctx

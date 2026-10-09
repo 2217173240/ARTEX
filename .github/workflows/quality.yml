@@ -98,6 +98,8 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: node --test src/lib/*.test.mjs
       - run: npx --no-install tsc --noEmit
+      - name: Check UI translation dictionary coverage
+        run: node scripts/i18n-audit.mjs
       - name: Build static mock UI
         env:
           NEXT_EXPORT: "1"

@@ -1,5 +1,7 @@
 "use client";
 
+import { useI18n } from "@/lib/i18n";
+
 import { CheckIcon } from "lucide-react";
 
 import { Input } from "@/components/ui/input";
@@ -45,6 +47,7 @@ export function ConfigField({
   isSecret: boolean;
   onChange: (v: unknown) => void;
 }) {
+  const { t: uiText } = useI18n();
   const id = `n-cfg-${def.key}`;
   const raw = asText(value);
   // 后端回显的掩码值：形如 "__masked__:…abc123"，尾部是原值的可辨识片段。
@@ -54,8 +57,8 @@ export function ConfigField({
   if (def.kind === "switch") {
     return (
       <div className="flex items-center gap-2 text-sm">
-        <Switch checked={value === true} onCheckedChange={onChange} aria-label={def.label} />
-        {def.label}
+        <Switch checked={value === true} onCheckedChange={onChange} aria-label={uiText(def.label)} />
+        {uiText(def.label)}
         {def.help && <span className="text-muted-foreground">（{def.help}）</span>}
       </div>
     );
@@ -64,7 +67,7 @@ export function ConfigField({
   if (def.kind === "select") {
     return (
       <div className="grid gap-2">
-        <Label>{def.label}</Label>
+        <Label>{uiText(def.label)}</Label>
         <Select value={raw || def.options?.[0]?.value} onValueChange={onChange}>
           <SelectTrigger>
             <SelectValue />
@@ -72,7 +75,7 @@ export function ConfigField({
           <SelectContent>
             {(def.options ?? []).map((o) => (
               <SelectItem key={o.value} value={o.value}>
-                {o.label}
+                {uiText(o.label)}
               </SelectItem>
             ))}
           </SelectContent>
@@ -120,7 +123,8 @@ export function ConfigField({
   const hint = masked ? (
     <p className="text-muted-foreground flex items-center gap-1 text-xs">
       <CheckIcon className="size-3" />
-      已保存{maskedTail ? `（尾号 ${maskedTail}）` : ""} · 填入新值即覆盖，清空则删除该项
+      {uiText("已保存")}
+      {maskedTail ? uiText("（尾号 {v0}）", { v0: maskedTail }) : ""} {uiText("· 填入新值即覆盖，清空则删除该项")}
     </p>
   ) : (
     def.help && <p className="text-muted-foreground text-xs">{def.help}</p>
@@ -128,7 +132,7 @@ export function ConfigField({
 
   return (
     <div className="grid gap-2">
-      <Label htmlFor={id}>{def.label}</Label>
+      <Label htmlFor={id}>{uiText(def.label)}</Label>
       {control()}
       {hint}
     </div>
@@ -137,6 +141,7 @@ export function ConfigField({
 
 // FilterSummary 把过滤条件摘要成一行，让卡片不用展开就能看出这个渠道推什么。
 export function FilterSummary({ filter }: { filter: NotificationFilter }) {
+  const { t: uiText } = useI18n();
   const parts: string[] = [];
   if (filter.min_severity) {
     parts.push(SEVERITY_OPTIONS.find((o) => o.value === filter.min_severity)?.label ?? filter.min_severity);
@@ -147,7 +152,7 @@ export function FilterSummary({ filter }: { filter: NotificationFilter }) {
   if (filter.asset_ids?.length) parts.push(`${filter.asset_ids.length} 个资产`);
   if (filter.on_status_change) parts.push("含状态变更");
   if (parts.length === 0) {
-    return <p className="text-muted-foreground text-sm">全部漏洞</p>;
+    return <p className="text-muted-foreground text-sm">{uiText("全部漏洞")}</p>;
   }
   return <p className="text-muted-foreground text-sm">{parts.join(" · ")}</p>;
 }

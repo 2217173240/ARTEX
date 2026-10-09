@@ -64,7 +64,7 @@ npm audit --audit-level=high
 
 修改采集脚本依赖时，在 `skills/api-recon/scripts` 中执行 `npm ci --ignore-scripts` 和 `npm audit --audit-level=high`。运行时需要系统 Chromium；Puppeteer Core 不下载浏览器。CI 对该依赖树执行同样的安装和审计。
 
-本 fork 的修复以当前源码为准，README 中沿用的上游镜像和发布包不一定包含这些改动。验证本 fork 请从源码构建。发布流程要求准确提交的 `quality` 已通过；Docker 发布还需维护者显式设置 `DOCKER_IMAGE` 目标和相应发布凭据。流水线没有配置目标时跳过镜像发布。工具链升级应更新 Dockerfile 的版本，并通过镜像检查。
+本 fork `2217173240/ARTEX` 尚无新的 Release；修复以当前源码为准，README 中沿用的上游镜像和发布包不一定包含这些改动。验证本 fork 请从源码构建。发布流程要求准确提交的 `quality` 已通过；Docker 发布还需维护者显式设置 `DOCKER_IMAGE` 目标和相应发布凭据。流水线没有配置目标时跳过镜像发布。工具链升级应更新 Dockerfile 的版本，并通过镜像检查。
 
 ## 提交问题和 PR
 
@@ -75,3 +75,5 @@ PR 描述写清问题、最终行为、测试及限制。引用历史 issue、PR
 本恢复版本以 `e6ec56999175509551a1e43a3ee3b053d0941bd9` 为原始基线；原上游为 `Autumn-27/ARTEX`。本地恢复档案收录 69 个 issue、65 个 PR，并保留历史元数据，档案位于 Git 仓库之外，尚未完整恢复讨论和全部原始版本。PR195 的 DoTTak 原提交 `78d0cd0503e3e8229ebb7799f52be758f0ef0579` 通过带 `-x` 的 cherry-pick 引入为 `053d776`；模型超时思路借鉴 r0th-m 候选提交 `9215eb0ef481391381cf2b1424d639f5feca5379` 后重新实现，该候选不是已认证的 PR127 快照，也未整体合入。
 
 日常维护优先 squash 合并；需要保留恢复出的历史 DAG 时可使用 merge commit。合入前确认 `quality` 检查对应待合入的准确 HEAD；新提交需要新的检查结果。单维护者仓库的零批准设置不代表已获得独立 GitHub 审阅。
+
+中文 / English 界面使用声明式 React locale，默认 `zh-CN`；只翻译应用拥有的界面文本，保留用户内容与原始证据。翻译字典沿用 hongvincent 的 PR193（`1368a9422de0e083f31e543b31e231730f1ba675`）并补充运行时键；约定及审计命令见 [i18n README](web/src/lib/i18n/README.md)。漏洞归并引入 RuoJi6（ji ruo）的源提交 `24d4726`，以带来源记录的 cherry-pick 落为 `121716a`，后续适配保留原报告和不可变证据。

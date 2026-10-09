@@ -59,6 +59,7 @@ func TestBearerAndCookieAuthenticationWithCSRF(t *testing.T) {
 	}{
 		{"cookie same origin", "http://localhost:8787", "", true, 204},
 		{"cookie dev frontend", "http://localhost:3000", "", true, 204},
+		{"cookie dev script frontend", "http://localhost:5173", "", true, 204},
 		{"cookie foreign origin", "https://attacker.test", "", true, 403},
 		{"cookie foreign port", "http://localhost:9999", "", true, 403},
 		{"Bearer API", "https://attacker.test", token, false, 204},
@@ -114,6 +115,7 @@ func TestBrowserOriginProxyAndLAN(t *testing.T) {
 		want                                bool
 	}{
 		{"LAN dev", "192.168.1.2:8787", "http://192.168.1.2:3000", "192.168.1.3:1234", "", true},
+		{"LAN dev script", "192.168.1.2:8787", "http://192.168.1.2:5173", "192.168.1.3:1234", "", true},
 		{"different LAN host", "192.168.1.2:8787", "http://192.168.1.3:3000", "192.168.1.3:1234", "", false},
 		{"public hostname port transition", "example.test:8787", "http://example.test:3000", "192.168.1.3:1234", "", false},
 		{"Next rewrite", "localhost:8787", "http://192.168.1.2:3000", "127.0.0.1:1234", "192.168.1.2:3000", true},

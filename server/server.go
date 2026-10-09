@@ -132,6 +132,8 @@ type provEntry struct {
 // taskID + mergeable let the drainer coalesce several event triggers (finding/goal)
 // from the SAME task into one conversation before it starts (interval fires don't merge).
 type triggeredRun struct {
+	conversationID int64 // pre-created manual finding review; never coalesced
+
 	agentKey  string
 	title     string
 	message   string // 事件正文(触发语 + 工具/入参/返回等);不含任务描述/目标头
@@ -735,6 +737,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/tasks/{id}/intents/{iid}/messages", s.sendWorkerMessage)
 	mux.HandleFunc("POST /api/tasks/{id}/intents/{iid}/rerun", s.rerunIntent)    // 重跑单条 blocked/exhausted/stopped 意图
 	mux.HandleFunc("POST /api/tasks/{id}/intents/rerun-blocked", s.rerunBlocked) // 批量重跑本任务全部 blocked 意图
+	mux.HandleFunc("POST /api/tasks/rerun-blocked-all", s.rerunBlockedAll)
 	mux.HandleFunc("POST /api/active", s.setActive)
 
 	mux.HandleFunc("GET /api/llm", s.getLLM)
@@ -758,6 +761,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/exploration/frontier", s.frontier)
 	mux.HandleFunc("GET /api/exploration/findings", s.findings)
 	mux.HandleFunc("GET /api/exploration/findings/groups", s.findingGroups)
+	mux.HandleFunc("GET /api/exploration/finding-cases", s.listFindingCases)
+	mux.HandleFunc("POST /api/exploration/finding-cases", s.mergeFindingCase)
+	mux.HandleFunc("GET /api/exploration/finding-cases/{id}", s.getFindingCase)
+	mux.HandleFunc("GET /api/exploration/finding-cases/{id}/members", s.getFindingCaseMembers)
+	mux.HandleFunc("DELETE /api/exploration/finding-cases/{id}/members/{fid}", s.removeFindingCaseMember)
+	mux.HandleFunc("PUT /api/exploration/finding-cases/{id}/report", s.updateCaseReport)
+	mux.HandleFunc("GET /api/exploration/finding-case-suggestions", s.caseSuggestions)
+	mux.HandleFunc("POST /api/exploration/finding-case-suggestions/{id}", s.resolveCaseSuggestion)
+	mux.HandleFunc("POST /api/exploration/finding-case-review", s.reviewFindingCases)
+	mux.HandleFunc("GET /api/exploration/finding-case-review", s.caseReviewRuns)
 	mux.HandleFunc("GET /api/exploration/findings/asset-tree", s.findingAssetTree)
 	mux.HandleFunc("GET /api/exploration/findings/stats", s.findingStats)
 	mux.HandleFunc("GET /api/exploration/findings/export", s.findingsExport)
@@ -1043,6 +1056,7 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 	}
 	list := s.m.List()
 	metrics, _ := s.m.PG().TaskListMetricsAll()
+	distinct, _ := s.m.pg.DistinctFindingStatsByTask()
 	archiveBlockers, _ := s.m.PG().TaskArchiveBlockers()
 	dtos := make([]TaskDTO, 0, len(list))
 	for _, t := range list {
@@ -1059,6 +1073,7 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 		dto.GoalsTotal = metric.Goals.Total
 		dto.GoalsMet = metric.Goals.Met
 		dto.InFlight = metric.RunningIntents
+		dto.DistinctFindings = distinct[t.ID]
 		dto.Findings = FindingSeverityDTO{
 			Critical: metric.Findings.Critical,
 			High:     metric.Findings.High,
@@ -2055,6 +2070,11 @@ func (s *Server) findingStats(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	st.Distinct, err = s.m.pg.DistinctFindingStats("")
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
 	writeJSON(w, 200, st)
 }
 
@@ -2077,6 +2097,14 @@ func (s *Server) getFinding(w http.ResponseWriter, r *http.Request) {
 	}
 	assets := s.resolveAssetIDs(f.AssetIDs)
 	dto := findingFromDB(f, assets)
+	cid, err := s.m.pg.FindingCaseID(f.ID)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if cid > 0 {
+		dto.CaseID = i64s(cid)
+	}
 	if contextTaskID := strings.TrimSpace(r.URL.Query().Get("context_task")); contextTaskID != "" {
 		contextTask := s.m.ResolveTask(contextTaskID)
 		if contextTask == nil {
@@ -2141,6 +2169,14 @@ func (s *Server) findingsExport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var casePlan *findingCaseExportPlan
+	if q.Get("mode") == "consolidated" {
+		fs, casePlan, err = s.prepareFindingCaseExport(fs)
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+	}
 	stage, err := os.MkdirTemp("", "artex-finding-export-")
 	if err != nil {
 		writeErr(w, 500, err.Error())
@@ -2150,6 +2186,13 @@ func (s *Server) findingsExport(w http.ResponseWriter, r *http.Request) {
 	if err = s.evidenceStore().StageFindingsExport(r.Context(), fs, stage, format == "md-zip"); err != nil {
 		evidenceError(w, err)
 		return
+	}
+	if casePlan != nil {
+		fs, err = s.consolidateFindingCaseExport(fs, casePlan, q.Get("include_originals") == "true")
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
 	}
 	now := time.Now()
 	stamp := now.Format("20060102-150405")

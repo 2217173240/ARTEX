@@ -1,5 +1,7 @@
 "use client";
 
+import { useI18n } from "@/lib/i18n";
+
 import * as React from "react";
 
 import { EllipsisVertical, KeyRound, LogOut } from "lucide-react";
@@ -28,6 +30,7 @@ export function NavUser({
     readonly avatar: string;
   };
 }) {
+  const { t: uiText } = useI18n();
   const { isMobile } = useSidebar();
   const [pwOpen, setPwOpen] = React.useState(false);
 
@@ -79,12 +82,12 @@ export function NavUser({
             <DropdownMenuSeparator />
             <DropdownMenuItem onClick={() => setPwOpen(true)}>
               <KeyRound />
-              修改密码
+              {uiText("修改密码")}
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem onClick={handleLogout} className="text-destructive focus:text-destructive">
               <LogOut />
-              退出登录
+              {uiText("退出登录")}
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

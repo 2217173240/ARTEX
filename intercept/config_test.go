@@ -208,7 +208,7 @@ func TestJudgeDisabledAndDefaults(t *testing.T) {
 			return Decision{}, nil
 		})
 		cfg, err := ic.GetJudgeConfig()
-		if err != nil || cfg.Enabled || cfg.FailAction != "allow" || cfg.Prompt != DefaultJudgePrompt || cfg.TimeoutSeconds != defaultJudgeTimeoutSecs || cfg.AskTimeoutSeconds != defaultJudgeAskTimeoutSecs || cfg.AskTimeoutAction != defaultJudgeAskTimeoutAction {
+		if err != nil || cfg.Enabled || cfg.FailAction != "deny" || cfg.Prompt != DefaultJudgePrompt || cfg.TimeoutSeconds != defaultJudgeTimeoutSecs || cfg.AskTimeoutSeconds != defaultJudgeAskTimeoutSecs || cfg.AskTimeoutAction != defaultJudgeAskTimeoutAction {
 			t.Fatalf("defaults changed: %+v err=%v", cfg, err)
 		}
 		if _, judged, err := ic.Judge(t.Context(), "Bash", []byte(`{}`)); judged || err != nil {
@@ -277,5 +277,35 @@ func TestJudgeModelFailureUsesConfiguredAction(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestJudgeUnconfiguredFailureDoesNotApprove(t *testing.T) {
+	for _, failure := range []string{"missing_reviewer", "model_error", "invalid_verdict"} {
+		t.Run(failure, func(t *testing.T) {
+			ic := New((&configTestStore{settings: map[string]string{settingJudgeEnabled: "true"}}).open(t))
+			if failure != "missing_reviewer" {
+				ic.SetReviewer(func(context.Context, int64, string, ReviewInput) (Decision, error) {
+					if failure == "model_error" {
+						return Decision{}, errors.New("fixture provider unavailable")
+					}
+					return Decision{}, nil
+				})
+			}
+			decision, judged, err := ic.Judge(t.Context(), "Bash", []byte(`{}`))
+			if err != nil || !judged || decision.Action != "deny" || !decision.ModelFallback {
+				t.Fatalf("unreviewed request escaped default denial: %+v judged=%v err=%v", decision, judged, err)
+			}
+		})
+	}
+}
+
+func TestTaskIDFromContextPreservesOrigin(t *testing.T) {
+	if TaskIDFromContext(t.Context()) != "" {
+		t.Fatal("platform context acquired a task")
+	}
+	ctx := WithTaskContext(t.Context(), "17", "fixture", nil)
+	if TaskIDFromContext(ctx) != "17" {
+		t.Fatal("task context was lost")
 	}
 }

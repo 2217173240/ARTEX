@@ -1,5 +1,7 @@
 import ts from "typescript";
 
+const translateUI = (text, params = {}) => text.replace(/\{(\w+)\}/g, (match, key) => String(params[key] ?? match));
+
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
@@ -28,7 +30,9 @@ function deferred() {
 const sameDeps = (before, after) =>
   before && after && before.length === after.length && before.every((value, index) => Object.is(value, after[index]));
 
-function pageHarness(view = "asset", { deferAssetTree = false } = {}) {
+function pageHarness(view = "asset", { deferAssetTree = false, storage = new Map(), taskOptions = [] } = {}) {
+  if (!storage.has("artex_finding_list_preferences"))
+    storage.set("artex_finding_list_preferences", JSON.stringify({ view }));
   const hooks = [];
   const effects = [];
   const timers = new Map();
@@ -36,6 +40,7 @@ function pageHarness(view = "asset", { deferAssetTree = false } = {}) {
   const groupRequests = [];
   const treeRequests = [];
   const deletes = [];
+  const statusUpdates = [];
   const exports = [];
   const toasts = [];
   let nextHook = 0;
@@ -82,7 +87,7 @@ function pageHarness(view = "asset", { deferAssetTree = false } = {}) {
       });
     },
   };
-  const stats = { total: 0, pending: 0, critical: 0, high: 0, medium: 0, low: 0, vulnclasses: [], tasks: [] };
+  const stats = { total: 0, pending: 0, critical: 0, high: 0, medium: 0, low: 0, vulnclasses: [], tasks: taskOptions };
   const api = {
     activeFindingRetests: async () => [],
     findingStats: async () => stats,
@@ -107,6 +112,11 @@ function pageHarness(view = "asset", { deferAssetTree = false } = {}) {
       deletes.push(request);
       return request.promise;
     },
+    setFindingStatus(id, status) {
+      const request = { id, status, ...deferred() };
+      statusUpdates.push(request);
+      return request.promise;
+    },
     exportFindings: async (options) => {
       exports.push(options);
     },
@@ -119,9 +129,14 @@ function pageHarness(view = "asset", { deferAssetTree = false } = {}) {
     react: React,
     "react/jsx-runtime": { jsx: (type, props) => ({ type, props }), jsxs: (type, props) => ({ type, props }) },
     "@/lib/api": { api },
+    "@/lib/i18n": {
+      useI18n: () => ({
+        t: translateUI,
+      }),
+    },
     "@/lib/local-storage.client": {
-      getLocalStorageValue: () => JSON.stringify({ view }),
-      setLocalStorageValue: () => undefined,
+      getLocalStorageValue: (key) => storage.get(key),
+      setLocalStorageValue: (key, value) => storage.set(key, value),
     },
     "@/lib/status": { statusMeta: () => ({ label: "status" }) },
     "@/lib/utils": { cn: (...values) => values.filter(Boolean).join(" ") },
@@ -196,6 +211,8 @@ function pageHarness(view = "asset", { deferAssetTree = false } = {}) {
     groupRequests,
     treeRequests,
     deletes,
+    statusUpdates,
+    storage,
     exports,
     toasts,
     visibleText: () => text(tree),
@@ -215,6 +232,26 @@ function pageHarness(view = "asset", { deferAssetTree = false } = {}) {
         (hook) => hook?.value && typeof hook.value === "object" && "items" in hook.value && "loaded" in hook.value,
       )?.value,
     rows: () => Array.from(find("FindingsTable").items, (finding) => finding.finding_id),
+    selected: () => [...find("FindingsTable").selectedIds],
+    async bulkStatus(status) {
+      find("Select", (props) => props.value === "").onValueChange(status);
+      await flush();
+    },
+    async bulkDelete() {
+      find("Button", (props) => text(props.children).trim() === "删除所选").onClick();
+      await flush();
+      find("Button", (props) => props.variant === "destructive" && text(props.children).trim() === "删除").onClick();
+      await flush();
+    },
+    async changeTask(task) {
+      find(
+        "Select",
+        (props) =>
+          props.value === "all" &&
+          elements({ props }).some((node) => node.type === "SelectItem" && node.props.value === "1"),
+      ).onValueChange(task);
+      await flush();
+    },
     async selectAsset(scope) {
       find("AssetTree").onSelect(scope);
       await flush();
@@ -727,7 +764,7 @@ test("returning to an earlier filter cannot revive an obsolete child request", a
   await page.changeSeverity("all");
   await page.resolveGroups(2, [group()], 1);
   await page.resolve(0, [finding("obsolete-child")], 1);
-  await page.expandGroup();
+  // The restored query keeps its expanded group and starts a fresh child request.
   assert.equal(page.hasTable(), false);
   assert.equal(page.requests.length, 2);
   await page.resolve(1, [finding("current-child")], 1);
@@ -825,4 +862,68 @@ test("group-list page-size navigation resets to page one and rejects the old pag
   assert.equal(page.paginationCount(), 0);
   await page.resolveGroups(2, [group("new-size")], 30);
   assert.match(page.visibleText(), /group-new-size/);
+});
+
+test("selected bulk status preserves failed selection and reports individual failures", async () => {
+  const page = pageHarness("flat");
+  await page.flush();
+  await page.resolve(0, [finding("1"), finding("2")], 2);
+  await page.selectFinding("1");
+  await page.selectFinding("2");
+  await page.bulkStatus("fixed");
+  assert.equal(page.statusUpdates[0].id, "1");
+  page.statusUpdates[0].resolve({});
+  await page.flush();
+  assert.equal(page.statusUpdates[1].id, "2");
+  page.statusUpdates[1].reject(new Error("permission denied"));
+  await page.flush();
+  assert.deepEqual(page.selected(), ["2"]);
+  assert.match(page.visibleText(), /#2: permission denied/);
+});
+
+test("selected bulk delete completes other records after a failure", async () => {
+  const page = pageHarness("flat");
+  await page.flush();
+  await page.resolve(0, [finding("1"), finding("2")], 2);
+  await page.selectFinding("1");
+  await page.selectFinding("2");
+  await page.bulkDelete();
+  page.deletes[0].reject(new Error("cannot delete"));
+  await page.flush();
+  assert.equal(page.deletes[1].id, "2");
+  page.deletes[1].resolve({ deleted: true });
+  await page.flush();
+  assert.deepEqual(page.selected(), ["1"]);
+  assert.match(page.visibleText(), /#1: cannot delete/);
+});
+
+test("task group expansion survives returning from a detail route under the same filter", async () => {
+  const storage = new Map();
+  const first = pageHarness("grouped", { storage });
+  await first.flush();
+  await first.resolveGroups(0, [group()], 1);
+  await first.expandGroup();
+  await first.resolve(0, [finding("1")], 1);
+  const back = pageHarness("grouped", { storage });
+  await back.flush();
+  await back.resolveGroups(0, [group()], 1);
+  assert.equal(back.requests.length, 1);
+  await back.resolve(0, [finding("1")], 1);
+  assert.deepEqual(back.rows(), ["1"]);
+});
+
+test("selected task autoopens once and a deliberate collapse persists on back", async () => {
+  const storage = new Map([["artex_finding_list_preferences", JSON.stringify({ view: "grouped", task: "1" })]]);
+  const first = pageHarness("grouped", { storage, taskOptions: [{ id: 1 }] });
+  await first.flush();
+  await first.resolveGroups(0, [group()], 1);
+  assert.equal(first.requests.length, 1);
+  await first.resolve(0, [finding("1")], 1);
+  await first.expandGroup();
+  assert.equal(first.hasTable(), false);
+  const back = pageHarness("grouped", { storage, taskOptions: [{ id: 1 }] });
+  await back.flush();
+  await back.resolveGroups(0, [group()], 1);
+  assert.equal(back.requests.length, 0);
+  assert.equal(back.hasTable(), false);
 });

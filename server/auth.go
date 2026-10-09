@@ -326,7 +326,7 @@ func (s *Server) authLogout(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
-// Allow same origin, plus the same-host local/LAN Next dev frontend on port 3000.
+// Allow same origin and the documented same-host local/LAN development ports.
 func allowedBrowserOrigin(r *http.Request, origin string) bool {
 	u, err := url.Parse(origin)
 	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
@@ -348,7 +348,8 @@ func allowedBrowserOrigin(r *http.Request, origin string) bool {
 	backend, err := url.Parse("http://" + r.Host)
 	ip := net.ParseIP(u.Hostname())
 	local := u.Hostname() == "localhost" || ip.IsLoopback() || ip.IsPrivate()
-	return err == nil && local && scheme == "http" && u.Scheme == "http" && backend.Port() == "8787" && u.Port() == "3000" && u.Hostname() == backend.Hostname()
+	devPort := u.Port() == "3000" || u.Port() == "5173"
+	return err == nil && local && scheme == "http" && u.Scheme == "http" && backend.Port() == "8787" && devPort && u.Hostname() == backend.Hostname()
 }
 func allowBrowserMutation(r *http.Request) bool {
 	if r.Method == "GET" || r.Method == "HEAD" || r.Method == "OPTIONS" || strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {

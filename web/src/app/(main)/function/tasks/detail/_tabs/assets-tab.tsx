@@ -1,5 +1,7 @@
 "use client";
 
+import { useI18n } from "@/lib/i18n";
+
 import * as React from "react";
 
 import {
@@ -132,6 +134,7 @@ function Chips({ items, mono }: { items: string[]; mono?: boolean }) {
 }
 
 function SourceCell({ asset }: { asset: Asset }) {
+  const { t: uiText } = useI18n();
   const source = firstText([asset.task_source], "legacy");
   const summary = firstText([asset.task_source_summary], "由历史任务资产关联迁移，暂无更详细来源说明");
   return (
@@ -146,7 +149,10 @@ function SourceCell({ asset }: { asset: Asset }) {
           <span className="font-medium">{taskAssetSourceLabel(source)}</span>
           <span className="[overflow-wrap:anywhere]">{summary}</span>
           {asset.task_source_node_id ? (
-            <span className="font-mono opacity-80">来源节点 #{asset.task_source_node_id}</span>
+            <span className="font-mono opacity-80">
+              {uiText("来源节点 #")}
+              {asset.task_source_node_id}
+            </span>
           ) : null}
         </div>
       </TooltipContent>
@@ -173,6 +179,7 @@ function AssetCard({
   size: number;
   total: number;
 }) {
+  const { t: uiText } = useI18n();
   const rows = React.Children.toArray(children);
   const pageCount = Math.max(1, Math.ceil(total / size));
   const start = total === 0 ? 0 : page * size + 1;
@@ -192,7 +199,7 @@ function AssetCard({
     tableRows = (
       <TableRow>
         <TableCell colSpan={cols.length} className="py-10 text-center text-muted-foreground text-sm">
-          当前分类暂无测试资产
+          {uiText("当前分类暂无测试资产")}
         </TableCell>
       </TableRow>
     );
@@ -227,7 +234,7 @@ function AssetCard({
               <SelectGroup>
                 {PAGE_SIZES.map((value) => (
                   <SelectItem key={value} value={String(value)}>
-                    {value} / 页
+                    {value} {uiText("/ 页")}
                   </SelectItem>
                 ))}
               </SelectGroup>
@@ -243,7 +250,7 @@ function AssetCard({
                 size="icon-sm"
                 disabled={page <= 0}
                 onClick={() => onPage(Math.max(0, page - 1))}
-                aria-label="上一页"
+                aria-label={uiText("上一页")}
               >
                 <ChevronLeftIcon />
               </Button>
@@ -255,7 +262,7 @@ function AssetCard({
                 size="icon-sm"
                 disabled={page + 1 >= pageCount}
                 onClick={() => onPage(Math.min(pageCount - 1, page + 1))}
-                aria-label="下一页"
+                aria-label={uiText("下一页")}
               >
                 <ChevronRightIcon />
               </Button>
@@ -278,6 +285,7 @@ function AddTaskAssetsSheet({
   open: boolean;
   taskId: string;
 }) {
+  const { t: uiText } = useI18n();
   const [scopeText, setScopeText] = React.useState("");
   const [saving, setSaving] = React.useState(false);
   const parsedScope = React.useMemo(() => parseCompanyScopeText(scopeText), [scopeText]);
@@ -293,11 +301,11 @@ function AddTaskAssetsSheet({
     try {
       const result = await api.registerTaskAssetScopes(taskId, parsedScope.rules);
       const assetSummary = result.assets_linked + result.assets_existing;
-      toast.success(`已登记 ${result.requested} 条范围，关联 ${assetSummary} 项域名/IP 资产`);
+      toast.success(uiText("已登记 {v0} 条范围，关联 {v1} 项域名/IP 资产", { v0: result.requested, v1: assetSummary }));
       onAttached();
       onOpenChange(false);
     } catch (reason) {
-      toast.error(`新增失败：${String((reason as Error)?.message ?? reason)}`);
+      toast.error(uiText("新增失败：{v0}", { v0: String((reason as Error)?.message ?? reason) }));
     } finally {
       setSaving(false);
     }
@@ -307,9 +315,9 @@ function AddTaskAssetsSheet({
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent className="w-full sm:max-w-xl">
         <SheetHeader>
-          <SheetTitle>新增测试资产</SheetTitle>
+          <SheetTitle>{uiText("新增测试资产")}</SheetTitle>
           <SheetDescription>
-            直接填写测试范围。域名和 IP 会创建或复用全局资产；CIDR、ICP 和关键词作为 Agent 范围上下文。
+            {uiText("直接填写测试范围。域名和 IP 会创建或复用全局资产；CIDR、ICP 和关键词作为 Agent 范围上下文。")}
           </SheetDescription>
         </SheetHeader>
         <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4">
@@ -324,14 +332,15 @@ function AddTaskAssetsSheet({
         </div>
         <SheetFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
-            取消
+            {uiText("取消")}
           </Button>
           <Button
             onClick={() => void attach()}
             disabled={saving || parsedScope.rules.length === 0 || parsedScope.errors.length > 0}
           >
             {saving ? <Spinner data-icon="inline-start" /> : <PlusIcon data-icon="inline-start" />}
-            登记 {parsedScope.rules.length > 0 ? parsedScope.rules.length : ""} 条
+            {uiText("登记")}
+            {parsedScope.rules.length > 0 ? parsedScope.rules.length : ""} {uiText("条")}
           </Button>
         </SheetFooter>
       </SheetContent>
@@ -340,6 +349,7 @@ function AddTaskAssetsSheet({
 }
 
 export function AssetsTab({ taskId }: { taskId: string }) {
+  const { t: uiText } = useI18n();
   const [rows, setRows] = React.useState<Asset[]>([]);
   const [total, setTotal] = React.useState(0);
   const [counts, setCounts] = React.useState<Record<string, number>>({});
@@ -404,7 +414,7 @@ export function AssetsTab({ taskId }: { taskId: string }) {
           setRows([]);
           setTotal(0);
         } else {
-          toast.error(`加载任务资产失败：${message}`);
+          toast.error(uiText("加载任务资产失败：{v0}", { v0: message }));
         }
       } finally {
         if (active && assetsRequestRef.current === request) {
@@ -438,11 +448,11 @@ export function AssetsTab({ taskId }: { taskId: string }) {
     setRemoving(true);
     try {
       await api.detachTaskAsset(taskId, removeTarget.id);
-      toast.success(`已将 ${assetLabel(removeTarget)} 移出当前任务`);
+      toast.success(uiText("已将 {v0} 移出当前任务", { v0: assetLabel(removeTarget) }));
       setRemoveTarget(null);
       refresh();
     } catch (reason) {
-      toast.error(`移出失败：${String((reason as Error)?.message ?? reason)}`);
+      toast.error(uiText("移出失败：{v0}", { v0: String((reason as Error)?.message ?? reason) }));
     } finally {
       setRemoving(false);
     }
@@ -453,8 +463,8 @@ export function AssetsTab({ taskId }: { taskId: string }) {
       variant="ghost"
       size="icon-sm"
       onClick={() => setRemoveTarget(asset)}
-      aria-label={`将资产 ${assetLabel(asset)} 移出任务`}
-      title="移出任务"
+      aria-label={uiText("将资产 {v0} 移出任务", { v0: assetLabel(asset) })}
+      title={uiText("移出任务")}
     >
       <Trash2Icon />
     </Button>
@@ -477,12 +487,15 @@ export function AssetsTab({ taskId }: { taskId: string }) {
     <div className="flex min-h-0 flex-1 flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0">
-          <h2 className="font-medium text-sm">测试资产</h2>
-          <p className="text-muted-foreground text-xs">当前任务共关联 {totalAll} 项资产</p>
+          <h2 className="font-medium text-sm">{uiText("测试资产")}</h2>
+          <p className="text-muted-foreground text-xs">
+            {uiText("当前任务共关联")}
+            {totalAll} {uiText("项资产")}
+          </p>
         </div>
         <Button size="sm" onClick={() => setAddOpen(true)}>
           <PlusIcon data-icon="inline-start" />
-          新增测试资产
+          {uiText("新增测试资产")}
         </Button>
       </div>
 
@@ -630,7 +643,7 @@ export function AssetsTab({ taskId }: { taskId: string }) {
                             className="inline-flex items-center gap-1 text-[11px]"
                           >
                             <KeyRoundIcon className="size-3 text-muted-foreground" />
-                            <span className="font-mono">{item.type || item.username || "认证"}</span>
+                            <span className="font-mono">{item.type || item.username || uiText("认证")}</span>
                           </span>
                         );
                       })
@@ -680,14 +693,14 @@ export function AssetsTab({ taskId }: { taskId: string }) {
       <AlertDialog open={Boolean(removeTarget)} onOpenChange={(open) => !open && !removing && setRemoveTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>移出当前任务？</AlertDialogTitle>
+            <AlertDialogTitle>{uiText("移出当前任务？")}</AlertDialogTitle>
             <AlertDialogDescription className="[overflow-wrap:anywhere]">
-              {removeTarget ? `将“${assetLabel(removeTarget)}”从当前任务的测试资产中移出。` : ""}
-              全局资产、关联流量和历史黑板锚点会继续保留。
+              {removeTarget ? uiText("将“{v0}”从当前任务的测试资产中移出。", { v0: assetLabel(removeTarget) }) : ""}
+              {uiText("全局资产、关联流量和历史黑板锚点会继续保留。")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={removing}>取消</AlertDialogCancel>
+            <AlertDialogCancel disabled={removing}>{uiText("取消")}</AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
               disabled={removing}
@@ -697,7 +710,7 @@ export function AssetsTab({ taskId }: { taskId: string }) {
               }}
             >
               {removing ? <Spinner data-icon="inline-start" /> : <Trash2Icon data-icon="inline-start" />}
-              {removing ? "移出中" : "确认移出"}
+              {removing ? uiText("移出中") : uiText("确认移出")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

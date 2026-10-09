@@ -1,5 +1,7 @@
 "use client";
 
+import { useI18n } from "@/lib/i18n";
+
 import * as React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -73,6 +75,7 @@ interface NavCollapsibleItemProps {
 }
 
 function CollapsedIconFallback({ title }: { title: string }) {
+  const { t: uiText } = useI18n();
   return (
     <span className="flex size-4 shrink-0 items-center justify-center rounded-xs font-medium text-[10px] outline">
       {title.slice(0, 1)}
@@ -85,6 +88,7 @@ function hasSubItems(item: NavMainItem): item is NavMainParentItem {
 }
 
 export function NavMain({ items }: NavMainProps) {
+  const { t: uiText } = useI18n();
   const rawPath = usePathname();
   // 路由段含中文，pathname 可能是百分号编码，解码后再与导航 url 比较，保证高亮命中。
   const path = (() => {
@@ -117,7 +121,7 @@ export function NavMain({ items }: NavMainProps) {
         <SidebarGroup key={group.id}>
           {group.label && (
             <SidebarGroupLabel className="group-data-[collapsible=icon]:pointer-events-none">
-              {group.label}
+              {uiText(group.label)}
             </SidebarGroupLabel>
           )}
           <SidebarGroupContent>
@@ -140,6 +144,7 @@ export function NavMain({ items }: NavMainProps) {
 }
 
 function NavItem({ item, isItemActive, isSubItemActive, isSubmenuOpen }: NavItemProps) {
+  const { t: uiText } = useI18n();
   const { state, isMobile } = useSidebar();
   const isCollapsedDesktop = state === "collapsed" && !isMobile;
 
@@ -164,6 +169,7 @@ function NavItem({ item, isItemActive, isSubItemActive, isSubmenuOpen }: NavItem
 // InterceptPendingBadge polls /api/intercept/pending every 5 s and shows a red
 // count badge when there are unresolved approval requests.
 function InterceptPendingBadge() {
+  const { t: uiText } = useI18n();
   const [count, setCount] = React.useState(0);
   React.useEffect(() => {
     let live = true;
@@ -171,11 +177,16 @@ function InterceptPendingBadge() {
       try {
         const list = await api.interceptPending();
         if (live) setCount(list.length);
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     }
     poll();
     const t = setInterval(poll, 5000);
-    return () => { live = false; clearInterval(t); };
+    return () => {
+      live = false;
+      clearInterval(t);
+    };
   }, []);
   if (count === 0) return null;
   return (
@@ -186,9 +197,10 @@ function InterceptPendingBadge() {
 }
 
 function NavLinkItem({ item, isActive, showIconFallback }: NavLinkItemProps) {
+  const { t: uiText } = useI18n();
   return (
     <SidebarMenuItem>
-      <SidebarMenuButton asChild aria-disabled={item.disabled} tooltip={item.title} isActive={isActive}>
+      <SidebarMenuButton asChild aria-disabled={item.disabled} tooltip={uiText(item.title)} isActive={isActive}>
         <Link
           prefetch={false}
           href={item.url}
@@ -196,7 +208,7 @@ function NavLinkItem({ item, isActive, showIconFallback }: NavLinkItemProps) {
           rel={item.newTab ? "noreferrer" : undefined}
         >
           <NavLinkIcon item={item} showFallback={showIconFallback} />
-          <span>{item.title}</span>
+          <span>{uiText(item.title)}</span>
         </Link>
       </SidebarMenuButton>
       {item.id === "approvals" ? <InterceptPendingBadge /> : <NavItemBadge badge={item.badge} />}
@@ -205,6 +217,7 @@ function NavLinkItem({ item, isActive, showIconFallback }: NavLinkItemProps) {
 }
 
 function NavLinkIcon({ item, showFallback }: NavLinkIconProps) {
+  const { t: uiText } = useI18n();
   const Icon = item.icon;
 
   if (Icon) {
@@ -212,22 +225,23 @@ function NavLinkIcon({ item, showFallback }: NavLinkIconProps) {
   }
 
   if (showFallback) {
-    return <CollapsedIconFallback title={item.title} />;
+    return <CollapsedIconFallback title={uiText(item.title)} />;
   }
 
   return null;
 }
 
 function NavDropdownItem({ item, isActive, isSubItemActive }: NavDropdownItemProps) {
+  const { t: uiText } = useI18n();
   const Icon = item.icon;
 
   return (
     <SidebarMenuItem>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <SidebarMenuButton tooltip={item.title} isActive={isActive} disabled={item.disabled}>
-            {Icon ? <Icon /> : <CollapsedIconFallback title={item.title} />}
-            <span>{item.title}</span>
+          <SidebarMenuButton tooltip={uiText(item.title)} isActive={isActive} disabled={item.disabled}>
+            {Icon ? <Icon /> : <CollapsedIconFallback title={uiText(item.title)} />}
+            <span>{uiText(item.title)}</span>
           </SidebarMenuButton>
         </DropdownMenuTrigger>
 
@@ -247,7 +261,7 @@ function NavDropdownItem({ item, isActive, isSubItemActive }: NavDropdownItemPro
                     className="flex items-center gap-2"
                   >
                     {SubIcon && <SubIcon />}
-                    <span>{subItem.title}</span>
+                    <span>{uiText(subItem.title)}</span>
                   </Link>
                 </DropdownMenuItem>
               );
@@ -260,15 +274,16 @@ function NavDropdownItem({ item, isActive, isSubItemActive }: NavDropdownItemPro
 }
 
 function NavCollapsibleItem({ item, isActive, defaultOpen, isSubItemActive }: NavCollapsibleItemProps) {
+  const { t: uiText } = useI18n();
   const Icon = item.icon;
 
   return (
     <Collapsible asChild defaultOpen={defaultOpen} className="group/collapsible">
       <SidebarMenuItem>
         <CollapsibleTrigger asChild>
-          <SidebarMenuButton tooltip={item.title} isActive={isActive} disabled={item.disabled}>
+          <SidebarMenuButton tooltip={uiText(item.title)} isActive={isActive} disabled={item.disabled}>
             {Icon && <Icon />}
-            <span>{item.title}</span>
+            <span>{uiText(item.title)}</span>
             <ChevronRight className="ml-auto transition-transform duration-200 group-data-[state=open]/collapsible:rotate-90" />
           </SidebarMenuButton>
         </CollapsibleTrigger>
@@ -293,7 +308,7 @@ function NavCollapsibleItem({ item, isActive, defaultOpen, isSubItemActive }: Na
                       rel={subItem.newTab ? "noreferrer" : undefined}
                     >
                       {SubIcon && <SubIcon />}
-                      <span>{subItem.title}</span>
+                      <span>{uiText(subItem.title)}</span>
                     </Link>
                   </SidebarMenuSubButton>
                 </SidebarMenuSubItem>
@@ -307,6 +322,7 @@ function NavCollapsibleItem({ item, isActive, defaultOpen, isSubItemActive }: Na
 }
 
 function NavItemBadge({ badge }: { badge?: NavBadge }) {
+  const { t: uiText } = useI18n();
   if (!badge) {
     return null;
   }

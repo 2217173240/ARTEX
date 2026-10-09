@@ -2,6 +2,8 @@ import { clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
 import ts from "typescript";
 
+const translateUI = (text, params = {}) => text.replace(/\{(\w+)\}/g, (match, key) => String(params[key] ?? match));
+
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -112,6 +114,11 @@ function tableHarness(items = [finding()]) {
     },
   };
   const modules = {
+    "@/lib/i18n": {
+      useI18n: () => ({
+        t: translateUI,
+      }),
+    },
     react: React,
     "react/jsx-runtime": { jsx, jsxs: jsx },
     "@/lib/utils": { cn: (...inputs) => twMerge(clsx(inputs)) },

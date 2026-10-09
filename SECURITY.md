@@ -18,6 +18,8 @@ Dependabot 检查 Go、前端和采集脚本的依赖。`quality` 在 PR 中检�
 
 ARTEX 的单管理员可以配置 MCP、模型接口和自定义 HTTP 工具，也可以执行命令；服务应只开放给可信操作员，并使用 HTTPS。允许配置本地和私有网络目标是产品能力。MCP、模型发现和自定义 HTTP 工具仅跟随同源重定向，SSE 提供的发送端点也必须同源，以保护配置的凭据；请直接配置最终接口地址。
 
-浏览器会话使用服务端签发的 HttpOnly、SameSite=Lax cookie，HTTPS 部署还设置 Secure；前端不持久化 JWT，也不将其放入 SSE URL。旧版浏览器会话升级后需要重新登录一次。命令行客户端继续使用 Bearer 认证。反向代理应保留外部 Host 并覆盖 `X-Forwarded-Proto`；Next 本机代理的转发 Host 只在后端确认连接来自 loopback 时采用。开发环境保留同一 localhost/私有 IP 上的前端 3000 → 后端 8787 连接。
+浏览器会话使用服务端签发的 HttpOnly、SameSite=Lax cookie，HTTPS 部署还设置 Secure；前端不持久化 JWT，也不将其放入 SSE URL。旧版浏览器会话升级后需要重新登录一次。命令行客户端继续使用 Bearer 认证。反向代理应保留外部 Host 并覆盖 `X-Forwarded-Proto`；Next 本机代理的转发 Host 只在后端确认连接来自 loopback 时采用。开发环境保留同一 localhost/私有 IP 上的前端 3000 或 5173 → 后端 8787 连接。
 
 运行时采集默认验证 TLS。授权的自签名目标可在采集配置中显式设置 `insecureTLS: true`，只对本次独立采集进程生效。`enrich.ProbeSite` 的证书跳过属于自签名目标/录制代理的探测能力，所发请求不携带配置密钥。审阅 CodeQL 时保留这些功能边界；确认的误报应逐条记录校验位置和理由。
+
+Worker 与 planner 将观察数据编码为 `<untrusted-data>` 并在系统提示中声明其不是指令；这是提示边界，不能保证完全防止提示注入。目标响应、工具输出及报告中的指令不增加操作权限。启用模型兜底审批时，缺失或新建配置默认在审批模型失败后拒绝执行；已有用户显式配置的失败动作继续保留。

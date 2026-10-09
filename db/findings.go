@@ -15,6 +15,9 @@ import (
 // DBFinding is a row in the standalone findings table. It persists across task
 // deletion unless the caller explicitly requests related finding cleanup.
 type DBFinding struct {
+	ExportCaseID    int64 // transient unified-export identity, never a finding handle
+	ExportMemberIDs []int64
+
 	TrafficCount          int
 	EvidenceVersion       int64
 	ReportEvidenceVersion int64
@@ -524,6 +527,8 @@ func (d *DB) ListFindingsForExport(f FindingFilter, ids []int64) ([]*DBFinding, 
 // and vuln-class filter — computed server-side so it stays exact regardless of
 // pagination.
 type FindingStats struct {
+	Distinct *FindingDistinctStats `json:"distinct,omitempty"`
+
 	Total       int                 `json:"total"`
 	Pending     int                 `json:"pending"`
 	Critical    int                 `json:"critical"`
@@ -655,13 +660,26 @@ func (d *DB) GetFinding(id int64) (*DBFinding, error) {
 // list, the per-task 发现 Tab, and the exploration graph alike. Deleting the node
 // cascades its edges + node_assets and nulls any activity referencing it. Returns
 // rows affected (0 = no finding with that id).
-func (d *DB) DeleteFinding(id int64) (n int64, err error) {
-	err = d.WithEvidenceTx(context.Background(), func(tx *sql.Tx) error {
+func (d *DB) DeleteFinding(id int64) (int64, error) {
+	return d.DeleteFindingInTask(context.Background(), 0, id)
+}
+
+func (d *DB) DeleteFindingInTask(ctx context.Context, taskID, id int64) (n int64, err error) {
+	err = d.WithEvidenceTx(ctx, func(tx *sql.Tx) error {
 		if err := LockFindingEvidenceTx(tx, id, nil); err != nil {
 			if errors.Is(err, ErrFindingNotFound) {
 				return nil
 			}
 			return err
+		}
+		if taskID > 0 {
+			var source sql.NullInt64
+			if err := tx.QueryRow(`SELECT task_id FROM findings WHERE id=$1`, id).Scan(&source); err != nil {
+				return err
+			}
+			if !source.Valid || source.Int64 != taskID {
+				return errors.New("finding is not owned by the context task")
+			}
 		}
 		var nodeID sql.NullInt64
 		if err := tx.QueryRow(`DELETE FROM findings WHERE id=$1 RETURNING node_id`, id).Scan(&nodeID); err != nil {
@@ -712,24 +730,73 @@ func (d *DB) SetFindingReportByNodeID(nodeID int64, report string) (int64, error
 // setFindingCol updates one text column on the standalone finding row AND mirrors
 // the new value into the originating exploration node's payload under jsonKey, so the
 // per-task 发现 Tab (which reads the node payload, not this table) stays in sync.
-// Returns rows affected (0 when no finding has that id); the node sync is best-effort.
+// Returns rows affected (0 when no finding has that id); node sync is transactional.
 // col and jsonKey MUST be trusted constants (they are interpolated into SQL) — never
 // pass user input.
-func (d *DB) setFindingCol(id int64, col, jsonKey, val string) (int64, error) {
-	var nodeID *int64
-	err := d.QueryRow(`UPDATE findings SET `+col+`=$1 WHERE id=$2 RETURNING node_id`, val, id).Scan(&nodeID)
-	if err == sql.ErrNoRows {
-		return 0, nil
+func (d *DB) setFindingCol(id int64, col, jsonKey, val string) (n int64, err error) {
+	err = d.WithEvidenceTx(context.Background(), func(tx *sql.Tx) error {
+		if err := LockFindingEvidenceTx(tx, id, nil); err != nil {
+			if errors.Is(err, ErrFindingNotFound) {
+				return nil
+			}
+			return err
+		}
+		var nodeID *int64
+		if err := tx.QueryRow(`UPDATE findings SET `+col+`=$1 WHERE id=$2 RETURNING node_id`, val, id).Scan(&nodeID); err != nil {
+			return err
+		}
+		if nodeID != nil {
+			if _, err := tx.Exec(`UPDATE exploration_nodes SET payload=jsonb_set(payload, '{`+jsonKey+`}', to_jsonb($1::text)) WHERE id=$2`, val, *nodeID); err != nil {
+				return err
+			}
+		}
+		n = 1
+		return nil
+	})
+	return
+}
+
+// MutateFindingRecord atomically edits one source-owned record using the normal
+// notification and node-payload semantics, serialized with archive queueing.
+func (d *DB) MutateFindingRecord(ctx context.Context, taskID, id int64, severity, status *string) error {
+	if severity == nil && status == nil {
+		return errors.New("provide severity or status")
 	}
-	if err != nil {
-		return 0, err
+	if severity != nil && !ValidSeverity(*severity) {
+		return errors.New("invalid severity")
 	}
-	if nodeID != nil {
-		_, _ = d.Exec(`UPDATE exploration_nodes
-			SET payload = jsonb_set(payload, '{`+jsonKey+`}', to_jsonb($1::text))
-			WHERE id = $2`, val, *nodeID)
+	if status != nil && !ValidFindingStatus(*status) {
+		return errors.New("invalid status")
 	}
-	return 1, nil
+	return d.WithEvidenceTx(ctx, func(tx *sql.Tx) error {
+		if err := LockFindingEvidenceTx(tx, id, nil); err != nil {
+			return err
+		}
+		var source sql.NullInt64
+		var nodeID sql.NullInt64
+		if err := tx.QueryRow(`SELECT task_id,node_id FROM findings WHERE id=$1`, id).Scan(&source, &nodeID); err != nil {
+			return err
+		}
+		if !source.Valid || source.Int64 != taskID {
+			return errors.New("finding is not owned by the context task")
+		}
+		if severity != nil {
+			if _, err := tx.Exec(`UPDATE findings SET severity=$1 WHERE id=$2`, *severity, id); err != nil {
+				return err
+			}
+			if nodeID.Valid {
+				if _, err := tx.Exec(`UPDATE exploration_nodes SET payload=jsonb_set(payload,'{severity}',to_jsonb($1::text)) WHERE id=$2`, *severity, nodeID.Int64); err != nil {
+					return err
+				}
+			}
+		}
+		if status != nil {
+			if _, _, _, _, err := SetFindingStatusTx(ctx, tx, id, *status); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // SetFindingSeverity updates one finding's severity (+ node payload sync). Returns
