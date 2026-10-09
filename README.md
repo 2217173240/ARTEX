@@ -52,6 +52,16 @@ AI 自主渗透测试系统（Go 后端 + Next.js 前端）
 [AegisHook 的审批详情组件](https://github.com/RuoJi6/AegisHook/blob/main/web/src/components/CallDetail.vue)，沿用 ARTEX 的组件和主题：
 
 
+## 任务与漏洞整理
+
+运行任务列表提供手动「重跑所有运行任务的 blocked」，仅恢复仍在运行任务中的执行出错意图，暂停及终态任务不参与。漏洞列表支持所选记录的批量状态修改和删除；单条失败时继续处理其他记录，并保留失败项供重试。
+
+同一实际缺陷的多条上报可归入漏洞文件夹并生成统一报告；原始报告、原始等级和不可变证据仍保留，可查看归并历史并手动移出成员。继承记录只读；`update_finding_record` / `delete_finding_record` 使用独立 `finding_id` 和来源 `task_id`，检查任务归属及归档状态，更新只修改等级或处置状态。
+
+任务归档包用于同一实例内的归档与恢复，依赖该实例保留的数据库关系；它不是可导入空数据库的可移植备份。
+
+界面默认简体中文，可在登录页、主界面和任务页切换 English；偏好加载后立即更新界面，无需重载。仅翻译应用界面文字，用户输入、目标名称、原始报告、证据、日志和工具输出保留原文。
+
 ## 资产同步（ScopeSentry）
 
 支持从 [ScopeSentry](https://github.com/Autumn-27/ScopeSentry) 直接同步资产数据，免去重复收集：
@@ -63,6 +73,8 @@ AI 自主渗透测试系统（Go 后端 + Next.js 前端）
 ---
 
 ## 安装
+
+> 本 fork `2217173240/ARTEX` 尚无新的 Release；以下上游发布包与镜像不保证包含本 fork 的改动，使用本 fork 请从源码构建。
 
 > 依赖数据库 **PostgreSQL**；探索需配置 **LLM**（`ANTHROPIC_API_KEY` 或 `OPENAI_API_KEY`，也可在 UI 里配）。
 
@@ -113,6 +125,8 @@ cp config.example.json config.json   # 填好 database 连接
 ### 方式四：从源码编译单二进制
 
 ```bash
+git clone https://github.com/2217173240/ARTEX.git
+cd ARTEX
 # 1) 前端静态导出
 cd web && npm ci && npm run build:static && cd ..
 # 2) 拷进内嵌目录
@@ -128,7 +142,7 @@ CGO_ENABLED=0 go build -tags embedui -o artex ./cmd/artex
 
 ```bash
 ./build.sh --release
-# 产物：dist/artex-0.3.3-*.zip
+# 产物：dist/artex-<version>-*.zip
 ```
 
 UPX 自解压二进制可能与部分 Linux 内核、虚拟化环境或安全策略不兼容，因此默认不启用。可用 `ARTEX_TARGETS` 自定义目标；确认目标运行环境兼容时，可显式传入 `--upx` 进一步缩小二进制：
@@ -200,6 +214,10 @@ CGO_ENABLED=0 go build -tags embedui -o artex ./cmd/artex
 ```
 
 ---
+
+## 运行诊断
+
+`./artex doctor` 只读检查配置、目录、可选依赖、数据库连通性和 LLM 配置；不启动服务、不迁移数据库、不调用模型。可用 `./artex doctor -data ./data -json` 输出 JSON。依赖检查仅确认 PATH 中存在，不能代替实际运行验证。
 
 ## 配置
 
