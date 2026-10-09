@@ -1,5 +1,7 @@
 "use client";
 
+import { useI18n } from "@/lib/i18n";
+
 import * as React from "react";
 
 import { useRouter } from "next/navigation";
@@ -78,6 +80,7 @@ function groupBy(items: SearchItem[]) {
 }
 
 export function SearchDialog() {
+  const { t: uiText } = useI18n();
   const [open, setOpen] = React.useState(false);
   const [query, setQuery] = React.useState("");
   const router = useRouter();
@@ -112,7 +115,7 @@ export function SearchDialog() {
     groupBy(items).map(({ group, items: groupItems }, index) => (
       <React.Fragment key={group}>
         {index > 0 && <CommandSeparator />}
-        <CommandGroup heading={group}>
+        <CommandGroup heading={uiText(group)}>
           {groupItems.map((item) => (
             <CommandItem
               disabled={item.disabled}
@@ -122,7 +125,7 @@ export function SearchDialog() {
             >
               <span className="flex min-w-0 items-center gap-2">
                 {item.icon && <item.icon />}
-                <span className="truncate">{item.label}</span>
+                <span className="truncate">{uiText(item.label)}</span>
               </span>
             </CommandItem>
           ))}
@@ -138,16 +141,16 @@ export function SearchDialog() {
         className="px-0! font-normal text-muted-foreground hover:no-underline"
       >
         <Search data-icon="inline-start" />
-        Search
+        {uiText("搜索")}
         <kbd className="inline-flex h-5 select-none items-center gap-1 rounded border bg-muted px-1.5 font-medium text-[10px]">
           <span className="text-xs">⌘</span>J
         </kbd>
       </Button>
       <CommandDialog open={open} onOpenChange={handleOpenChange}>
         <Command>
-          <CommandInput placeholder="Search dashboards, users, and more…" value={query} onValueChange={setQuery} />
+          <CommandInput placeholder={uiText("搜索页面…")} value={query} onValueChange={setQuery} />
           <CommandList>
-            <CommandEmpty>No results found.</CommandEmpty>
+            <CommandEmpty>{uiText("未找到结果")}</CommandEmpty>
             {query ? renderGroups(searchItems) : renderGroups(recommendations)}
           </CommandList>
         </Command>

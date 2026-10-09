@@ -22,6 +22,7 @@ import { Separator } from "@/components/ui/separator";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
+import { useI18n } from "@/lib/i18n";
 import { statusMeta } from "@/lib/status";
 import type { Finding, FindingStatus, Severity } from "@/lib/types";
 
@@ -48,13 +49,14 @@ function fmtTime(ts: string) {
 function FieldRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex items-start justify-between gap-3 py-2.5">
-      <span className="shrink-0 pt-0.5 text-xs text-muted-foreground">{label}</span>
+      <span className="shrink-0 pt-0.5 text-muted-foreground text-xs">{label}</span>
       <div className="flex min-w-0 flex-col items-end gap-1 text-right text-sm">{children}</div>
     </div>
   );
 }
 
 function FindingDetailInner() {
+  const { t: uiText } = useI18n();
   const searchParams = useSearchParams();
   const id = searchParams.get("id") ?? "";
   const contextTaskId = searchParams.get("context_task") ?? "";
@@ -62,20 +64,33 @@ function FindingDetailInner() {
   const [loaded, setLoaded] = React.useState(false);
   const [tab, setTab] = React.useState("overview");
 
-  const load = React.useCallback(() => {
+  const [loadError, setLoadError] = React.useState("");
+  const [retry, setRetry] = React.useState(0);
+  const load = React.useCallback(() => setRetry((current) => current + 1), []);
+  React.useEffect(() => {
+    void retry;
+    let active = true;
+    setLoadError("");
+    setLoaded(false);
     if (!id) {
       setLoaded(true);
       return;
     }
     api
       .getFinding(id, contextTaskId || undefined)
-      .then((f) => setFinding(f))
-      .catch(() => setFinding(null))
-      .finally(() => setLoaded(true));
-  }, [contextTaskId, id]);
-  React.useEffect(() => {
-    load();
-  }, [load]);
+      .then((value) => {
+        if (active) setFinding(value);
+      })
+      .catch((error) => {
+        if (active) setLoadError((error as Error).message);
+      })
+      .finally(() => {
+        if (active) setLoaded(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, [contextTaskId, id, retry]);
 
   const changeSeverity = React.useCallback(
     async (next: Severity) => {
@@ -85,13 +100,13 @@ function FindingDetailInner() {
       try {
         const updated = await api.setFindingSeverity(id, next);
         setFinding(updated);
-        toast.success(`严重等级已改为「${statusMeta("severity", next).label}」`);
+        toast.success(uiText("严重等级已改为「{v0}」", { v0: uiText(statusMeta("severity", next).label) }));
       } catch (e) {
         setFinding((cur) => (cur ? { ...cur, severity: prev } : cur));
-        toast.error("更新失败：" + (e as Error).message);
+        toast.error(uiText("更新失败：") + (e as Error).message);
       }
     },
-    [finding, id],
+    [finding, id, uiText],
   );
 
   const changeStatus = React.useCallback(
@@ -102,23 +117,30 @@ function FindingDetailInner() {
       try {
         const updated = await api.setFindingStatus(id, next);
         setFinding(updated);
-        toast.success(`处理状态已改为「${statusMeta("finding", next).label}」`);
+        toast.success(uiText("处理状态已改为「{v0}」", { v0: uiText(statusMeta("finding", next).label) }));
       } catch (e) {
         setFinding((cur) => (cur ? { ...cur, status: prev } : cur));
-        toast.error("更新失败：" + (e as Error).message);
+        toast.error(uiText("更新失败：") + (e as Error).message);
       }
     },
-    [finding, id],
+    [finding, id, uiText],
   );
 
   if (!finding) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-3 p-10 text-center">
-        <p className="text-muted-foreground">{loaded ? `未找到发现 ${id}` : "加载中…"}</p>
+        <p className="text-muted-foreground">
+          {loadError || (loaded ? uiText("未找到发现 {v0}", { v0: id }) : uiText("加载中…"))}
+        </p>
+        {loadError ? (
+          <Button variant="outline" onClick={() => setRetry((current) => current + 1)}>
+            {uiText("重试")}
+          </Button>
+        ) : null}
         {loaded && (
           <Button asChild variant="outline">
             <Link href="/function/findings">
-              <ArrowLeftIcon /> 返回发现列表
+              <ArrowLeftIcon /> {uiText("返回发现列表")}
             </Link>
           </Button>
         )}
@@ -126,10 +148,20 @@ function FindingDetailInner() {
     );
   }
 
-  const title = finding.name || finding.vulnclass || "未分类";
+  const title = finding.name || finding.vulnclass || uiText("未分类");
 
   return (
     <Tabs value={tab} onValueChange={setTab} className="flex flex-1 flex-col gap-0">
+      {loadError ? (
+        <Alert>
+          <AlertDescription>
+            {loadError}
+            <Button variant="link" onClick={load}>
+              {uiText("重试")}
+            </Button>
+          </AlertDescription>
+        </Alert>
+      ) : null}
       {/* Sticky header */}
       <header className="sticky top-0 z-10 flex flex-col gap-2 border-b bg-background/95 px-4 py-2.5 backdrop-blur lg:px-6">
         <div className="flex flex-wrap items-center gap-2">
@@ -145,24 +177,27 @@ function FindingDetailInner() {
               <Link
                 href={`/function/findings/case?id=${finding.case_id}${contextTaskId ? `&context_task=${contextTaskId}` : ""}`}
               >
-                所属漏洞文件夹
+                {uiText("所属漏洞文件夹")}
               </Link>
             </Button>
           ) : null}
-          <h1 className="max-w-md truncate text-sm font-semibold" title={title}>
+          <h1 className="max-w-md truncate font-semibold text-sm" title={title}>
             {title}
           </h1>
-          <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground">#{finding.id}</code>
+          <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-muted-foreground text-xs">#{finding.id}</code>
           <Separator orientation="vertical" className="mx-1 h-4" />
           <StatusBadge domain="severity" value={finding.severity} dot />
           <StatusBadge domain="finding" value={finding.status} dot />
           {finding.inherited && finding.source_task_id && (
-            <Badge variant="outline">来源任务 #{finding.source_task_id} · 只读</Badge>
+            <Badge variant="outline">
+              {uiText("来源任务 #")}
+              {finding.source_task_id} {uiText("· 只读")}
+            </Badge>
           )}
         </div>
         <TabsList>
-          <TabsTrigger value="overview">概览</TabsTrigger>
-          <TabsTrigger value="lineage">链路图</TabsTrigger>
+          <TabsTrigger value="overview">{uiText("概览")}</TabsTrigger>
+          <TabsTrigger value="lineage">{uiText("链路图")}</TabsTrigger>
         </TabsList>
       </header>
 
@@ -175,24 +210,26 @@ function FindingDetailInner() {
             <div className="flex flex-col gap-4 lg:col-span-2">
               <Card>
                 <CardHeader>
-                  <CardTitle className="text-sm">摘要</CardTitle>
+                  <CardTitle className="text-sm">{uiText("摘要")}</CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <p className="text-sm leading-relaxed whitespace-pre-wrap">{finding.summary || "（无摘要）"}</p>
+                  <p className="whitespace-pre-wrap text-sm leading-relaxed">
+                    {finding.summary || uiText("（无摘要）")}
+                  </p>
                 </CardContent>
               </Card>
               <FindingRetestPanel key={`retest:${id}`} findingId={id} readOnly={finding.inherited} onCompleted={load} />
               <Card>
                 <CardHeader>
-                  <CardTitle className="text-sm">证据 / PoC</CardTitle>
+                  <CardTitle className="text-sm">{uiText("证据 / PoC")}</CardTitle>
                 </CardHeader>
                 <CardContent>
                   {finding.evidence ? (
-                    <pre className="max-h-[46vh] overflow-auto rounded-md bg-muted px-3 py-2 font-mono text-xs whitespace-pre-wrap">
+                    <pre className="max-h-[46vh] overflow-auto whitespace-pre-wrap rounded-md bg-muted px-3 py-2 font-mono text-xs">
                       {finding.evidence}
                     </pre>
                   ) : (
-                    <p className="text-sm text-muted-foreground">（无证据）</p>
+                    <p className="text-muted-foreground text-sm">{uiText("（无证据）")}</p>
                   )}
                 </CardContent>
               </Card>
@@ -206,19 +243,19 @@ function FindingDetailInner() {
               {/* 证据下方：详细报告(Markdown 渲染) */}
               <Card>
                 <CardHeader className="flex-row items-center justify-between">
-                  <CardTitle className="text-sm">详细报告</CardTitle>
-                  {finding.report && <CopyButton text={finding.report} successMessage="已复制详细报告" />}
+                  <CardTitle className="text-sm">{uiText("详细报告")}</CardTitle>
+                  {finding.report && <CopyButton text={finding.report} successMessage={uiText("已复制详细报告")} />}
                 </CardHeader>
                 <CardContent>
                   {finding.report_stale ? (
                     <Alert>
-                      <AlertDescription>流量证据已变更，详细报告待更新。</AlertDescription>
+                      <AlertDescription>{uiText("流量证据已变更，详细报告待更新。")}</AlertDescription>
                     </Alert>
                   ) : null}
                   {finding.report ? (
                     <Markdown text={finding.report} />
                   ) : (
-                    <p className="text-sm text-muted-foreground">暂无详细报告。</p>
+                    <p className="text-muted-foreground text-sm">{uiText("暂无详细报告。")}</p>
                   )}
                 </CardContent>
               </Card>
@@ -227,18 +264,18 @@ function FindingDetailInner() {
             {/* 右栏：状态区 */}
             <Card className="h-fit lg:sticky lg:top-24">
               <CardHeader>
-                <CardTitle className="text-sm">状态</CardTitle>
+                <CardTitle className="text-sm">{uiText("状态")}</CardTitle>
               </CardHeader>
               <CardContent className="divide-y">
                 {/* 漏洞 ID */}
-                <FieldRow label="漏洞 ID">
-                  <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground">
+                <FieldRow label={uiText("漏洞 ID")}>
+                  <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-muted-foreground text-xs">
                     #{finding.id}
                   </code>
                 </FieldRow>
 
                 {/* 严重等级 */}
-                <FieldRow label="严重等级">
+                <FieldRow label={uiText("严重等级")}>
                   {finding.inherited ? (
                     <StatusBadge domain="severity" value={finding.severity} dot />
                   ) : (
@@ -250,7 +287,7 @@ function FindingDetailInner() {
                         <SelectGroup>
                           {SEVERITIES.map((sv) => (
                             <SelectItem key={sv} value={sv}>
-                              {statusMeta("severity", sv).label}
+                              {uiText(statusMeta("severity", sv).label)}
                             </SelectItem>
                           ))}
                         </SelectGroup>
@@ -260,7 +297,7 @@ function FindingDetailInner() {
                 </FieldRow>
 
                 {/* 处理状态 */}
-                <FieldRow label="处理状态">
+                <FieldRow label={uiText("处理状态")}>
                   {finding.inherited ? (
                     <StatusBadge domain="finding" value={finding.status} dot />
                   ) : (
@@ -272,7 +309,7 @@ function FindingDetailInner() {
                         <SelectGroup>
                           {FINDING_STATUSES.map((st) => (
                             <SelectItem key={st} value={st}>
-                              {statusMeta("finding", st).label}
+                              {uiText(statusMeta("finding", st).label)}
                             </SelectItem>
                           ))}
                         </SelectGroup>
@@ -282,7 +319,7 @@ function FindingDetailInner() {
                 </FieldRow>
 
                 {/* 漏洞类型 */}
-                <FieldRow label="漏洞类型">
+                <FieldRow label={uiText("漏洞类型")}>
                   {finding.vulnclass ? (
                     <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{finding.vulnclass}</code>
                   ) : (
@@ -291,7 +328,7 @@ function FindingDetailInner() {
                 </FieldRow>
 
                 {/* 涉及资产 */}
-                <FieldRow label="涉及资产">
+                <FieldRow label={uiText("涉及资产")}>
                   {finding.assets && finding.assets.length > 0 ? (
                     <div className="flex flex-wrap justify-end gap-1">
                       {finding.assets.map((a) => (
@@ -310,7 +347,7 @@ function FindingDetailInner() {
                 </FieldRow>
 
                 {/* 所属任务 */}
-                <FieldRow label="所属任务">
+                <FieldRow label={uiText("所属任务")}>
                   {finding.task_id ? (
                     <Link
                       href={`/function/tasks/detail?id=${finding.task_id}`}
@@ -321,12 +358,12 @@ function FindingDetailInner() {
                       <ArrowUpRightIcon className="size-3 shrink-0" />
                     </Link>
                   ) : (
-                    <span className="text-muted-foreground">—（任务已删除）</span>
+                    <span className="text-muted-foreground">{uiText("—（任务已删除）")}</span>
                   )}
                 </FieldRow>
 
                 {/* 发现时间 */}
-                <FieldRow label="发现时间">
+                <FieldRow label={uiText("发现时间")}>
                   <span className="tabular-nums">{fmtTime(finding.ts)}</span>
                 </FieldRow>
               </CardContent>
@@ -343,11 +380,16 @@ function FindingDetailInner() {
   );
 }
 
+function FindingDetailIdentity() {
+  const params = useSearchParams();
+  return <FindingDetailInner key={JSON.stringify([params.get("id"), params.get("context_task")])} />;
+}
+
 // useSearchParams must sit under a Suspense boundary for static export.
 export default function FindingDetailPage() {
   return (
     <React.Suspense fallback={null}>
-      <FindingDetailInner />
+      <FindingDetailIdentity />
     </React.Suspense>
   );
 }

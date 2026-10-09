@@ -41,6 +41,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { api } from "@/lib/api";
+import { useI18n } from "@/lib/i18n";
 import { getLocalStorageValue, setLocalStorageValue } from "@/lib/local-storage.client";
 import { statusMeta } from "@/lib/status";
 import type {
@@ -67,6 +68,7 @@ import {
   UNASSIGNED_TASK,
 } from "./_components/findings-table";
 
+const FINDING_EXPANSION_KEY = "artex_finding_task_expansion";
 const FINDING_LIST_PREFERENCE_KEY = "artex_finding_list_preferences";
 
 // 列表视图:flat = 跨任务平铺大表(默认);grouped = 按任务分组折叠;
@@ -166,6 +168,7 @@ const EMPTY_STATS: FindingStats = {
 };
 
 export default function FindingsPage() {
+  const { t: uiText } = useI18n();
   const [view, setView] = React.useState<FindingView>("cases");
   const [severity, setSeverity] = React.useState<"all" | Severity>("all");
   const [status, setStatus] = React.useState<"all" | FindingStatus>("all");
@@ -182,6 +185,8 @@ export default function FindingsPage() {
   const [assetScope, setAssetScope] = React.useState<string | null>(null);
   const [groupList, setGroupList] = React.useState<FindingGroupsState>(EMPTY_GROUPS_STATE);
   const [expandedGroups, setExpandedGroups] = React.useState<Set<string>>(() => new Set());
+  const savedExpansions = React.useRef<Record<string, string[]>>({});
+  const expansionRestorePending = React.useRef(false);
   const [groupFindings, setGroupFindings] = React.useState<Record<string, GroupFindingsState>>({});
   const [stats, setStats] = React.useState<FindingStats>(EMPTY_STATS);
   const [statsLoaded, setStatsLoaded] = React.useState(false);
@@ -220,7 +225,7 @@ export default function FindingsPage() {
         setActiveRetests(Object.fromEntries(rows.map((item) => [item.finding_id, item])));
         failed = false;
       } catch (error) {
-        if (!disposed && !failed) toast.error(`加载复测状态失败：${(error as Error).message}`);
+        if (!disposed && !failed) toast.error(uiText("加载复测状态失败：{v0}", { v0: (error as Error).message }));
         failed = true;
       } finally {
         if (!disposed) timer = setTimeout(() => void refreshRetests(), 3000);
@@ -231,9 +236,15 @@ export default function FindingsPage() {
       disposed = true;
       clearTimeout(timer);
     };
-  }, []);
+  }, [uiText]);
 
   React.useEffect(() => {
+    try {
+      const saved = JSON.parse(getLocalStorageValue(FINDING_EXPANSION_KEY) ?? "{}");
+      if (saved && typeof saved === "object" && !Array.isArray(saved)) savedExpansions.current = saved;
+    } catch {
+      /* Ignore malformed expansion preferences. */
+    }
     const raw = getLocalStorageValue(FINDING_LIST_PREFERENCE_KEY);
     if (raw) {
       try {
@@ -244,6 +255,7 @@ export default function FindingsPage() {
           vulnclass?: unknown;
           task?: unknown;
           sort?: unknown;
+          query?: unknown;
         };
         if (FINDING_VIEWS.includes(parsed.view as FindingView)) setView(parsed.view as FindingView);
         if (parsed.severity === "all" || SEVERITIES.includes(parsed.severity as Severity)) {
@@ -254,6 +266,10 @@ export default function FindingsPage() {
         }
         if (typeof parsed.vulnclass === "string" && parsed.vulnclass) setVulnclass(parsed.vulnclass);
         if (typeof parsed.task === "string" && parsed.task) setTask(parsed.task);
+        if (typeof parsed.query === "string") {
+          setSearch(parsed.query);
+          setQuery(parsed.query);
+        }
         if (parsed.sort === "severity" || parsed.sort === "time") setSort(parsed.sort);
       } catch {
         // Ignore malformed or legacy preferences and retain the defaults.
@@ -266,9 +282,9 @@ export default function FindingsPage() {
     if (!preferencesHydrated) return;
     setLocalStorageValue(
       FINDING_LIST_PREFERENCE_KEY,
-      JSON.stringify({ view, severity, status, vulnclass, task, sort }),
+      JSON.stringify({ view, severity, status, vulnclass, task, sort, query }),
     );
-  }, [preferencesHydrated, severity, sort, status, task, view, vulnclass]);
+  }, [preferencesHydrated, severity, sort, status, task, view, vulnclass, query]);
 
   React.useEffect(() => {
     const timer = window.setTimeout(() => setQuery(search.trim()), 300);
@@ -296,6 +312,10 @@ export default function FindingsPage() {
   const [includeOriginals, setIncludeOriginals] = React.useState(false);
   const [reviewing, setReviewing] = React.useState(false);
   const [exporting, setExporting] = React.useState(false);
+  const [bulkBusy, setBulkBusy] = React.useState(false);
+  const [bulkDeleteOpen, setBulkDeleteOpen] = React.useState(false);
+  const [bulkFailures, setBulkFailures] = React.useState<string[]>([]);
+  const [caseRefresh, setCaseRefresh] = React.useState(0);
 
   const toggleSelected = React.useCallback((id: string, checked: boolean) => {
     setSelectedIds((prev) => {
@@ -342,9 +362,9 @@ export default function FindingsPage() {
         includeOriginals,
       });
       setExportOpen(false);
-      toast.success("已开始下载导出文件");
+      toast.success(uiText("已开始下载导出文件"));
     } catch (e) {
-      toast.error(`导出失败：${(e as Error).message}`);
+      toast.error(uiText("导出失败：{v0}", { v0: (e as Error).message }));
     } finally {
       setExporting(false);
     }
@@ -412,13 +432,13 @@ export default function FindingsPage() {
         setFlat((current) => ({
           ...current,
           loading: false,
-          error: error instanceof Error ? error.message : "请检查连接后重试",
+          error: error instanceof Error ? error.message : uiText("请检查连接后重试"),
         }));
       } finally {
         if (flatInFlight.current?.request === request) flatInFlight.current = null;
       }
     },
-    [activeAssetScope, flatQueryKey, flatPage, flatPageSize, severity, status, vulnclass, task, query, sort],
+    [activeAssetScope, flatQueryKey, flatPage, flatPageSize, severity, status, vulnclass, task, query, sort, uiText],
   );
 
   // loadAssetTree 取整棵资产树。树不随选中节点变化(否则选一下就塌成一条链),
@@ -451,10 +471,10 @@ export default function FindingsPage() {
       setAssetTree((current) => ({
         ...current,
         loading: false,
-        error: e instanceof Error ? e.message : "请检查连接后重试",
+        error: e instanceof Error ? e.message : uiText("请检查连接后重试"),
       }));
     }
-  }, [filterFingerprint, severity, status, vulnclass, task, query, sort]);
+  }, [filterFingerprint, severity, status, vulnclass, task, query, sort, uiText]);
 
   const refreshGroups = React.useCallback(
     async (force = true) => {
@@ -495,13 +515,13 @@ export default function FindingsPage() {
         setGroupList((current) => ({
           ...current,
           loading: false,
-          error: error instanceof Error ? error.message : "请检查连接后重试",
+          error: error instanceof Error ? error.message : uiText("请检查连接后重试"),
         }));
       } finally {
         if (groupsInFlight.current?.request === request) groupsInFlight.current = null;
       }
     },
-    [groupsQueryKey, page, pageSize, severity, status, vulnclass, task, query, sort],
+    [groupsQueryKey, page, pageSize, severity, status, vulnclass, task, query, sort, uiText],
   );
 
   const loadGroup = React.useCallback(
@@ -565,14 +585,14 @@ export default function FindingsPage() {
               queryKey: requestQueryKey,
             }),
             loading: false,
-            error: error instanceof Error ? error.message : "请检查连接后重试",
+            error: error instanceof Error ? error.message : uiText("请检查连接后重试"),
           },
         }));
       } finally {
         if (groupInFlight.current[key]?.request === request) delete groupInFlight.current[key];
       }
     },
-    [filterFingerprint, severity, status, vulnclass, query, sort],
+    [filterFingerprint, severity, status, vulnclass, query, sort, uiText],
   );
 
   React.useEffect(() => {
@@ -632,6 +652,53 @@ export default function FindingsPage() {
     }
   }, []);
 
+  async function mutateSelected(nextStatus?: FindingStatus) {
+    setBulkBusy(true);
+    setBulkFailures([]);
+    const succeeded = new Set<string>();
+    const failures: string[] = [];
+    for (const id of [...selectedIds]) {
+      try {
+        if (nextStatus) await api.setFindingStatus(id, nextStatus);
+        else await api.deleteFinding(id);
+        succeeded.add(id);
+      } catch (error) {
+        failures.push(`#${id}: ${(error as Error).message}`);
+      }
+    }
+    setSelectedIds((current) => new Set([...current].filter((id) => !succeeded.has(id))));
+    setBulkFailures(failures);
+    setFindings((current) =>
+      nextStatus
+        ? current.map((finding) =>
+            succeeded.has(finding.finding_id ?? finding.id) ? { ...finding, status: nextStatus } : finding,
+          )
+        : current.filter((finding) => !succeeded.has(finding.finding_id ?? finding.id)),
+    );
+    const refresh = mutationRefreshRef.current;
+    if (refresh.view === "asset") {
+      void refresh.loadAssetTree();
+      void refresh.loadFlat(true);
+    } else if (refresh.view === "flat") void refresh.loadFlat(true);
+    else if (refresh.view === "grouped") {
+      void refresh.refreshGroups(true);
+      for (const key of expandedGroupsRef.current) {
+        const state = groupFindingsRef.current[key];
+        if (state) void refresh.loadGroup(key, state.page, state.pageSize, true);
+      }
+    }
+    setCaseRefresh((current) => current + 1);
+    void api
+      .findingStats()
+      .then(setStats)
+      .catch(() => {
+        /* The successful mutations remain valid if totals cannot refresh. */
+      });
+    if (succeeded.size) toast.success(uiText("已处理 {v0} 条", { v0: succeeded.size }));
+    setBulkDeleteOpen(false);
+    setBulkBusy(false);
+  }
+
   // Reset every view's pagination and expansion when a shared finding filter changes.
   React.useEffect(() => {
     void filterFingerprint;
@@ -641,14 +708,38 @@ export default function FindingsPage() {
     assetTreeRequest.current++;
     setPage(1);
     setExpanded(null);
-    setExpandedGroups(new Set());
+    const saved = savedExpansions.current[filterFingerprint];
+    expansionRestorePending.current = true;
+    setExpandedGroups(
+      new Set(Array.isArray(saved) ? saved.filter((key) => typeof key === "string") : task !== "all" ? [task] : []),
+    );
     setGroupFindings({});
     setFlatPage(1);
     setFlat(EMPTY_FLAT_STATE);
     // 筛选变了树也会变,原先选中的节点可能已经不在树里,退回「全部资产」。
     setAssetScope(null);
     setAssetTree(EMPTY_ASSET_TREE);
-  }, [filterFingerprint]);
+  }, [filterFingerprint, task]);
+
+  React.useEffect(() => {
+    if (!preferencesHydrated) return;
+    if (expansionRestorePending.current) {
+      expansionRestorePending.current = false;
+      return;
+    }
+    savedExpansions.current[filterFingerprint] = [...expandedGroups];
+    setLocalStorageValue(FINDING_EXPANSION_KEY, JSON.stringify(savedExpansions.current));
+  }, [expandedGroups, filterFingerprint, preferencesHydrated]);
+
+  React.useEffect(() => {
+    if (!preferencesHydrated || view !== "grouped" || groupList.queryKey !== groupsQueryKey) return;
+    for (const key of expandedGroups) {
+      if (!groups.some((group) => findingGroupKey(group) === key)) continue;
+      const state = groupFindings[key];
+      if (!state?.loaded && !state?.loading && !state?.error)
+        void loadGroup(key, state?.page ?? 1, state?.pageSize ?? 10);
+    }
+  }, [expandedGroups, groupFindings, groupList.queryKey, groupsQueryKey, groups, loadGroup, preferencesHydrated, view]);
 
   // 换资产节点等于换了一份结果集,回到第一页。
   React.useEffect(() => {
@@ -745,7 +836,7 @@ export default function FindingsPage() {
       setFindings((cur) => cur.map((x) => (isSameFinding(x, f) ? { ...x, status: next } : x)));
       try {
         await api.setFindingStatus(f.finding_id, next);
-        toast.success(`已标记为「${statusMeta("finding", next).label}」`);
+        toast.success(uiText("已标记为「{v0}」", { v0: uiText(statusMeta("finding", next).label) }));
         // refresh stat cards (pending count) and drop the row if it no longer matches the status filter
         api
           .findingStats()
@@ -761,10 +852,10 @@ export default function FindingsPage() {
         refreshAfterMutation(f);
       } catch (e) {
         setFindings((cur) => cur.map((x) => (isSameFinding(x, f) ? { ...x, status: prev } : x)));
-        toast.error(`更新失败：${(e as Error).message}`);
+        toast.error(uiText("更新失败：{v0}", { v0: (e as Error).message }));
       }
     },
-    [refreshAfterMutation, setFindings, status],
+    [refreshAfterMutation, setFindings, status, uiText],
   );
 
   // 行内展开的详细报告缓存按全局稳定行键存。report 是大段 Markdown,列表查询不带它,
@@ -816,7 +907,7 @@ export default function FindingsPage() {
               : x,
           ),
         );
-        toast.success("已保存");
+        toast.success(uiText("已保存"));
         api
           .findingStats()
           .then(setStats)
@@ -825,12 +916,12 @@ export default function FindingsPage() {
           });
         refreshAfterMutation(f);
       } catch (e) {
-        toast.error(`保存失败：${(e as Error).message}`);
+        toast.error(uiText("保存失败：{v0}", { v0: (e as Error).message }));
       } finally {
         setSaving(false);
       }
     },
-    [edit, refreshAfterMutation, setFindings],
+    [edit, refreshAfterMutation, setFindings, uiText],
   );
 
   // deleteFinding 删除一个漏洞(需二次确认):删成功后从列表移除、收起行、刷新统计。
@@ -858,7 +949,7 @@ export default function FindingsPage() {
         setGroupList((current) => ({ ...current, findingTotal: Math.max(0, current.findingTotal - 1) }));
         const rowKey = findingRowKey(f);
         setExpanded((cur) => (cur === rowKey ? null : cur));
-        toast.success("已删除漏洞");
+        toast.success(uiText("已删除漏洞"));
         api
           .findingStats()
           .then(setStats)
@@ -867,10 +958,10 @@ export default function FindingsPage() {
           });
         refreshAfterMutation(f, true);
       } catch (e) {
-        toast.error(`删除失败：${(e as Error).message}`);
+        toast.error(uiText("删除失败：{v0}", { v0: (e as Error).message }));
       }
     },
-    [refreshAfterMutation, setFindings],
+    [refreshAfterMutation, setFindings, uiText],
   );
 
   const openDeepen = React.useCallback((f: Finding) => {
@@ -885,27 +976,47 @@ export default function FindingsPage() {
       const result = await api.deepenFinding(deepenFinding.finding_id, deepenDescription.trim());
       toast.success(
         result.queued
-          ? `深入意图 #${result.intent_id} 已进入任务队列`
-          : `已创建高优先级 Worker 意图 #${result.intent_id}`,
+          ? uiText("深入意图 #{v0} 已进入任务队列", { v0: result.intent_id })
+          : uiText("已创建高优先级 Worker 意图 #{v0}", { v0: result.intent_id }),
       );
       refreshAfterMutation(deepenFinding);
       setDeepenFinding(null);
       setDeepenDescription("");
     } catch (error) {
-      toast.error(`提交失败：${(error as Error).message}`);
+      toast.error(uiText("提交失败：{v0}", { v0: (error as Error).message }));
     } finally {
       setDeepening(false);
     }
   }
 
   const statCards = [
-    { label: "独立漏洞", value: stats.distinct?.total ?? stats.total, icon: BugIcon },
-    { label: "上报记录", value: stats.total, icon: ClockIcon },
-    { label: "待处理", value: stats.pending, tone: "text-amber-800 dark:text-amber-400", icon: ClockIcon },
-    { label: "严重", value: stats.distinct?.critical ?? stats.critical, tone: "text-rose-700 dark:text-rose-400", icon: ShieldAlertIcon },
-    { label: "高危", value: stats.distinct?.high ?? stats.high, tone: "text-red-700 dark:text-red-400", icon: TriangleAlertIcon },
-    { label: "中危", value: stats.distinct?.medium ?? stats.medium, tone: "text-amber-800 dark:text-amber-400", icon: TriangleAlertIcon },
-    { label: "低危", value: stats.distinct?.low ?? stats.low, tone: "text-slate-600 dark:text-slate-400", icon: InfoIcon },
+    { label: uiText("独立漏洞"), value: stats.distinct?.total ?? stats.total, icon: BugIcon },
+    { label: uiText("上报记录"), value: stats.total, icon: ClockIcon },
+    { label: uiText("待处理"), value: stats.pending, tone: "text-amber-800 dark:text-amber-400", icon: ClockIcon },
+    {
+      label: uiText("严重"),
+      value: stats.distinct?.critical ?? stats.critical,
+      tone: "text-rose-700 dark:text-rose-400",
+      icon: ShieldAlertIcon,
+    },
+    {
+      label: uiText("高危"),
+      value: stats.distinct?.high ?? stats.high,
+      tone: "text-red-700 dark:text-red-400",
+      icon: TriangleAlertIcon,
+    },
+    {
+      label: uiText("中危"),
+      value: stats.distinct?.medium ?? stats.medium,
+      tone: "text-amber-800 dark:text-amber-400",
+      icon: TriangleAlertIcon,
+    },
+    {
+      label: uiText("低危"),
+      value: stats.distinct?.low ?? stats.low,
+      tone: "text-slate-600 dark:text-slate-400",
+      icon: InfoIcon,
+    },
   ];
 
   // 导出弹窗里「当前筛选」的条数:两个视图的筛选一致,只是统计口径来源不同。
@@ -944,14 +1055,14 @@ export default function FindingsPage() {
         {flat.queryKey !== flatQueryKey || (flat.loading && !flat.loaded) ? (
           <div className="flex min-h-36 items-center justify-center gap-2 text-muted-foreground text-sm" role="status">
             <Spinner aria-hidden="true" />
-            正在加载发现…
+            {uiText("正在加载发现…")}
           </div>
         ) : flat.error && !flat.loaded ? (
           <div className="flex min-h-36 flex-col items-center justify-center gap-3 p-6 text-center" role="alert">
-            <p className="font-medium">发现加载失败</p>
+            <p className="font-medium">{uiText("发现加载失败")}</p>
             <p className="text-muted-foreground text-sm">{flat.error}</p>
             <Button size="sm" variant="outline" onClick={() => void loadFlat()}>
-              重新加载
+              {uiText("重新加载")}
             </Button>
           </div>
         ) : (
@@ -961,21 +1072,24 @@ export default function FindingsPage() {
                 className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3 text-sm"
                 role="status"
               >
-                <span>更新失败，正在显示上次结果。</span>
+                <span>{uiText("更新失败，正在显示上次结果。")}</span>
                 <Button size="sm" variant="outline" onClick={() => void loadFlat()}>
-                  重试
+                  {uiText("重试")}
                 </Button>
               </div>
             )}
             <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3 text-muted-foreground text-xs">
               <span role="status" aria-live="polite">
-                当前筛选共 <strong className="font-medium text-foreground tabular-nums">{flat.total}</strong> 条发现
+                {uiText("当前筛选共")}{" "}
+                <strong className="font-medium text-foreground tabular-nums">{flat.total}</strong> {uiText("条发现")}
               </span>
               {flat.items.length > 0 && (
-                <span className={view === "asset" ? undefined : "lg:hidden"}>横向滚动查看资产、状态与操作</span>
+                <span className={view === "asset" ? undefined : "lg:hidden"}>
+                  {uiText("横向滚动查看资产、状态与操作")}
+                </span>
               )}
             </div>
-            <FindingsTable items={flat.items} selectAllLabel="选择当前页全部" {...rowProps} />
+            <FindingsTable items={flat.items} selectAllLabel={uiText("选择当前页全部")} {...rowProps} />
             <TablePagination
               page={flatPage}
               pageSize={flatPageSize}
@@ -997,15 +1111,15 @@ export default function FindingsPage() {
     <div className="flex min-w-0 flex-1 flex-col gap-4 md:gap-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="font-semibold text-2xl tracking-tight md:text-3xl">发现</h1>
-          <p className="text-muted-foreground text-sm">跨任务漏洞汇总</p>
+          <h1 className="font-semibold text-2xl tracking-tight md:text-3xl">{uiText("发现")}</h1>
+          <p className="text-muted-foreground text-sm">{uiText("跨任务漏洞汇总")}</p>
         </div>
         <Tabs value={view} onValueChange={(v) => setView(v as FindingView)}>
           <TabsList>
-            <TabsTrigger value="cases">按漏洞</TabsTrigger>
-            <TabsTrigger value="flat">原始上报</TabsTrigger>
-            <TabsTrigger value="grouped">按任务分组</TabsTrigger>
-            <TabsTrigger value="asset">按资产</TabsTrigger>
+            <TabsTrigger value="cases">{uiText("按漏洞")}</TabsTrigger>
+            <TabsTrigger value="flat">{uiText("原始上报")}</TabsTrigger>
+            <TabsTrigger value="grouped">{uiText("按任务分组")}</TabsTrigger>
+            <TabsTrigger value="asset">{uiText("按资产")}</TabsTrigger>
           </TabsList>
         </Tabs>
       </div>
@@ -1029,15 +1143,15 @@ export default function FindingsPage() {
 
         <fieldset
           className="flex min-w-0 flex-wrap items-center gap-2 rounded-xl border bg-card p-3 sm:p-4"
-          aria-label="发现筛选"
+          aria-label={uiText("发现筛选")}
         >
           <InputGroup className="w-full sm:w-72">
             <InputGroupInput
               type="search"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
-              placeholder="检索漏洞内容"
-              aria-label="检索漏洞内容"
+              placeholder={uiText("检索漏洞内容")}
+              aria-label={uiText("检索漏洞内容")}
             />
             <InputGroupAddon>
               <SearchIcon aria-hidden="true" />
@@ -1054,39 +1168,39 @@ export default function FindingsPage() {
           >
             {(
               [
-                ["all", "全部"],
-                ["critical", "严重"],
-                ["high", "高危"],
-                ["medium", "中危"],
-                ["low", "低危"],
+                ["all", uiText("全部")],
+                ["critical", uiText("严重")],
+                ["high", uiText("高危")],
+                ["medium", uiText("中危")],
+                ["low", uiText("低危")],
               ] as const
             ).map(([val, label]) => (
-              <ToggleGroupItem key={val} value={val} aria-label={`按${label}等级筛选`}>
+              <ToggleGroupItem key={val} value={val} aria-label={uiText("按{v0}等级筛选", { v0: label })}>
                 {label}
               </ToggleGroupItem>
             ))}
           </ToggleGroup>
 
           <Select value={status} onValueChange={(v) => setStatus(v as "all" | FindingStatus)}>
-            <SelectTrigger size="sm" className="h-8 w-32" aria-label="按状态筛选">
-              <SelectValue placeholder="状态" />
+            <SelectTrigger size="sm" className="h-8 w-32" aria-label={uiText("按状态筛选")}>
+              <SelectValue placeholder={uiText("状态")} />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">全部状态</SelectItem>
+              <SelectItem value="all">{uiText("全部状态")}</SelectItem>
               {FINDING_STATUSES.map((st) => (
                 <SelectItem key={st} value={st}>
-                  {statusMeta("finding", st).label}
+                  {uiText(statusMeta("finding", st).label)}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
 
           <Select value={vulnclass} onValueChange={setVulnclass}>
-            <SelectTrigger size="sm" className="h-8 w-36 sm:w-40" aria-label="按漏洞类型筛选">
-              <SelectValue placeholder="漏洞类型" />
+            <SelectTrigger size="sm" className="h-8 w-36 sm:w-40" aria-label={uiText("按漏洞类型筛选")}>
+              <SelectValue placeholder={uiText("漏洞类型")} />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">全部类型</SelectItem>
+              <SelectItem value="all">{uiText("全部类型")}</SelectItem>
               {stats.vulnclasses.map((vc) => (
                 <SelectItem key={vc} value={vc}>
                   {vc}
@@ -1096,15 +1210,15 @@ export default function FindingsPage() {
           </Select>
 
           <Select value={task} onValueChange={setTask}>
-            <SelectTrigger size="sm" className="h-8 w-48" aria-label="按任务筛选">
-              <SelectValue placeholder="任务" />
+            <SelectTrigger size="sm" className="h-8 w-48" aria-label={uiText("按任务筛选")}>
+              <SelectValue placeholder={uiText("任务")} />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">全部任务</SelectItem>
-              <SelectItem value={UNASSIGNED_TASK}>未关联 / 任务已删除</SelectItem>
+              <SelectItem value="all">{uiText("全部任务")}</SelectItem>
+              <SelectItem value={UNASSIGNED_TASK}>{uiText("未关联 / 任务已删除")}</SelectItem>
               {(stats.tasks ?? []).map((t) => {
                 const id = String(t.id);
-                const label = t.name || t.description || `任务 #${id}（已删除）`;
+                const label = t.name || t.description || uiText("任务 #{v0}（已删除）", { v0: id });
                 return (
                   <SelectItem key={id} value={id}>
                     <span className="flex w-full items-center gap-2">
@@ -1123,18 +1237,45 @@ export default function FindingsPage() {
           </Select>
 
           <Select value={sort} onValueChange={(v) => setSort(v as "severity" | "time")}>
-            <SelectTrigger size="sm" className="h-8 w-36" aria-label="发现排序">
+            <SelectTrigger size="sm" className="h-8 w-36" aria-label={uiText("发现排序")}>
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="severity">按严重度</SelectItem>
-              <SelectItem value="time">按时间</SelectItem>
+              <SelectItem value="severity">{uiText("按严重度")}</SelectItem>
+              <SelectItem value="time">{uiText("按时间")}</SelectItem>
             </SelectContent>
           </Select>
 
-          <div className="ml-auto flex items-center gap-3">
+          <div className="ml-auto flex flex-wrap items-center gap-3">
+            {selectedIds.size > 0 ? (
+              <>
+                <Select
+                  value=""
+                  disabled={bulkBusy}
+                  onValueChange={(value) => {
+                    if (value) void mutateSelected(value as FindingStatus);
+                  }}
+                >
+                  <SelectTrigger size="sm" className="h-8 w-32" aria-label={uiText("批量修改状态")}>
+                    <SelectValue placeholder={uiText("修改所选状态")} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {FINDING_STATUSES.map((value) => (
+                      <SelectItem key={value} value={value}>
+                        {uiText(statusMeta("finding", value).label)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Button size="sm" variant="destructive" disabled={bulkBusy} onClick={() => setBulkDeleteOpen(true)}>
+                  {uiText("删除所选")}
+                </Button>
+              </>
+            ) : null}
             {selectedIds.size > 0 && (
-              <span className="text-muted-foreground text-xs tabular-nums">已选 {selectedIds.size} 条</span>
+              <span className="text-muted-foreground text-xs tabular-nums">
+                {uiText("已选")} {selectedIds.size} {uiText("条")}
+              </span>
             )}
             <Button
               size="sm"
@@ -1144,7 +1285,7 @@ export default function FindingsPage() {
                 setReviewing(true);
                 try {
                   await api.reviewFindingCases([...selectedIds]);
-                  toast.success("已提交整理，按任务分别执行");
+                  toast.success(uiText("已提交整理，按任务分别执行"));
                 } catch (e) {
                   toast.error((e as Error).message);
                 } finally {
@@ -1152,14 +1293,23 @@ export default function FindingsPage() {
                 }
               }}
             >
-              {reviewing ? <Spinner /> : null}整理所选（{selectedIds.size}）
+              {reviewing ? <Spinner /> : null}
+              {uiText("整理所选（{count}）", { count: selectedIds.size })}
             </Button>
             <Button size="sm" variant="outline" onClick={openExport}>
-              <DownloadIcon /> 导出
+              <DownloadIcon /> {uiText("导出")}
             </Button>
           </div>
         </fieldset>
 
+        {bulkFailures.length > 0 ? (
+          <div role="alert" className="rounded-md border border-destructive p-3 text-sm">
+            <p>{uiText("部分操作失败，失败记录仍保持选中：")}</p>
+            {bulkFailures.map((failure) => (
+              <p key={failure}>{failure}</p>
+            ))}
+          </div>
+        ) : null}
         {view === "flat" && flatListCard}
 
         {view === "asset" && (
@@ -1172,7 +1322,7 @@ export default function FindingsPage() {
                     role="status"
                   >
                     <Spinner aria-hidden="true" />
-                    正在加载资产树…
+                    {uiText("正在加载资产树…")}
                   </div>
                 )}
                 {assetTree.queryKey === filterFingerprint && assetTree.error && !assetTree.loaded && (
@@ -1180,10 +1330,10 @@ export default function FindingsPage() {
                     className="flex min-h-36 flex-col items-center justify-center gap-3 p-3 text-center"
                     role="alert"
                   >
-                    <p className="font-medium">资产树加载失败</p>
+                    <p className="font-medium">{uiText("资产树加载失败")}</p>
                     <p className="text-muted-foreground text-sm">{assetTree.error}</p>
                     <Button size="sm" variant="outline" onClick={() => void loadAssetTree()}>
-                      重新加载资产树
+                      {uiText("重新加载资产树")}
                     </Button>
                   </div>
                 )}
@@ -1191,9 +1341,9 @@ export default function FindingsPage() {
                   <>
                     {assetTree.error && (
                       <div className="flex flex-col items-start gap-2 border-b pb-3 text-sm" role="status">
-                        <span>资产树更新失败，正在显示上次结果。</span>
+                        <span>{uiText("资产树更新失败，正在显示上次结果。")}</span>
                         <Button size="sm" variant="outline" onClick={() => void loadAssetTree()}>
-                          重试资产树
+                          {uiText("重试资产树")}
                         </Button>
                       </div>
                     )}
@@ -1218,7 +1368,7 @@ export default function FindingsPage() {
                   className={cn("hover:text-foreground", assetScope === null && "font-medium text-foreground")}
                   onClick={() => setAssetScope(null)}
                 >
-                  全部资产
+                  {uiText("全部资产")}
                 </button>
                 {assetPath.map((node) => (
                   <React.Fragment key={node.key}>
@@ -1236,7 +1386,9 @@ export default function FindingsPage() {
                     </button>
                   </React.Fragment>
                 ))}
-                <span className="ml-auto shrink-0 text-xs tabular-nums">共 {flat.total} 条</span>
+                <span className="ml-auto shrink-0 text-xs tabular-nums">
+                  {uiText("共")} {flat.total} {uiText("条")}
+                </span>
               </div>
               {flatListCard}
             </div>
@@ -1246,6 +1398,7 @@ export default function FindingsPage() {
         {view === "cases" && (
           <FindingCaseList
             onTotal={setCaseTotal}
+            refreshToken={caseRefresh}
             query={{ severity, status, vulnclass, task, query, sort }}
             selectedIds={selectedIds}
             onSelect={toggleSelected}
@@ -1260,7 +1413,7 @@ export default function FindingsPage() {
                   role="status"
                 >
                   <Spinner aria-hidden="true" />
-                  正在加载任务分组…
+                  {uiText("正在加载任务分组…")}
                 </CardContent>
               </Card>
             )}
@@ -1270,10 +1423,10 @@ export default function FindingsPage() {
                   className="flex min-h-36 flex-col items-center justify-center gap-3 p-6 text-center"
                   role="alert"
                 >
-                  <p className="font-medium">任务分组加载失败</p>
+                  <p className="font-medium">{uiText("任务分组加载失败")}</p>
                   <p className="text-muted-foreground text-sm">{groupList.error}</p>
                   <Button size="sm" variant="outline" onClick={() => void refreshGroups()}>
-                    重新加载
+                    {uiText("重新加载")}
                   </Button>
                 </CardContent>
               </Card>
@@ -1283,9 +1436,9 @@ export default function FindingsPage() {
                 className="flex flex-wrap items-center justify-between gap-2 rounded-lg border px-4 py-3 text-sm"
                 role="status"
               >
-                <span>任务分组更新失败，正在显示上次结果。</span>
+                <span>{uiText("任务分组更新失败，正在显示上次结果。")}</span>
                 <Button size="sm" variant="outline" onClick={() => void refreshGroups()}>
-                  重试任务分组
+                  {uiText("重试任务分组")}
                 </Button>
               </div>
             )}
@@ -1321,13 +1474,13 @@ export default function FindingsPage() {
                         <div className="flex min-w-0 flex-col gap-1">
                           <CardTitle className="truncate text-sm">
                             {group.task_id === null
-                              ? "未关联 / 任务已删除"
+                              ? uiText("未关联 / 任务已删除")
                               : group.task_name
-                                ? `${group.task_name}（任务 #${group.task_id}）`
-                                : `任务 #${group.task_id}`}
+                                ? uiText("{v0}（任务 #{v1}）", { v0: group.task_name, v1: group.task_id })
+                                : uiText("任务 #{v0}", { v0: group.task_id })}
                           </CardTitle>
                           <CardDescription className="truncate" title={group.task_description}>
-                            {group.task_description || "来源任务不可用"}
+                            {group.task_description || uiText("来源任务不可用")}
                           </CardDescription>
                         </div>
                       </button>
@@ -1350,7 +1503,7 @@ export default function FindingsPage() {
                           <Button size="icon-sm" variant="ghost" asChild>
                             <Link
                               href={`/function/tasks/detail?id=${group.task_id}`}
-                              aria-label={`查看任务 #${group.task_id}`}
+                              aria-label={uiText("查看任务 #{v0}", { v0: group.task_id })}
                             >
                               <ArrowUpRightIcon />
                             </Link>
@@ -1367,7 +1520,7 @@ export default function FindingsPage() {
                           role="status"
                         >
                           <Spinner aria-hidden="true" />
-                          正在加载本组发现…
+                          {uiText("正在加载本组发现…")}
                         </div>
                       )}
                       {state.error && !state.loaded && (
@@ -1375,14 +1528,14 @@ export default function FindingsPage() {
                           className="flex min-h-36 flex-col items-center justify-center gap-3 p-6 text-center"
                           role="alert"
                         >
-                          <p className="font-medium">本组发现加载失败</p>
+                          <p className="font-medium">{uiText("本组发现加载失败")}</p>
                           <p className="text-muted-foreground text-sm">{state.error}</p>
                           <Button
                             size="sm"
                             variant="outline"
                             onClick={() => void loadGroup(key, state.page, state.pageSize)}
                           >
-                            重新加载
+                            {uiText("重新加载")}
                           </Button>
                         </div>
                       )}
@@ -1393,17 +1546,21 @@ export default function FindingsPage() {
                               className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3 text-sm"
                               role="status"
                             >
-                              <span>本组发现更新失败，正在显示上次结果。</span>
+                              <span>{uiText("本组发现更新失败，正在显示上次结果。")}</span>
                               <Button
                                 size="sm"
                                 variant="outline"
                                 onClick={() => void loadGroup(key, state.page, state.pageSize)}
                               >
-                                重试本组发现
+                                {uiText("重试本组发现")}
                               </Button>
                             </div>
                           )}
-                          <FindingsTable items={state.items} selectAllLabel="选择本组当前页全部" {...rowProps} />
+                          <FindingsTable
+                            items={state.items}
+                            selectAllLabel={uiText("选择本组当前页全部")}
+                            {...rowProps}
+                          />
                           <TablePagination
                             page={state.page}
                             pageSize={state.pageSize}
@@ -1420,7 +1577,9 @@ export default function FindingsPage() {
             })}
             {groupList.queryKey === groupsQueryKey && groupList.loaded && groups.length === 0 && (
               <Card>
-                <CardContent className="py-12 text-center text-muted-foreground text-sm">没有匹配的发现。</CardContent>
+                <CardContent className="py-12 text-center text-muted-foreground text-sm">
+                  {uiText("没有匹配的发现。")}
+                </CardContent>
               </Card>
             )}
             {groupList.queryKey === groupsQueryKey && groupList.loaded && (
@@ -1471,25 +1630,26 @@ export default function FindingsPage() {
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>深入利用漏洞</DialogTitle>
+            <DialogTitle>{uiText("深入利用漏洞")}</DialogTitle>
             <DialogDescription className="break-words">
-              将在原任务 #{deepenFinding?.task_id} 中创建优先级 10 的 Worker 意图，基于当前漏洞开展二次验证：
+              {uiText("将在原任务 #")}
+              {deepenFinding?.task_id} {uiText("中创建优先级 10 的 Worker 意图，基于当前漏洞开展二次验证：")}
               {deepenFinding?.name || deepenFinding?.vulnclass || deepenFinding?.summary}
             </DialogDescription>
           </DialogHeader>
           <FieldGroup>
             <Field>
-              <FieldLabel htmlFor="finding-deepen-description">利用描述</FieldLabel>
+              <FieldLabel htmlFor="finding-deepen-description">{uiText("利用描述")}</FieldLabel>
               <Textarea
                 id="finding-deepen-description"
                 value={deepenDescription}
                 onChange={(event) => setDeepenDescription(event.target.value)}
                 maxLength={4000}
-                placeholder="描述需要验证的利用路径、边界条件、目标或期望证据"
+                placeholder={uiText("描述需要验证的利用路径、边界条件、目标或期望证据")}
                 disabled={deepening}
               />
               <FieldDescription className="flex justify-between gap-3">
-                <span>新意图会继承该漏洞的资产锚点。</span>
+                <span>{uiText("新意图会继承该漏洞的资产锚点。")}</span>
                 <span className="shrink-0 tabular-nums">{deepenDescription.length} / 4000</span>
               </FieldDescription>
             </Field>
@@ -1503,46 +1663,70 @@ export default function FindingsPage() {
               }}
               disabled={deepening}
             >
-              取消
+              {uiText("取消")}
             </Button>
             <Button onClick={submitDeepen} disabled={deepening || !deepenDescription.trim()}>
               {deepening && <Spinner data-icon="inline-start" />}
-              创建深入意图
+              {uiText("创建深入意图")}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
+      <Dialog
+        open={bulkDeleteOpen}
+        onOpenChange={(open) => {
+          if (!bulkBusy) setBulkDeleteOpen(open);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {uiText("删除所选")} {selectedIds.size} {uiText("条发现？")}
+            </DialogTitle>
+            <DialogDescription>{uiText("删除发现和来源探索节点，此操作无法撤销。")}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" disabled={bulkBusy} onClick={() => setBulkDeleteOpen(false)}>
+              {uiText("取消")}
+            </Button>
+            <Button variant="destructive" disabled={bulkBusy} onClick={() => void mutateSelected()}>
+              {bulkBusy ? <Spinner /> : null}
+              {uiText("删除")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <Dialog open={exportOpen} onOpenChange={setExportOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>导出发现</DialogTitle>
-            <DialogDescription>选择导出范围与格式,生成后浏览器会自动下载。</DialogDescription>
+            <DialogTitle>{uiText("导出发现")}</DialogTitle>
+            <DialogDescription>{uiText("选择导出范围与格式,生成后浏览器会自动下载。")}</DialogDescription>
           </DialogHeader>
 
           <div className="flex flex-col gap-5 py-1">
             <div className="flex flex-col gap-2">
-              <span className="text-muted-foreground text-xs">导出范围</span>
+              <span className="text-muted-foreground text-xs">{uiText("导出范围")}</span>
               <RadioGroup value={exportScope} onValueChange={(v) => setExportScope(v as typeof exportScope)}>
                 <label htmlFor="export-scope-filtered" className="flex items-center gap-2 text-sm">
-                  <RadioGroupItem id="export-scope-filtered" value="filtered" /> 导出当前筛选结果（共 {filteredTotal}{" "}
-                  条）
+                  <RadioGroupItem id="export-scope-filtered" value="filtered" /> {uiText("导出当前筛选结果（共")}{" "}
+                  {filteredTotal} {uiText("条）")}
                 </label>
                 <label htmlFor="export-scope-all" className="flex items-center gap-2 text-sm">
-                  <RadioGroupItem id="export-scope-all" value="all" /> 导出全部
+                  <RadioGroupItem id="export-scope-all" value="all" /> {uiText("导出全部")}
                 </label>
                 <label
                   htmlFor="export-scope-selected"
                   className={cn("flex items-center gap-2 text-sm", selectedIds.size === 0 && "text-muted-foreground")}
                 >
                   <RadioGroupItem id="export-scope-selected" value="selected" disabled={selectedIds.size === 0} />
-                  导出勾选的 {selectedIds.size} 条
+                  {uiText("导出勾选的")} {selectedIds.size} {uiText("条")}
                 </label>
               </RadioGroup>
             </div>
 
             <div className="flex flex-col gap-2">
-              <span className="text-muted-foreground text-xs">导出格式</span>
+              <span className="text-muted-foreground text-xs">{uiText("导出格式")}</span>
               <div className="flex items-center gap-2">
                 <Checkbox
                   id="include-original-reports"
@@ -1550,18 +1734,20 @@ export default function FindingsPage() {
                   onCheckedChange={(v) => setIncludeOriginals(v === true)}
                 />
                 <label htmlFor="include-original-reports" className="text-sm">
-                  包含原始子报告（默认每个文件夹一份统一报告）
+                  {uiText("包含原始子报告（默认每个文件夹一份统一报告）")}
                 </label>
               </div>
               <RadioGroup value={exportFormat} onValueChange={(v) => setExportFormat(v as typeof exportFormat)}>
                 <label htmlFor="export-format-md-single" className="flex items-center gap-2 text-sm">
-                  <RadioGroupItem id="export-format-md-single" value="md-single" /> Markdown 汇总报告（单个 .md 文件）
+                  <RadioGroupItem id="export-format-md-single" value="md-single" />{" "}
+                  {uiText("Markdown 汇总报告（单个 .md 文件）")}
                 </label>
                 <label htmlFor="export-format-md-zip" className="flex items-center gap-2 text-sm">
-                  <RadioGroupItem id="export-format-md-zip" value="md-zip" /> Markdown 分文件（一漏洞一 .md,打包 .zip）
+                  <RadioGroupItem id="export-format-md-zip" value="md-zip" />{" "}
+                  {uiText("Markdown 分文件（一漏洞一 .md,打包 .zip）")}
                 </label>
                 <label htmlFor="export-format-csv" className="flex items-center gap-2 text-sm">
-                  <RadioGroupItem id="export-format-csv" value="csv" /> CSV 表格（.csv）
+                  <RadioGroupItem id="export-format-csv" value="csv" /> {uiText("CSV 表格（.csv）")}
                 </label>
                 <label htmlFor="export-format-json" className="flex items-center gap-2 text-sm">
                   <RadioGroupItem id="export-format-json" value="json" /> JSON（.json）
@@ -1572,10 +1758,10 @@ export default function FindingsPage() {
 
           <DialogFooter>
             <Button variant="outline" onClick={() => setExportOpen(false)} disabled={exporting}>
-              取消
+              {uiText("取消")}
             </Button>
             <Button onClick={doExport} disabled={exporting || (exportScope === "selected" && selectedIds.size === 0)}>
-              <DownloadIcon /> {exporting ? "导出中…" : "导出"}
+              <DownloadIcon /> {exporting ? uiText("导出中…") : uiText("导出")}
             </Button>
           </DialogFooter>
         </DialogContent>

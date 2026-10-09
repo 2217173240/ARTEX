@@ -1,5 +1,7 @@
 "use client";
 
+import { useI18n } from "@/lib/i18n";
+
 // LLM 重试配置的共用件：五层重试各自的「次数 + 间隔」。
 //
 // 五层从内到外：建连(SDK) → 空响应(SDK) → 同 provider 安全窗口 → 轮询熔断 → 意图重跑。
@@ -177,6 +179,7 @@ export function RetryRuleFields({
   /** true = 配置抽屉里的紧凑版：省掉展开说明，只留「什么错误会走到这层」这一句 */
   compact?: boolean;
 }) {
+  const { t: uiText } = useI18n();
   const meta = RETRY_LAYERS[layer];
   const human = humanMs(value.interval_ms);
   return (
@@ -188,11 +191,11 @@ export function RetryRuleFields({
         </div>
         {/* 哪些错误会走到这层，具体到状态码——填了旋钮却看不到效果，多半是错误压根不落在这层。 */}
         <p className="text-muted-foreground text-xs">
-          <span className="font-medium text-foreground">触发</span>：{meta.trigger}
+          <span className="font-medium text-foreground">{uiText("触发")}</span>：{meta.trigger}
         </p>
         {!compact && meta.skips && (
           <p className="text-muted-foreground text-xs">
-            <span className="font-medium text-foreground">不走这层</span>：{meta.skips}
+            <span className="font-medium text-foreground">{uiText("不走这层")}</span>：{meta.skips}
           </p>
         )}
         {!compact && <p className="text-muted-foreground text-xs">{meta.desc}</p>}
@@ -206,25 +209,32 @@ export function RetryRuleFields({
             id={`${idPrefix}-${layer}-n`}
             min={-1}
             value={value.attempts}
-            placeholder={`默认 ${meta.defAttempts}`}
+            placeholder={uiText("默认 {v0}", { v0: meta.defAttempts })}
             onChange={(n) => onChange({ ...value, attempts: n })}
           />
         </div>
         <div className="flex items-center gap-2">
           <Label htmlFor={`${idPrefix}-${layer}-ms`} className="text-muted-foreground text-xs">
-            间隔 ms
+            {uiText("间隔 ms")}
           </Label>
           <NumField
             id={`${idPrefix}-${layer}-ms`}
             min={0}
             value={value.interval_ms}
-            placeholder="默认退避"
+            placeholder={uiText("默认退避")}
             onChange={(n) => onChange({ ...value, interval_ms: n })}
           />
-          <span className="text-muted-foreground text-xs">{human ? `固定 ${human}` : meta.defInterval}</span>
+          <span className="text-muted-foreground text-xs">
+            {human ? uiText("固定 {v0}", { v0: human }) : meta.defInterval}
+          </span>
         </div>
       </div>
-      {!compact && <p className="text-muted-foreground text-xs">留空 = 用默认；{meta.offHint}。</p>}
+      {!compact && (
+        <p className="text-muted-foreground text-xs">
+          {uiText("留空 = 用默认；")}
+          {meta.offHint}。
+        </p>
+      )}
     </div>
   );
 }
@@ -237,13 +247,15 @@ export function ProfileRetryFields({
   value: LLMRetryOverride;
   onChange: (o: LLMRetryOverride) => void;
 }) {
+  const { t: uiText } = useI18n();
   return (
     <div className="grid gap-3 rounded-lg border p-3">
       <div className="grid gap-0.5">
-        <Label className="text-sm">重试覆盖</Label>
+        <Label className="text-sm">{uiText("重试覆盖")}</Label>
         <p className="text-muted-foreground text-xs">
-          只对这个配置生效，覆盖「重试与退避」里的全局默认。每格留空 = 跟随全局；次数填 -1 = 关掉这层重试；
-          间隔填了就用固定间隔取代指数退避。熔断与意图重跑是进程级的，只能在全局那页调。
+          {uiText(
+            "只对这个配置生效，覆盖「重试与退避」里的全局默认。每格留空 = 跟随全局；次数填 -1 = 关掉这层重试； 间隔填了就用固定间隔取代指数退避。熔断与意图重跑是进程级的，只能在全局那页调。",
+          )}
         </p>
       </div>
       {(["connect", "empty", "stream"] as const).map((k) => (
@@ -263,6 +275,7 @@ export function ProfileRetryFields({
 
 /** 「重试与退避」tab：五层的全局默认值。 */
 export function RetryPolicyPanel() {
+  const { t: uiText } = useI18n();
   const [policy, setPolicy] = React.useState<LLMRetryPolicy>(ZERO_POLICY);
   const [loading, setLoading] = React.useState(true);
   const [saving, setSaving] = React.useState(false);
@@ -273,11 +286,11 @@ export function RetryPolicyPanel() {
       const p = await api.llmRetryPolicy();
       setPolicy({ ...ZERO_POLICY, ...p });
     } catch (e) {
-      toast.error(`读取重试策略失败：${(e as Error).message}`);
+      toast.error(uiText("读取重试策略失败：{v0}", { v0: (e as Error).message }));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [uiText]);
 
   React.useEffect(() => {
     void load();
@@ -290,9 +303,9 @@ export function RetryPolicyPanel() {
       // 后端会把越界值夹回区间并回传，直接用回传值刷新，所见即所存。
       const saved = await api.saveLLMRetryPolicy(policy);
       setPolicy({ ...ZERO_POLICY, ...saved });
-      toast.success("已保存，即时生效（正在跑的这一轮调用仍用旧参数）");
+      toast.success(uiText("已保存，即时生效（正在跑的这一轮调用仍用旧参数）"));
     } catch (e) {
-      toast.error(`保存失败：${(e as Error).message}`);
+      toast.error(uiText("保存失败：{v0}", { v0: (e as Error).message }));
     } finally {
       setSaving(false);
     }
@@ -303,7 +316,7 @@ export function RetryPolicyPanel() {
   if (loading) {
     return (
       <div className="flex items-center gap-2 rounded-lg border border-dashed p-10 text-muted-foreground text-sm">
-        <Loader2Icon className="size-4 animate-spin" /> 读取重试策略…
+        <Loader2Icon className="size-4 animate-spin" /> {uiText("读取重试策略…")}
       </div>
     );
   }
@@ -311,12 +324,13 @@ export function RetryPolicyPanel() {
   return (
     <div className="grid gap-4">
       <div className="rounded-lg border bg-muted/30 p-3 text-muted-foreground text-xs leading-relaxed">
-        一次模型调用的失败会依次经过五层重试，由内到外：
-        <span className="text-foreground"> 建连 → 空响应 → 同 provider 安全窗口 → 轮询熔断 → 意图重跑</span>
-        。内层用尽才轮到外层，所以次数是
-        <span className="text-foreground">相乘</span>
-        的——把每层都拉满，一次抖动能烧掉几十次请求。
-        全部留空即当前默认值，与没有这页时的行为完全一致。前三层可以在每个模型配置里单独覆盖。
+        {uiText("一次模型调用的失败会依次经过五层重试，由内到外：")}
+        <span className="text-foreground"> {uiText("建连 → 空响应 → 同 provider 安全窗口 → 轮询熔断 → 意图重跑")}</span>
+        {uiText("。内层用尽才轮到外层，所以次数是")}
+        <span className="text-foreground">{uiText("相乘")}</span>
+        {uiText(
+          "的——把每层都拉满，一次抖动能烧掉几十次请求。 全部留空即当前默认值，与没有这页时的行为完全一致。前三层可以在每个模型配置里单独覆盖。",
+        )}
       </div>
 
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
@@ -328,10 +342,10 @@ export function RetryPolicyPanel() {
       <div className="flex gap-2">
         <Button onClick={save} disabled={saving}>
           {saving ? <Loader2Icon className="animate-spin" /> : <SaveIcon />}
-          保存
+          {uiText("保存")}
         </Button>
         <Button variant="outline" onClick={() => setPolicy(ZERO_POLICY)} disabled={saving}>
-          全部恢复默认
+          {uiText("全部恢复默认")}
         </Button>
       </div>
     </div>

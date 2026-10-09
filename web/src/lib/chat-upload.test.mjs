@@ -48,6 +48,9 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
+// Model the default Chinese locale while retaining parameter interpolation.
+const uiText = (key, params = {}) => key.replace(/\{(\w+)\}/g, (match, name) => Object.hasOwn(params, name) ? String(params[name]) : match);
+
 function draftHarness(options = {}) {
   const creates = [];
   const uploads = [];
@@ -68,6 +71,7 @@ function draftHarness(options = {}) {
   };
   const pickFiles = runInNewContext(`${draftCallback}\npickFiles`, {
     api,
+    uiText,
     ApiError,
     agentKey: "auto",
     llmProfileId: 7,
@@ -128,6 +132,7 @@ test("upload failure hands the existing conversation and original draft to ChatV
   const attachments = [{ name: "one.txt", path: "uploads/one.txt", size: 3 }];
   let queued = pending.attachments;
   const retry = runInNewContext(`${chatCallback}\npickFiles`, {
+    uiText,
     conv: selected,
     api: {
       async chatUpload(...args) {

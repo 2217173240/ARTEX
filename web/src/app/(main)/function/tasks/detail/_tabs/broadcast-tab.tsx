@@ -1,5 +1,7 @@
 "use client";
 
+import { useI18n } from "@/lib/i18n";
+
 import * as React from "react";
 
 import {
@@ -185,6 +187,7 @@ const clockFmt = new Intl.DateTimeFormat("zh-CN", {
 });
 
 function NodeStateBadge({ node }: { node: TaskNode }) {
+  const { t: uiText } = useI18n();
   if (node.type === "goal") return <StatusBadge domain="goal" value={node.state} dot />;
   if (node.type === "intent") return <StatusBadge domain="intent" value={node.state} dot />;
   const meta = STATE_META[node.type]?.[node.state];
@@ -197,25 +200,32 @@ function NodeStateBadge({ node }: { node: TaskNode }) {
       )}
     >
       <span className={cn("size-1.5 rounded-full", toneDot[meta.tone])} />
-      {meta.label}
+      {uiText(meta.label)}
     </span>
   );
 }
 
 function KindChip({ kind }: { kind: string }) {
+  const { t: uiText } = useI18n();
   const meta = KIND_META[kind] ?? KIND_META.fact;
   return (
-    <span className={cn("rounded px-1.5 py-0.5 text-xs font-medium whitespace-nowrap", meta.chip)}>{meta.label}</span>
+    <span className={cn("rounded px-1.5 py-0.5 text-xs font-medium whitespace-nowrap", meta.chip)}>
+      {uiText(meta.label)}
+    </span>
   );
 }
 
 // 节点锚定的资产:类型标签 + 可辨识文本。数据随播报页一起下发(node id → 资产),
 // 展开时直接展示,不额外请求。
 function AssetList({ assets, dense = false }: { assets: FindingAsset[]; dense?: boolean }) {
+  const { t: uiText } = useI18n();
   if (assets.length === 0) return null;
   return (
     <div>
-      <div className="mb-1.5 text-xs font-medium text-muted-foreground">涉及资产 · {assets.length}</div>
+      <div className="mb-1.5 text-xs font-medium text-muted-foreground">
+        {uiText("涉及资产 ·")}
+        {assets.length}
+      </div>
       <ul className="flex flex-wrap gap-1.5">
         {assets.map((a) => {
           // 运行时 a.type 可能是标签表未覆盖的类型,退回原始字符串。转一层类型让回退不被判成多余。
@@ -243,6 +253,7 @@ function AssetList({ assets, dense = false }: { assets: FindingAsset[]; dense?: 
 // 悬停在上下游条目上时弹出的节点名片:类型/状态/来源/时间 + 摘要 + payload 片段 + 涉及资产。
 // 数据来自本页已经拿到的 refs,不额外发请求——播报接口已经把邻居节点整份带回来了。
 function RelatedNodeCard({ node, assets }: { node: TaskNode; assets: FindingAsset[] }) {
+  const { t: uiText } = useI18n();
   const kind = viewKind(node);
   const meta = KIND_META[kind] ?? KIND_META.fact;
   const ts = Date.parse(node.ts);
@@ -258,11 +269,17 @@ function RelatedNodeCard({ node, assets }: { node: TaskNode; assets: FindingAsse
         )}
       </div>
       <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
-        <span>类型 {meta.label}</span>
-        <span>来源 {node.origin || "system"}</span>
+        <span>
+          {uiText("类型")}
+          {uiText(meta.label)}
+        </span>
+        <span>
+          {uiText("来源")}
+          {node.origin || "system"}
+        </span>
         <span>{Number.isNaN(ts) ? node.ts : new Date(ts).toLocaleString("zh-CN")}</span>
       </div>
-      <p className="line-clamp-4 text-xs break-words">{summary || "（无摘要）"}</p>
+      <p className="line-clamp-4 text-xs break-words">{summary || uiText("（无摘要）")}</p>
       <AssetList assets={assets} dense />
       <pre className="max-h-40 overflow-auto rounded border bg-muted/40 p-2 font-mono text-[11px] whitespace-pre-wrap">
         {prettyPayload(node.payload)}
@@ -283,6 +300,7 @@ function RelatedList({
   refs: Record<string, TaskNode>;
   assets: Record<string, FindingAsset[]>;
 }) {
+  const { t: uiText } = useI18n();
   if (rows.length === 0) return null;
   return (
     <div className="min-w-0 flex-1">
@@ -303,7 +321,7 @@ function RelatedList({
                       className="flex min-w-0 cursor-help items-center gap-2 text-left hover:underline"
                     >
                       <KindChip kind={viewKind(node)} />
-                      <span className="truncate">{summaryOf(node) || `节点 #${node.id}`}</span>
+                      <span className="truncate">{summaryOf(node) || uiText("节点 #{v0}", { v0: node.id })}</span>
                     </button>
                   </HoverCardTrigger>
                   <HoverCardContent align="start" className="w-96">
@@ -311,7 +329,10 @@ function RelatedList({
                   </HoverCardContent>
                 </HoverCard>
               ) : (
-                <span className="text-muted-foreground">节点 #{row.id}</span>
+                <span className="text-muted-foreground">
+                  {uiText("节点 #")}
+                  {row.id}
+                </span>
               )}
             </li>
           );
@@ -336,6 +357,7 @@ function BroadcastRow({
   now: number;
   fresh: boolean;
 }) {
+  const { t: uiText } = useI18n();
   const [open, setOpen] = React.useState(false);
   const kind = viewKind(node);
   const meta = KIND_META[kind] ?? KIND_META.fact;
@@ -386,12 +408,14 @@ function BroadcastRow({
               )}
               {fresh && (
                 <span className="rounded bg-primary px-1.5 py-0.5 text-[10px] font-semibold text-primary-foreground">
-                  新
+                  {uiText("新")}
                 </span>
               )}
               <span className="ml-auto shrink-0 text-xs text-muted-foreground">{node.origin || "system"}</span>
             </div>
-            <p className={cn("mt-1 text-sm", !open && "line-clamp-2")}>{summary || `节点 #${node.id}`}</p>
+            <p className={cn("mt-1 text-sm", !open && "line-clamp-2")}>
+              {summary || uiText("节点 #{v0}", { v0: node.id })}
+            </p>
           </div>
         </button>
 
@@ -399,23 +423,30 @@ function BroadcastRow({
           <div className="mt-2 ml-5 flex flex-col gap-3 rounded-md border bg-muted/30 p-3">
             <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
               <span>
-                节点 <code className="font-mono">#{node.id}</code>
+                {uiText("节点")}
+                <code className="font-mono">#{node.id}</code>
               </span>
-              <span>类型 {meta.label}</span>
-              <span>来源 {node.origin || "system"}</span>
+              <span>
+                {uiText("类型")}
+                {uiText(meta.label)}
+              </span>
+              <span>
+                {uiText("来源")}
+                {node.origin || "system"}
+              </span>
               <span>{Number.isNaN(ts) ? node.ts : new Date(ts).toLocaleString("zh-CN")}</span>
             </div>
             {node.state === "deleted" && node.delete_reason && (
               <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs">
-                <span className="font-medium text-destructive">删除原因</span>
+                <span className="font-medium text-destructive">{uiText("删除原因")}</span>
                 <span className="ml-2 break-words text-muted-foreground">{node.delete_reason}</span>
               </div>
             )}
             <AssetList assets={assets[node.id] ?? []} />
             {(upstream.length > 0 || downstream.length > 0) && (
               <div className="flex flex-col gap-3 sm:flex-row">
-                <RelatedList title="上游 · 由此而来" rows={upstream} refs={refs} assets={assets} />
-                <RelatedList title="下游 · 由此产生" rows={downstream} refs={refs} assets={assets} />
+                <RelatedList title={uiText("上游 · 由此而来")} rows={upstream} refs={refs} assets={assets} />
+                <RelatedList title={uiText("下游 · 由此产生")} rows={downstream} refs={refs} assets={assets} />
               </div>
             )}
             <div>
@@ -432,6 +463,7 @@ function BroadcastRow({
 }
 
 export function BroadcastTab({ taskId }: { taskId: string }) {
+  const { t: uiText } = useI18n();
   const [kinds, setKinds] = React.useState<ExploreKind[]>([]);
   const [queryInput, setQueryInput] = React.useState("");
   const [query, setQuery] = React.useState("");
@@ -573,9 +605,9 @@ export function BroadcastTab({ taskId }: { taskId: string }) {
           <Input
             value={queryInput}
             onChange={(e) => setQueryInput(e.target.value)}
-            placeholder="搜索内容 / 来源 / 节点 id"
+            placeholder={uiText("搜索内容 / 来源 / 节点 id")}
             className="h-8 pl-8"
-            aria-label="搜索播报"
+            aria-label={uiText("搜索播报")}
           />
         </div>
         <div className="flex flex-wrap items-center gap-1">
@@ -593,7 +625,7 @@ export function BroadcastTab({ taskId }: { taskId: string }) {
                   active ? meta.chip : "border-transparent text-muted-foreground hover:bg-accent",
                 )}
               >
-                {meta.label}
+                {uiText(meta.label)}
               </button>
             );
           })}
@@ -607,7 +639,7 @@ export function BroadcastTab({ taskId }: { taskId: string }) {
                 setPage(1);
               }}
             >
-              清除
+              {uiText("清除")}
             </Button>
           )}
         </div>
@@ -620,20 +652,22 @@ export function BroadcastTab({ taskId }: { taskId: string }) {
               setOrder((o) => (o === "desc" ? "asc" : "desc"));
               setPage(1);
             }}
-            aria-label={order === "desc" ? "当前最新在前，点击改为最早在前" : "当前最早在前，点击改为最新在前"}
+            aria-label={
+              order === "desc" ? uiText("当前最新在前，点击改为最早在前") : uiText("当前最早在前，点击改为最新在前")
+            }
           >
             {order === "desc" ? <ArrowDownIcon /> : <ArrowUpIcon />}
-            {order === "desc" ? "最新在前" : "最早在前"}
+            {order === "desc" ? uiText("最新在前") : uiText("最早在前")}
           </Button>
           <Button
             variant={live ? "outline" : "secondary"}
             size="sm"
             className="h-8"
             onClick={() => setLive((v) => !v)}
-            aria-label={live ? "暂停自动刷新" : "恢复自动刷新"}
+            aria-label={live ? uiText("暂停自动刷新") : uiText("恢复自动刷新")}
           >
             {live ? <PauseIcon /> : <PlayIcon />}
-            {live ? "自动刷新" : "已暂停"}
+            {live ? uiText("自动刷新") : uiText("已暂停")}
           </Button>
         </div>
       </div>
@@ -646,7 +680,7 @@ export function BroadcastTab({ taskId }: { taskId: string }) {
           className="flex w-full items-center justify-center gap-1.5 border-b bg-primary/10 py-1.5 text-xs font-medium text-primary hover:bg-primary/15"
         >
           <ArrowUpToLineIcon className="size-3.5" />
-          {pending > 99 ? "99+" : pending} 条新播报 · 回到最新
+          {pending > 99 ? "99+" : pending} {uiText("条新播报 · 回到最新")}
         </button>
       )}
 
@@ -659,7 +693,7 @@ export function BroadcastTab({ taskId }: { taskId: string }) {
           </div>
         ) : items.length === 0 ? (
           <p className="py-10 text-center text-sm text-muted-foreground">
-            {query || kinds.length > 0 ? "没有符合条件的播报。" : "这个任务还没有产生探索节点。"}
+            {query || kinds.length > 0 ? uiText("没有符合条件的播报。") : uiText("这个任务还没有产生探索节点。")}
           </p>
         ) : (
           groups.map((group) => (
@@ -696,7 +730,7 @@ export function BroadcastTab({ taskId }: { taskId: string }) {
             <SelectGroup>
               {PAGE_SIZES.map((n) => (
                 <SelectItem key={n} value={String(n)}>
-                  {n} / 页
+                  {n} {uiText("/ 页")}
                 </SelectItem>
               ))}
             </SelectGroup>
@@ -711,7 +745,7 @@ export function BroadcastTab({ taskId }: { taskId: string }) {
             size="icon-sm"
             disabled={page <= 1}
             onClick={() => setPage((p) => Math.max(1, p - 1))}
-            aria-label="上一页"
+            aria-label={uiText("上一页")}
           >
             <ChevronLeftIcon />
           </Button>
@@ -723,7 +757,7 @@ export function BroadcastTab({ taskId }: { taskId: string }) {
             size="icon-sm"
             disabled={page >= pageCount}
             onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
-            aria-label="下一页"
+            aria-label={uiText("下一页")}
           >
             <ChevronRightIcon />
           </Button>

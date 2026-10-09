@@ -1,5 +1,7 @@
 "use client";
 
+import { useI18n } from "@/lib/i18n";
+
 import * as React from "react";
 
 import { SearchIcon } from "lucide-react";
@@ -276,6 +278,7 @@ export function AssetDslSearch({
   error: string;
   count?: number;
 }) {
+  const { t: uiText } = useI18n();
   const inputRef = React.useRef<HTMLInputElement>(null);
   const [suggestions, setSuggestions] = React.useState<DslSuggestion[]>([]);
   const [selIdx, setSelIdx] = React.useState(0);
@@ -341,7 +344,7 @@ export function AssetDslSearch({
         <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
         <Input
           ref={inputRef}
-          placeholder="DSL 搜索：domain=example AND status_code>=400"
+          placeholder={uiText("DSL 搜索：domain=example AND status_code>=400")}
           value={query}
           onChange={handleChange}
           onKeyDown={handleKeyDown}
@@ -375,7 +378,13 @@ export function AssetDslSearch({
       </div>
       {query.trim() && !open && (
         <p className="pl-1 text-[11px] text-muted-foreground">
-          {loading ? "搜索中…" : error ? <span className="text-destructive">{error}</span> : `找到 ${count ?? 0} 条`}
+          {loading ? (
+            uiText("搜索中…")
+          ) : error ? (
+            <span className="text-destructive">{error}</span>
+          ) : (
+            uiText("找到 {v0} 条", { v0: count ?? 0 })
+          )}
         </p>
       )}
     </div>

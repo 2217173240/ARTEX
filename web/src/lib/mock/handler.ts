@@ -1161,6 +1161,10 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   }
 
   // ── tasks ──
+  if (path === "/tasks/rerun-blocked-all" && m === "POST") {
+    // Demo task fixtures contain no blocked intents; running tasks report a no-op.
+    return { items: mockTasks.filter((task) => task.status === "running" && !task.paused).map((task) => ({ id: task.id, name: task.name ?? task.description, reopened: 0, queued: false })), reopened: 0 };
+  }
   if (path === "/tasks" && m === "GET") {
     sortMockTasks();
     return { tasks: mockTasks.map(publicMockTask), active: mockActiveTask };
@@ -1868,6 +1872,7 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
       total: list.length,
       page,
       page_size: size,
+      matched_reports: list.length,
       stats: { total: scoped.length, reports: scoped.length, unassessed: 0, ...counts },
     };
   }
@@ -2488,7 +2493,7 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
       profile_id: 0,
       prompt: "",
       timeout_seconds: 15,
-      fail_action: "allow",
+      fail_action: "deny",
       ask_timeout_seconds: 300,
       ask_timeout_action: "deny",
     };

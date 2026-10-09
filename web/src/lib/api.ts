@@ -85,6 +85,7 @@ import type {
   SSTask,
   Stats,
   Task,
+  BlockedRecoveryResult,
   TaskArchive,
   TaskArchivePage,
   TaskAssetMutation,
@@ -263,6 +264,7 @@ export const api = {
   // ---- tasks ----
   tasks: () =>
     get<{ tasks: Task[]; active: string }>("/tasks").then((r) => ({ tasks: arr(r.tasks), active: r.active ?? "" })),
+  rerunBlockedAll: () => post<BlockedRecoveryResult>("/tasks/rerun-blocked-all", {}),
   task: (id: string) => get<Task>(`/tasks/${encodeURIComponent(id)}`),
   createTask: (input: {
     name?: string;

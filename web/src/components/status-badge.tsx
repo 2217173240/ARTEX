@@ -1,11 +1,8 @@
+"use client";
+
+import { useI18n } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
-import {
-  statusMeta,
-  toneClasses,
-  toneDot,
-  type StatusDomain,
-  type Tone,
-} from "@/lib/status";
+import { statusMeta, toneClasses, toneDot, type StatusDomain, type Tone } from "@/lib/status";
 
 export function StatusBadge({
   domain,
@@ -18,6 +15,7 @@ export function StatusBadge({
   dot?: boolean;
   className?: string;
 }) {
+  const { t } = useI18n();
   const meta = statusMeta(domain, value);
   return (
     <span
@@ -27,10 +25,8 @@ export function StatusBadge({
         className,
       )}
     >
-      {dot && (
-        <span className={cn("size-1.5 rounded-full", toneDot[meta.tone])} />
-      )}
-      {meta.label}
+      {dot && <span className={cn("size-1.5 rounded-full", toneDot[meta.tone])} />}
+      {meta.label === value ? value : t(meta.label)}
     </span>
   );
 }

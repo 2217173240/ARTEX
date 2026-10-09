@@ -1,5 +1,7 @@
 "use client";
 
+import { useI18n } from "@/lib/i18n";
+
 import * as React from "react";
 
 import { CheckIcon, CopyIcon } from "lucide-react";
@@ -23,12 +25,15 @@ type CopyButtonProps = {
 // 下自动降级(见 copyText)。
 export function CopyButton({
   text,
-  successMessage = "已复制",
-  label = "复制",
+  successMessage: successMessageProp,
+  label: labelProp,
   size = "sm",
   variant = "outline",
   className,
 }: CopyButtonProps) {
+  const { t: uiText } = useI18n();
+  const successMessage = successMessageProp ?? uiText("已复制");
+  const label = labelProp ?? uiText("复制");
   const [copied, setCopied] = React.useState(false);
   const timer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -47,19 +52,12 @@ export function CopyButton({
       if (timer.current) clearTimeout(timer.current);
       timer.current = setTimeout(() => setCopied(false), 1500);
     } else {
-      toast.error("复制失败，请手动选择文本复制");
+      toast.error(uiText("复制失败，请手动选择文本复制"));
     }
   }
 
   return (
-    <Button
-      type="button"
-      size={size}
-      variant={variant}
-      className={cn(className)}
-      disabled={!text}
-      onClick={handleCopy}
-    >
+    <Button type="button" size={size} variant={variant} className={cn(className)} disabled={!text} onClick={handleCopy}>
       {copied ? <CheckIcon /> : <CopyIcon />}
       {label}
     </Button>

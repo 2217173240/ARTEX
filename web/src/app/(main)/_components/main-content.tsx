@@ -1,9 +1,12 @@
 "use client";
 
+import { useI18n } from "@/lib/i18n";
+
 import { type ReactNode, useEffect, useState } from "react";
 
 import { usePathname } from "next/navigation";
 
+import { LanguageToggle } from "@/components/language-toggle";
 import { Separator } from "@/components/ui/separator";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { useCurrentUser } from "@/hooks/use-current-user";
@@ -32,6 +35,7 @@ function isFullBleed(pathname: string) {
 }
 
 export function MainContent({ children }: { children: ReactNode }) {
+  const { t: uiText } = useI18n();
   const currentUser = useCurrentUser();
   const pathname = usePathname();
   const [version, setVersion] = useState("");
@@ -66,8 +70,11 @@ export function MainContent({ children }: { children: ReactNode }) {
           </div>
           <div className="flex items-center gap-2">
             {version && (
-              <span className="font-medium text-muted-foreground text-xs tabular-nums">版本 · {version}</span>
+              <span className="font-medium text-muted-foreground text-xs tabular-nums">
+                {uiText("版本 ·")} {version}
+              </span>
             )}
+            <LanguageToggle />
             <UpdateBadge />
             <LayoutControls />
             <ThemeSwitcher />

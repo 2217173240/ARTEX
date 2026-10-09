@@ -324,7 +324,7 @@ for (const download of [
   {
     name: "finding export",
     invoke: (api) => api.exportFindings({ format: "csv", scope: "all" }),
-    url: "/api/exploration/findings/export?format=csv&scope=all",
+    url: "/api/exploration/findings/export?format=csv&scope=all&mode=consolidated&include_originals=false",
     filename: "findings.csv",
   },
   {
@@ -491,4 +491,22 @@ test("HTTP LAN login and logout work when crypto.randomUUID is unavailable", asy
   assert.ok(client.storage.get("artex_session_epoch"));
   assert.notEqual(client.storage.get("artex_session_epoch"), loginEpoch);
   assert.equal(client.auth.getCurrentUser(), null);
+});
+
+test("case export selection retains raw IDs and optional originals without leaking filtered scope", async () => {
+  const client = apiHarness(new Response("report"));
+  await client.api.exportFindings({
+    format: "md-single",
+    scope: "selected",
+    ids: ["7", "8"],
+    includeOriginals: true,
+    filters: { task: "other", assetScope: "asset:99" },
+  });
+  const params = new URL(client.requests[0].url, "https://example.test").searchParams;
+  assert.equal(params.get("scope"), "selected");
+  assert.equal(params.get("ids"), "7,8");
+  assert.equal(params.get("mode"), "consolidated");
+  assert.equal(params.get("include_originals"), "true");
+  assert.equal(params.has("task_id"), false);
+  assert.equal(params.has("asset_scope"), false);
 });

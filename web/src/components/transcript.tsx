@@ -1,5 +1,7 @@
 "use client";
 
+import { useI18n } from "@/lib/i18n";
+
 import * as React from "react";
 import {
   CheckIcon,
@@ -25,13 +27,7 @@ import { ApprovalDetail } from "@/components/approval-records";
 import type { Activity, InterceptPending } from "@/lib/types";
 
 // ---- per-agent lane color (planner + work#1/#2/#3 …) ---------------------------
-const workerColors = [
-  "bg-sky-600",
-  "bg-violet-600",
-  "bg-teal-600",
-  "bg-pink-600",
-  "bg-orange-600",
-];
+const workerColors = ["bg-sky-600", "bg-violet-600", "bg-teal-600", "bg-pink-600", "bg-orange-600"];
 function workerColor(name: string): string {
   if (name === "planner") return "bg-amber-600"; // the intent generator, distinct
   if (name === "mainagent") return "bg-primary";
@@ -173,9 +169,7 @@ function toolInputText(tool: string, raw: string): string {
       return JSON.parse('"' + m[1] + '"');
     } catch {
       // truncated mid-escape — unescape the common sequences best-effort.
-      return m[1].replace(/\\(["\\/nrt])/g, (_s, c) =>
-        c === "n" ? "\n" : c === "r" ? "\r" : c === "t" ? "\t" : c,
-      );
+      return m[1].replace(/\\(["\\/nrt])/g, (_s, c) => (c === "n" ? "\n" : c === "r" ? "\r" : c === "t" ? "\t" : c));
     }
   }
   return raw;
@@ -184,13 +178,8 @@ function toolInputText(tool: string, raw: string): string {
 // InterceptCard renders an inline intercept_request approval card. The pending_id
 // is extracted from the summary (format: "工具 X 请求审批 (#N)") so buttons are
 // available immediately without waiting for the detail load.
-function InterceptCard({
-  step,
-  getDetail,
-}: {
-  step: Activity;
-  getDetail: (seq: number) => Promise<string>;
-}) {
+function InterceptCard({ step, getDetail }: { step: Activity; getDetail: (seq: number) => Promise<string> }) {
+  const { t: uiText } = useI18n();
   // extract pending_id from summary: "工具 Bash 请求审批 (#42)"
   const pendingId = React.useMemo(() => {
     const m = /\(#(\d+)\)/.exec(step.summary);
@@ -217,25 +206,38 @@ function InterceptCard({
     getDetail(step.seq)
       .then((raw) => {
         if (!live || !raw) return;
-        try { setDetail(JSON.parse(raw)); } catch { /* ignore */ }
+        try {
+          setDetail(JSON.parse(raw));
+        } catch {
+          /* ignore */
+        }
       })
-      .catch(() => {/* ignore */});
-    return () => { live = false; };
+      .catch(() => {
+        /* ignore */
+      });
+    return () => {
+      live = false;
+    };
   }, [step.seq, getDetail]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: Retry explicitly reloads the same approval after a failed request.
   React.useEffect(() => {
     if (!pendingId) return;
     let live = true;
-    api.interceptGetOne(pendingId)
+    api
+      .interceptGetOne(pendingId)
       .then((p) => {
         if (!live) return;
         setPending(p);
         setStatusError("");
         if (p.status !== "pending") setDecided(p.status as "allowed" | "denied" | "timeout");
       })
-      .catch((error) => { if (live) setStatusError((error as Error).message || "审批详情加载失败"); });
-    return () => { live = false; };
+      .catch((error) => {
+        if (live) setStatusError((error as Error).message || "审批详情加载失败");
+      });
+    return () => {
+      live = false;
+    };
   }, [pendingId, retry]);
 
   async function decide(decision: "allowed" | "denied") {
@@ -244,7 +246,7 @@ function InterceptCard({
     try {
       await api.interceptDecide(pendingId, decision);
       setDecided(decision);
-      toast.success(decision === "allowed" ? "已允许执行" : "已拒绝执行");
+      toast.success(decision === "allowed" ? uiText("已允许执行") : uiText("已拒绝执行"));
     } catch (e) {
       toast.error((e as Error).message);
     } finally {
@@ -252,11 +254,11 @@ function InterceptCard({
     }
   }
 
-  const inputStr = detail?.input
-    ? JSON.stringify(detail.input).slice(0, 200)
-    : null;
+  const inputStr = detail?.input ? JSON.stringify(detail.input).slice(0, 200) : null;
 
-  const row = pending ? { ...pending, status: decided || pending.status, conv_title: "", conv_agent_key: "", rule_name: "" } : null;
+  const row = pending
+    ? { ...pending, status: decided || pending.status, conv_title: "", conv_agent_key: "", rule_name: "" }
+    : null;
 
   return (
     <div className="my-2 rounded-lg border border-amber-400/50 bg-amber-50/40 dark:bg-amber-950/15 p-3 text-xs">
@@ -265,32 +267,30 @@ function InterceptCard({
           <ShieldAlertIcon className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-500" />
           <div className="min-w-0 space-y-0.5">
             <div className="flex items-center gap-1.5 font-medium">
-              <span className="text-amber-700 dark:text-amber-400">审批请求</span>
+              <span className="text-amber-700 dark:text-amber-400">{uiText("审批请求")}</span>
               <code className="rounded bg-amber-100 dark:bg-amber-900/50 px-1 font-mono text-amber-800 dark:text-amber-300">
                 {toolName}
               </code>
-              {pendingId && (
-                <span className="text-muted-foreground">#{pendingId}</span>
-              )}
+              {pendingId && <span className="text-muted-foreground">#{pendingId}</span>}
             </div>
-            {inputStr && (
-              <p className="font-mono text-muted-foreground truncate">{inputStr}</p>
-            )}
+            {inputStr && <p className="font-mono text-muted-foreground truncate">{inputStr}</p>}
           </div>
         </div>
 
         {step.inherited ? (
-          <Badge variant="outline">历史记录 · 只读</Badge>
+          <Badge variant="outline">{uiText("历史记录 · 只读")}</Badge>
         ) : decided ? (
-          <span className={
-            "shrink-0 rounded px-2 py-0.5 text-[11px] font-medium " +
-            (decided === "allowed"
-              ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400"
-              : decided === "timeout"
-                ? "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400"
-                : "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400")
-          }>
-            {decided === "allowed" ? "已允许" : decided === "timeout" ? "已超时" : "已拒绝"}
+          <span
+            className={
+              "shrink-0 rounded px-2 py-0.5 text-[11px] font-medium " +
+              (decided === "allowed"
+                ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400"
+                : decided === "timeout"
+                  ? "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400"
+                  : "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400")
+            }
+          >
+            {decided === "allowed" ? uiText("已允许") : decided === "timeout" ? uiText("已超时") : uiText("已拒绝")}
           </span>
         ) : (
           <div className="flex shrink-0 gap-1.5">
@@ -301,7 +301,7 @@ function InterceptCard({
               onClick={() => decide("allowed")}
             >
               <CheckIcon className="h-3 w-3" />
-              允许
+              {uiText("允许")}
             </Button>
             <Button
               size="sm"
@@ -311,7 +311,7 @@ function InterceptCard({
               onClick={() => decide("denied")}
             >
               <XIcon className="h-3 w-3" />
-              拒绝
+              {uiText("拒绝")}
             </Button>
           </div>
         )}
@@ -319,9 +319,9 @@ function InterceptCard({
       {pendingId ? (
         <Collapsible open={expanded} onOpenChange={setExpanded} className="mt-2 min-w-0">
           <CollapsibleTrigger asChild>
-            <Button variant="ghost" size="sm" aria-label={expanded ? "收起审批详情" : "展开审批详情"}>
+            <Button variant="ghost" size="sm" aria-label={expanded ? uiText("收起审批详情") : uiText("展开审批详情")}>
               {expanded ? <ChevronDown data-icon="inline-start" /> : <ChevronRight data-icon="inline-start" />}
-              {expanded ? "收起审批详情" : "展开审批详情"}
+              {expanded ? uiText("收起审批详情") : uiText("展开审批详情")}
             </Button>
           </CollapsibleTrigger>
           <CollapsibleContent>
@@ -338,9 +338,13 @@ function InterceptCard({
             ) : statusError ? (
               <div className="flex flex-wrap items-center gap-2 p-3" role="alert">
                 <span>{statusError}</span>
-                <Button variant="outline" size="sm" onClick={() => setRetry((value) => value + 1)}>重试详情</Button>
+                <Button variant="outline" size="sm" onClick={() => setRetry((value) => value + 1)}>
+                  {uiText("重试详情")}
+                </Button>
               </div>
-            ) : <p className="p-3 text-muted-foreground">正在加载审批详情…</p>}
+            ) : (
+              <p className="p-3 text-muted-foreground">{uiText("正在加载审批详情…")}</p>
+            )}
           </CollapsibleContent>
         </Collapsible>
       ) : null}
@@ -362,6 +366,7 @@ function ToolBlock({
   showWorker?: boolean;
   focused?: boolean;
 }) {
+  const { t: uiText } = useI18n();
   const [open, setOpen] = React.useState(focused);
   const targetRef = React.useRef<HTMLElement>(null);
   const [detail, setDetail] = React.useState<string | null>(null);
@@ -457,7 +462,7 @@ function ToolBlock({
   return (
     <section
       ref={targetRef}
-      aria-label={focused ? `定位的工具调用 #${use?.seq}` : undefined}
+      aria-label={focused ? uiText("定位的工具调用 #{v0}", { v0: use?.seq }) : undefined}
       className={focused ? "rounded-lg border-2 border-primary bg-primary/5 p-3 text-xs" : "text-xs"}
     >
       <button type="button" onClick={toggle} className="flex w-full items-start gap-2 py-1 text-left hover:bg-muted/40">
@@ -472,7 +477,7 @@ function ToolBlock({
       </button>
       {open && (
         <pre className="ml-7 mb-1 max-h-72 overflow-auto whitespace-pre-wrap break-all rounded bg-muted/50 p-2 font-mono text-[11px] leading-relaxed">
-          {detail ?? "加载中…"}
+          {detail ?? uiText("加载中…")}
         </pre>
       )}
     </section>
@@ -490,6 +495,7 @@ function MessageBlock({
   getDetail: (seq: number) => Promise<string>;
   showWorker?: boolean;
 }) {
+  const { t: uiText } = useI18n();
   const [open, setOpen] = React.useState(false);
   const [detail, setDetail] = React.useState<string | null>(null);
   // like ToolBlock: keyed by the group's step seqs so streamed steps arriving
@@ -536,12 +542,12 @@ function MessageBlock({
         {showWorker && <span className={chip(group.worker)}>{group.worker}</span>}
         <span className={"min-w-0 flex-1 truncate " + tone}>
           {body}
-          {hasThinking && <span className="ml-1 text-[10px] text-muted-foreground">· 含推理</span>}
+          {hasThinking && <span className="ml-1 text-[10px] text-muted-foreground">{uiText("· 含推理")}</span>}
         </span>
       </button>
       {open && (
         <pre className="ml-7 mb-1 max-h-72 overflow-auto whitespace-pre-wrap break-all rounded bg-muted/50 p-2 font-mono text-[11px] leading-relaxed">
-          {detail ?? "加载中…"}
+          {detail ?? uiText("加载中…")}
         </pre>
       )}
     </div>
@@ -579,7 +585,15 @@ function parseUserBody(body: string): { text: string; attachments: MsgAttachment
   return { text: body, attachments: [] };
 }
 
-function UserRow({ step, intent, getDetail }: { step: Activity; intent?: boolean; getDetail: (seq: number) => Promise<string> }) {
+function UserRow({
+  step,
+  intent,
+  getDetail,
+}: {
+  step: Activity;
+  intent?: boolean;
+  getDetail: (seq: number) => Promise<string>;
+}) {
   const Icon = intent ? CrosshairIcon : UserIcon;
   const [ref, inView] = useInView();
   // Optimistic echoes carry their detail inline; persisted rows lazy-load it on scroll.
@@ -745,10 +759,14 @@ export function Transcript({
   fetchDetail?: (seq: number) => Promise<string>;
   focusedSeq?: number;
 }) {
+  const { t: uiText } = useI18n();
   const transcriptRef = React.useRef<HTMLDivElement>(null);
   const [focusPadding, setFocusPadding] = React.useState(0);
   React.useLayoutEffect(() => {
-    if (focusedSeq == null) { setFocusPadding(0); return; }
+    if (focusedSeq == null) {
+      setFocusPadding(0);
+      return;
+    }
     const viewport = transcriptRef.current?.closest('[data-slot="scroll-area-viewport"]');
     if (!viewport) return;
     const measure = () => setFocusPadding(viewport.clientHeight / 2);
@@ -758,7 +776,11 @@ export function Transcript({
     return () => observer.disconnect();
   }, [focusedSeq]);
   return (
-    <div ref={transcriptRef} className="flex flex-col gap-1" style={focusPadding ? { paddingBlock: focusPadding } : undefined}>
+    <div
+      ref={transcriptRef}
+      className="flex flex-col gap-1"
+      style={focusPadding ? { paddingBlock: focusPadding } : undefined}
+    >
       <ExecView activity={activity} taskId={taskId} chat={chat} fetchDetail={fetchDetail} focusedSeq={focusedSeq} />
       {live && (
         <div className="flex items-center gap-2 pl-2 pt-1 text-xs text-muted-foreground">
@@ -767,7 +789,7 @@ export function Transcript({
             <span className="size-1.5 animate-bounce rounded-full bg-blue-500 [animation-delay:-0.15s]" />
             <span className="size-1.5 animate-bounce rounded-full bg-blue-500" />
           </span>
-          实时流式中…
+          {uiText("实时流式中…")}
         </div>
       )}
     </div>

@@ -1647,6 +1647,7 @@ export interface FindingCaseListRow {
   matched_ids: number[];
 }
 export interface FindingCasePage {
+  matched_reports?: number;
   items: FindingCaseListRow[];
   total: number;
   page: number;
@@ -1679,4 +1680,9 @@ export interface FindingCaseReviewRun {
   task_id: string;
   state: "queued" | "running" | "done" | "failed";
   error: string;
+}
+
+export interface BlockedRecoveryResult {
+  items: { id: string; name: string; reopened: number; queued: boolean; error?: string }[];
+  reopened: number;
 }

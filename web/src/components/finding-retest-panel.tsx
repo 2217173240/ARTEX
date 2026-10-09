@@ -1,5 +1,7 @@
 "use client";
 
+import { useI18n } from "@/lib/i18n";
+
 import * as React from "react";
 
 import Link from "next/link";
@@ -42,6 +44,7 @@ export function FindingRetestPanel({
   readOnly?: boolean;
   onCompleted?: () => void;
 }) {
+  const { t: uiText } = useI18n();
   const [items, setItems] = React.useState<FindingRetest[] | null>(null);
   const [error, setError] = React.useState("");
   const [open, setOpen] = React.useState(false);
@@ -84,21 +87,21 @@ export function FindingRetestPanel({
     <Card>
       <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3">
         <div className="flex flex-col gap-1.5">
-          <CardTitle>漏洞复测</CardTitle>
-          <CardDescription>在独立会话中验证当前状态，保留每次复测的结论与证据。</CardDescription>
+          <CardTitle>{uiText("漏洞复测")}</CardTitle>
+          <CardDescription>{uiText("在独立会话中验证当前状态，保留每次复测的结论与证据。")}</CardDescription>
         </div>
         {running?.conversation_id != null ? (
           <Button asChild variant="outline" size="sm">
-            <Link href={`/chat?c=${running.conversation_id}`} title="查看正在进行的复测会话">
+            <Link href={`/chat?c=${running.conversation_id}`} title={uiText("查看正在进行的复测会话")}>
               <Spinner data-icon="inline-start" aria-hidden="true" />
-              复测中
+              {uiText("复测中")}
             </Link>
           </Button>
         ) : null}
         {!running && !readOnly ? (
           <Button size="sm" onClick={() => setOpen(true)} disabled={items === null || !!error}>
             <RotateCcwIcon data-icon="inline-start" />
-            发起复测
+            {uiText("发起复测")}
           </Button>
         ) : null}
       </CardHeader>
@@ -106,9 +109,10 @@ export function FindingRetestPanel({
         {error ? (
           <Alert variant="destructive">
             <AlertDescription>
-              加载复测记录失败：{error}
+              {uiText("加载复测记录失败：")}
+              {error}
               <Button variant="outline" size="sm" onClick={() => void load()}>
-                重试
+                {uiText("重试")}
               </Button>
             </AlertDescription>
           </Alert>
@@ -117,8 +121,8 @@ export function FindingRetestPanel({
         {!error && items?.length === 0 ? (
           <Empty>
             <EmptyHeader>
-              <EmptyTitle>暂无复测记录</EmptyTitle>
-              <EmptyDescription>修复部署完成后，可发起复测并比较新旧证据。</EmptyDescription>
+              <EmptyTitle>{uiText("暂无复测记录")}</EmptyTitle>
+              <EmptyDescription>{uiText("修复部署完成后，可发起复测并比较新旧证据。")}</EmptyDescription>
             </EmptyHeader>
           </Empty>
         ) : null}
@@ -138,10 +142,10 @@ export function FindingRetestPanel({
                   </span>
                   {item.conversation_id != null ? (
                     <Button asChild variant="ghost" size="sm" className="ml-auto">
-                      <Link href={`/chat?c=${item.conversation_id}`}>查看会话</Link>
+                      <Link href={`/chat?c=${item.conversation_id}`}>{uiText("查看会话")}</Link>
                     </Button>
                   ) : (
-                    <span className="text-muted-foreground text-xs">会话已删除</span>
+                    <span className="text-muted-foreground text-xs">{uiText("会话已删除")}</span>
                   )}
                 </div>
                 {item.status === "completed" && item.summary ? (
@@ -152,12 +156,13 @@ export function FindingRetestPanel({
                 ) : null}
                 {item.notes ? (
                   <p className="whitespace-pre-wrap break-words text-muted-foreground text-xs">
-                    补充说明：{item.notes}
+                    {uiText("补充说明：")}
+                    {item.notes}
                   </p>
                 ) : null}
                 {item.status === "completed" && item.evidence ? (
                   <details className="min-w-0">
-                    <summary className="cursor-pointer text-sm">复测证据</summary>
+                    <summary className="cursor-pointer text-sm">{uiText("复测证据")}</summary>
                     <div className="mt-3 overflow-x-auto">
                       <Markdown text={item.evidence} />
                     </div>

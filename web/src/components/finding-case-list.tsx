@@ -16,6 +16,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Checkbox } from "@/components/ui/checkbox";
 import { Spinner } from "@/components/ui/spinner";
 import { api } from "@/lib/api";
+import { useI18n } from "@/lib/i18n";
 import type {
   Finding,
   FindingCase,
@@ -31,12 +32,18 @@ export function FindingSeverityCounts({
 }: {
   counts: Pick<FindingCase, "critical" | "high" | "medium" | "low">;
 }) {
+  const { t: uiText } = useI18n();
   return (
     <span
       className="inline-flex items-center gap-0.5 text-sm tabular-nums"
-      title="原始上报记录：严重 / 高 / 中 / 低"
+      title={uiText("原始上报记录：严重 / 高 / 中 / 低")}
       role="img"
-      aria-label={`严重${counts.critical}，高危${counts.high}，中危${counts.medium}，低危${counts.low}`}
+      aria-label={uiText("严重{v0}，高危{v1}，中危{v2}，低危{v3}", {
+        v0: counts.critical,
+        v1: counts.high,
+        v2: counts.medium,
+        v3: counts.low,
+      })}
     >
       <span className={counts.critical ? "text-severity-critical" : "text-muted-foreground"}>{counts.critical}</span>
       <span>/</span>
@@ -62,6 +69,7 @@ export function FindingCaseMemberRow({
   contextTask?: string;
   matched?: boolean;
 }) {
+  const { t: uiText } = useI18n();
   const id = f.finding_id ?? f.id;
   return (
     <div
@@ -70,8 +78,12 @@ export function FindingCaseMemberRow({
         !matched && "bg-muted/30",
       )}
     >
-      {onSelect && !f.inherited ? (
-        <Checkbox checked={selected} onCheckedChange={(v) => onSelect(id, v === true)} aria-label={`选择上报 #${id}`} />
+      {onSelect && matched && !f.inherited ? (
+        <Checkbox
+          checked={selected}
+          onCheckedChange={(v) => onSelect(id, v === true)}
+          aria-label={uiText("选择上报 #{v0}", { v0: id })}
+        />
       ) : null}
       <StatusBadge domain="severity" value={f.severity} />
       <div className="flex min-w-0 flex-1 flex-col gap-1">
@@ -79,16 +91,16 @@ export function FindingCaseMemberRow({
           className="truncate font-medium hover:underline"
           href={`/function/findings/detail?id=${id}${contextTask ? `&context_task=${contextTask}` : ""}`}
         >
-          #{id} {[f.name, f.vulnclass].find((v) => v?.trim()) ?? "未分类"}
+          #{id} {[f.name, f.vulnclass].find((v) => v?.trim()) ?? uiText("未分类")}
         </Link>
         <span className="truncate text-muted-foreground text-xs">{f.summary}</span>
       </div>
-      {!matched ? <Badge variant="outline">未命中当前筛选</Badge> : null}
-      {f.inherited ? <Badge variant="outline">继承 · 只读</Badge> : null}
+      {!matched ? <Badge variant="outline">{uiText("未命中当前筛选")}</Badge> : null}
+      {f.inherited ? <Badge variant="outline">{uiText("继承 · 只读")}</Badge> : null}
       <StatusBadge domain="finding" value={f.status} />
       <Button asChild variant="ghost" size="sm">
         <Link href={`/function/findings/detail?id=${id}${contextTask ? `&context_task=${contextTask}` : ""}`}>
-          查看报告
+          {uiText("查看报告")}
         </Link>
       </Button>
     </div>
@@ -110,33 +122,47 @@ export function FindingCaseMembers({
   onSelect?: (id: string, checked: boolean) => void;
   contextTask?: string;
 }) {
+  const { t: uiText } = useI18n();
   const [page, setPage] = React.useState(1);
-  const [data, setData] = React.useState<{ items: Finding[]; total: number } | null>(null);
-  const [error, setError] = React.useState("");
+  const [snapshot, setSnapshot] = React.useState<{ key: string; value: { items: Finding[]; total: number } } | null>(
+    null,
+  );
+  const requestKey = JSON.stringify([caseId, page, contextTask]);
+  const data = snapshot?.key === requestKey ? snapshot.value : null;
+  const [failure, setFailure] = React.useState<{ key: string; message: string } | null>(null);
   const [retry, setRetry] = React.useState(0);
+  const error = failure?.key === requestKey ? failure.message : "";
+  // biome-ignore lint/correctness/useExhaustiveDependencies: changing case context resets independent member pagination.
+  React.useEffect(() => {
+    setPage(1);
+  }, [caseId, contextTask]);
+  React.useEffect(() => {
+    if (data && page > Math.max(1, Math.ceil(data.total / 20))) setPage(Math.max(1, Math.ceil(data.total / 20)));
+  }, [data, page]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: version and retry deliberately reload changed evidence.
   React.useEffect(() => {
     let active = true;
-    setError("");
+    setFailure(null);
     api
       .findingCaseMembers(caseId, page, contextTask)
       .then((v) => {
-        if (active) setData(v);
+        if (active) setSnapshot({ key: requestKey, value: v });
       })
       .catch((e) => {
-        if (active) setError((e as Error).message);
+        if (active) setFailure({ key: requestKey, message: (e as Error).message });
       });
     return () => {
       active = false;
     };
-  }, [caseId, page, version, contextTask, retry]);
-  if (error)
+  }, [caseId, page, version, contextTask, retry, requestKey]);
+  if (error && !data)
     return (
       <Alert>
         <AlertDescription>
-          成员加载失败：{error}
+          {uiText("成员加载失败：")}
+          {error}
           <Button variant="link" onClick={() => setRetry((v) => v + 1)}>
-            重试
+            {uiText("重试")}
           </Button>
         </AlertDescription>
       </Alert>
@@ -149,14 +175,25 @@ export function FindingCaseMembers({
     );
   return (
     <div className="flex min-w-0 flex-col">
+      {error ? (
+        <Alert>
+          <AlertDescription>
+            {uiText("成员加载失败：")}
+            {error}
+            <Button variant="link" onClick={() => setRetry((v) => v + 1)}>
+              {uiText("重试")}
+            </Button>
+          </AlertDescription>
+        </Alert>
+      ) : null}
       {data.items.map((f) => (
         <FindingCaseMemberRow
-          key={f.finding_id}
+          key={f.finding_id ?? f.id}
           finding={f}
           selected={selectedIds?.has(f.finding_id ?? f.id)}
           onSelect={onSelect}
           contextTask={contextTask}
-          matched={!matchedIds || matchedIds.includes(Number(f.finding_id))}
+          matched={!matchedIds || matchedIds.includes(Number(f.finding_id ?? f.id))}
         />
       ))}
       {data.total > 20 ? (
@@ -174,8 +211,15 @@ export function FindingCaseMembers({
 }
 
 export function FindingCaseReviewPanel({ taskId, onChange }: { taskId?: string; onChange?: () => void }) {
-  const [suggestions, setSuggestions] = React.useState<FindingCaseSuggestion[]>([]);
-  const [runs, setRuns] = React.useState<FindingCaseReviewRun[]>([]);
+  const { t: uiText } = useI18n();
+  const [reviewSnapshot, setReviewSnapshot] = React.useState<{
+    taskId?: string;
+    suggestions: FindingCaseSuggestion[];
+    runs: FindingCaseReviewRun[];
+  } | null>(null);
+  const suggestions = reviewSnapshot?.taskId === taskId ? (reviewSnapshot?.suggestions ?? []) : [];
+  const runs = reviewSnapshot?.taskId === taskId ? (reviewSnapshot?.runs ?? []) : [];
+  const [resolving, setResolving] = React.useState<Set<string>>(() => new Set());
   const [error, setError] = React.useState("");
   React.useEffect(() => {
     let active = true;
@@ -184,8 +228,7 @@ export function FindingCaseReviewPanel({ taskId, onChange }: { taskId?: string; 
       try {
         const [s, r] = await Promise.all([api.findingCaseSuggestions(taskId), api.findingCaseReviewRuns()]);
         if (active) {
-          setSuggestions(s);
-          setRuns(r.filter((x) => !taskId || x.task_id === taskId));
+          setReviewSnapshot({ taskId, suggestions: s, runs: r.filter((x) => !taskId || x.task_id === taskId) });
           setError("");
         }
       } catch (e) {
@@ -201,24 +244,33 @@ export function FindingCaseReviewPanel({ taskId, onChange }: { taskId?: string; 
     };
   }, [taskId]);
   async function resolve(s: FindingCaseSuggestion, accept: boolean) {
+    if (resolving.has(s.id)) return;
+    setResolving((current) => new Set([...current, s.id]));
     try {
       const result = await api.resolveFindingCaseSuggestion(s.id, accept);
-      setSuggestions((v) => v.filter((x) => x.id !== s.id));
+      setReviewSnapshot((current) =>
+        current ? { ...current, suggestions: current.suggestions.filter((x) => x.id !== s.id) } : null,
+      );
       if (accept && result.case_id !== "0") {
-        toast.success("已归并，统一报告待生成");
+        toast.success(uiText("已归并，统一报告待生成"));
       } else {
-        toast.success("已否决，不会自动再次归并");
+        toast.success(uiText("已否决，不会自动再次归并"));
       }
       onChange?.();
     } catch (e) {
       toast.error((e as Error).message);
+    } finally {
+      setResolving((current) => new Set([...current].filter((id) => id !== s.id)));
     }
   }
   return (
     <div className="flex flex-col gap-2">
       {error ? (
         <Alert>
-          <AlertDescription>整理状态加载失败：{error}</AlertDescription>
+          <AlertDescription>
+            {uiText("整理状态加载失败：")}
+            {error}
+          </AlertDescription>
         </Alert>
       ) : null}
       {suggestions.map((s) => (
@@ -226,13 +278,14 @@ export function FindingCaseReviewPanel({ taskId, onChange }: { taskId?: string; 
           <AlertDescription>
             <div className="flex flex-wrap items-center gap-2">
               <span className="flex-1">
-                疑似重复：#{s.left_id} / #{s.right_id} · {s.title}。{s.reason}
+                {uiText("疑似重复：#")}
+                {s.left_id} / #{s.right_id} · {s.title}。{s.reason}
               </span>
-              <Button variant="outline" size="sm" onClick={() => resolve(s, true)}>
-                确认归并
+              <Button variant="outline" size="sm" disabled={resolving.has(s.id)} onClick={() => resolve(s, true)}>
+                {uiText("确认归并")}
               </Button>
-              <Button variant="ghost" size="sm" onClick={() => resolve(s, false)}>
-                不是同一漏洞
+              <Button variant="ghost" size="sm" disabled={resolving.has(s.id)} onClick={() => resolve(s, false)}>
+                {uiText("不是同一漏洞")}
               </Button>
             </div>
           </AlertDescription>
@@ -241,11 +294,17 @@ export function FindingCaseReviewPanel({ taskId, onChange }: { taskId?: string; 
       {runs.slice(0, 5).map((r) => (
         <div key={r.conversation_id} className="flex flex-wrap items-center gap-2 text-muted-foreground text-xs">
           <span>
-            任务 #{r.task_id} 整理：{{ queued: "排队中", running: "运行中", done: "已完成", failed: "失败" }[r.state]}
+            {uiText("任务 #")}
+            {r.task_id} {uiText("整理：")}
+            {
+              { queued: uiText("排队中"), running: uiText("运行中"), done: uiText("已完成"), failed: uiText("失败") }[
+                r.state
+              ]
+            }
           </span>
           {r.error ? <span className="text-destructive">{r.error}</span> : null}
           <Link className="underline" href={`/chat?c=${r.conversation_id}`}>
-            查看执行记录
+            {uiText("查看执行记录")}
           </Link>
         </div>
       ))}
@@ -260,6 +319,7 @@ export function FindingCaseList({
   contextTask,
   readOnly = false,
   onTotal,
+  refreshToken = 0,
 }: {
   query: Omit<FindingQuery, "page" | "pageSize">;
   selectedIds?: Set<string>;
@@ -267,13 +327,18 @@ export function FindingCaseList({
   contextTask?: string;
   readOnly?: boolean;
   onTotal?: (total: number) => void;
+  refreshToken?: number;
 }) {
+  const { t: uiText } = useI18n();
   const [page, setPage] = React.useState(1);
-  const [data, setData] = React.useState<FindingCasePage | null>(null);
-  const [error, setError] = React.useState("");
+  const [snapshot, setSnapshot] = React.useState<{ key: string; value: FindingCasePage } | null>(null);
+  const [failure, setFailure] = React.useState<{ key: string; message: string } | null>(null);
   const [open, setOpen] = React.useState<Set<string>>(() => new Set());
   const [refresh, setRefresh] = React.useState(0);
   const key = JSON.stringify(query);
+  const requestKey = JSON.stringify([key, page]);
+  const data = snapshot?.key === requestKey ? snapshot.value : null;
+  const error = failure?.key === requestKey ? failure.message : "";
   // biome-ignore lint/correctness/useExhaustiveDependencies: reset pagination when the filter fingerprint changes.
   React.useEffect(() => {
     setPage(1);
@@ -286,11 +351,11 @@ export function FindingCaseList({
       try {
         const v = await api.findingCases({ ...JSON.parse(key), page, pageSize: 20 });
         if (active) {
-          setData(v);
-          setError("");
+          setSnapshot({ key: requestKey, value: v });
+          setFailure(null);
         }
       } catch (e) {
-        if (active) setError((e as Error).message);
+        if (active) setFailure({ key: requestKey, message: (e as Error).message });
       } finally {
         if (active) timer = setTimeout(load, 5000);
       }
@@ -300,10 +365,13 @@ export function FindingCaseList({
       active = false;
       clearTimeout(timer);
     };
-  }, [key, page, refresh]);
+  }, [key, page, refresh, requestKey, refreshToken]);
   React.useEffect(() => {
-    if (data) onTotal?.(data.total);
+    onTotal?.(data?.matched_reports ?? 0);
   }, [data, onTotal]);
+  React.useEffect(() => {
+    if (data && page > Math.max(1, Math.ceil(data.total / 20))) setPage(Math.max(1, Math.ceil(data.total / 20)));
+  }, [data, page]);
   const toggle = (id: string) =>
     setOpen((v) => {
       const next = new Set(v);
@@ -322,9 +390,10 @@ export function FindingCaseList({
       {error ? (
         <Alert>
           <AlertDescription>
-            加载失败：{error}
+            {uiText("加载失败：")}
+            {error}
             <Button variant="link" onClick={() => setRefresh((v) => v + 1)}>
-              重试
+              {uiText("重试")}
             </Button>
           </AlertDescription>
         </Alert>
@@ -336,8 +405,10 @@ export function FindingCaseList({
       ) : null}
       {data ? (
         <p className="text-muted-foreground text-xs">
-          {data.stats.total} 个独立漏洞 · {data.stats.reports} 条上报
-          {data.stats.unassessed > 0 ? ` · ${data.stats.unassessed} 个待评估` : ""}
+          {uiText("当前筛选：{cases} 个独立漏洞 · {reports} 条上报", {
+            cases: data.total,
+            reports: data.matched_reports,
+          })}
         </p>
       ) : null}
       {data?.items.map((row) => {
@@ -350,7 +421,7 @@ export function FindingCaseList({
                   <Button
                     variant="ghost"
                     size="icon-sm"
-                    aria-label={`${open.has(group.id) ? "收起" : "展开"}${group.title}`}
+                    aria-label={`${open.has(group.id) ? uiText("收起") : uiText("展开")}${group.title}`}
                     aria-expanded={open.has(group.id)}
                     onClick={() => toggle(group.id)}
                   >
@@ -367,15 +438,22 @@ export function FindingCaseList({
                       </Link>
                     </CardTitle>
                     <CardDescription>
-                      {group.count} 条上报 ·{" "}
-                      {group.report_version !== group.version ? "统一报告待更新" : "统一报告已生成"}
+                      {group.count} {uiText("条上报 ·")}{" "}
+                      {group.report_version !== group.version ? uiText("统一报告待更新") : uiText("统一报告已生成")}
                     </CardDescription>
                   </div>
                   <FindingSeverityCounts counts={group} />
                   <Badge variant="outline">
                     {group.severity
-                      ? `统一评级：${{ critical: "严重", high: "高危", medium: "中危", low: "低危" }[group.severity]}`
-                      : "待评估"}
+                      ? uiText("统一评级：{v0}", {
+                          v0: {
+                            critical: uiText("严重"),
+                            high: uiText("高危"),
+                            medium: uiText("中危"),
+                            low: uiText("低危"),
+                          }[group.severity],
+                        })
+                      : uiText("待评估")}
                   </Badge>
                 </div>
               </CardHeader>
@@ -396,7 +474,7 @@ export function FindingCaseList({
         }
         if (row.finding)
           return (
-            <Card key={`finding:${row.finding.finding_id}`} className="gap-0 py-0">
+            <Card key={`finding:${row.finding.finding_id ?? row.finding.id}`} className="gap-0 py-0">
               <CardContent className="px-0">
                 <FindingCaseMemberRow
                   finding={row.finding}
@@ -409,7 +487,9 @@ export function FindingCaseList({
           );
         return null;
       })}
-      {data?.total === 0 ? <p className="p-6 text-center text-muted-foreground text-sm">暂无匹配漏洞</p> : null}
+      {data?.total === 0 ? (
+        <p className="p-6 text-center text-muted-foreground text-sm">{uiText("暂无匹配漏洞")}</p>
+      ) : null}
       {data ? (
         <TablePagination
           page={page}

@@ -1,5 +1,7 @@
 "use client";
 
+import { useI18n } from "@/lib/i18n";
+
 import * as React from "react";
 
 import { PlusIcon, Trash2Icon } from "lucide-react";
@@ -34,6 +36,7 @@ export function AssetInterceptRulesEditor({
   value: AssetInterceptRuleInput[];
   onChange: (v: AssetInterceptRuleInput[]) => void;
 }) {
+  const { t: uiText } = useI18n();
   function update(i: number, patch: Partial<AssetInterceptRuleInput>) {
     onChange(value.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
   }
@@ -56,8 +59,8 @@ export function AssetInterceptRulesEditor({
               value={r.action}
               onChange={(e) => update(i, { action: e.target.value as "block" | "allow" })}
             >
-              <NativeSelectOption value="block">拦截</NativeSelectOption>
-              <NativeSelectOption value="allow">允许</NativeSelectOption>
+              <NativeSelectOption value="block">{uiText("拦截")}</NativeSelectOption>
+              <NativeSelectOption value="allow">{uiText("允许")}</NativeSelectOption>
             </NativeSelect>
             <NativeSelect
               size="sm"
@@ -67,7 +70,7 @@ export function AssetInterceptRulesEditor({
             >
               {ASSET_INTERCEPT_KIND_OPTIONS.map((o) => (
                 <NativeSelectOption key={o.value} value={o.value}>
-                  {o.label}
+                  {uiText(o.label)}
                 </NativeSelectOption>
               ))}
             </NativeSelect>
@@ -79,7 +82,7 @@ export function AssetInterceptRulesEditor({
             />
             <Input
               className="w-[120px] shrink-0"
-              placeholder="备注(可选)"
+              placeholder={uiText("备注(可选)")}
               value={r.note}
               onChange={(e) => update(i, { note: e.target.value })}
             />
@@ -96,7 +99,7 @@ export function AssetInterceptRulesEditor({
         );
       })}
       <Button type="button" size="sm" variant="outline" className="w-fit" onClick={add}>
-        <PlusIcon className="size-4" /> 添加一条
+        <PlusIcon className="size-4" /> {uiText("添加一条")}
       </Button>
     </div>
   );

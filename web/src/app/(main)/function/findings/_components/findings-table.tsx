@@ -36,6 +36,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { useI18n } from "@/lib/i18n";
 import { statusMeta } from "@/lib/status";
 import type { ActiveFindingRetest, Finding, FindingStatus, Severity } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -129,8 +130,9 @@ export function FindingsTable({
   activeRetests,
   onDeepen,
   onDelete,
-  selectAllLabel = "选择当前页全部",
+  selectAllLabel,
 }: FindingsTableProps) {
+  const { t: uiText } = useI18n();
   const tableId = React.useId();
   const selectableIds = items.map((finding) => finding.finding_id).filter((id): id is string => Boolean(id));
   const selectedCount = selectableIds.filter((id) => selectedIds.has(id)).length;
@@ -145,8 +147,8 @@ export function FindingsTable({
     return (
       <div className="flex min-h-40 flex-col items-center justify-center gap-2 px-6 py-8 text-center" role="status">
         <FileTextIcon className="size-6 text-muted-foreground" aria-hidden="true" />
-        <p className="text-sm font-medium">当前条件下暂无发现</p>
-        <p className="text-xs text-muted-foreground">可调整关键词、严重度或任务筛选。</p>
+        <p className="font-medium text-sm">{uiText("当前条件下暂无发现")}</p>
+        <p className="text-muted-foreground text-xs">{uiText("可调整关键词、严重度或任务筛选。")}</p>
       </div>
     );
   }
@@ -158,7 +160,7 @@ export function FindingsTable({
       containerProps={{
         tabIndex: 0,
         role: "region",
-        "aria-label": "漏洞发现列表，可横向滚动",
+        "aria-label": uiText("漏洞发现列表，可横向滚动"),
         className:
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/50",
       }}
@@ -169,23 +171,23 @@ export function FindingsTable({
             <Checkbox
               checked={headerChecked}
               onCheckedChange={(checked) => onToggleSelectedPage(selectableIds, checked === true)}
-              aria-label={selectAllLabel}
+              aria-label={selectAllLabel ?? uiText("选择当前页全部")}
             />
           </TableHead>
           <TableHead className="w-12" />
-          <TableHead className="w-20">严重度</TableHead>
-          <TableHead className="w-64">漏洞名称</TableHead>
-          <TableHead className="w-40">资产</TableHead>
-          <TableHead className="w-28">状态</TableHead>
-          <TableHead className="w-28">所属任务</TableHead>
-          <TableHead className="w-24">时间</TableHead>
-          <TableHead className="w-48">操作</TableHead>
+          <TableHead className="w-20">{uiText("严重度")}</TableHead>
+          <TableHead className="w-64">{uiText("漏洞名称")}</TableHead>
+          <TableHead className="w-40">{uiText("资产")}</TableHead>
+          <TableHead className="w-28">{uiText("状态")}</TableHead>
+          <TableHead className="w-28">{uiText("所属任务")}</TableHead>
+          <TableHead className="w-24">{uiText("时间")}</TableHead>
+          <TableHead className="w-48">{uiText("操作")}</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
         {items.map((f) => {
           const rowKey = findingRowKey(f);
-          const findingTitle = f.name || f.vulnclass || "未分类";
+          const findingTitle = f.name || f.vulnclass || uiText("未分类");
           const detailsId = `${tableId}-details-${encodeURIComponent(rowKey)}`;
           const open = expandedKey === rowKey;
           const retest = f.finding_id ? activeRetests[f.finding_id] : undefined;
@@ -197,7 +199,7 @@ export function FindingsTable({
                     <Checkbox
                       checked={selectedIds.has(f.finding_id)}
                       onCheckedChange={(c) => onToggleSelected(f.finding_id as string, c === true)}
-                      aria-label={`选择漏洞：${findingTitle}`}
+                      aria-label={uiText("选择漏洞：{v0}", { v0: findingTitle })}
                     />
                   )}
                 </TableCell>
@@ -206,7 +208,10 @@ export function FindingsTable({
                     type="button"
                     size="icon-sm"
                     variant="ghost"
-                    aria-label={`${open ? "收起" : "展开"}漏洞详情：${findingTitle}`}
+                    aria-label={uiText("{v0}漏洞详情：{v1}", {
+                      v0: open ? uiText("收起") : uiText("展开"),
+                      v1: findingTitle,
+                    })}
                     aria-expanded={open}
                     aria-controls={detailsId}
                     onClick={() => onToggleRow(f)}
@@ -239,8 +244,10 @@ export function FindingsTable({
                         {findingTitle}
                       </span>
                     )}
-                    <span className="truncate text-xs text-muted-foreground">{f.summary}</span>
-                    <Badge variant="outline">流量证据 {f.traffic_count ?? 0} 条</Badge>
+                    <span className="truncate text-muted-foreground text-xs">{f.summary}</span>
+                    <Badge variant="outline">
+                      {uiText("流量证据")} {f.traffic_count ?? 0} {uiText("条")}
+                    </Badge>
                   </div>
                 </TableCell>
                 <TableCell>
@@ -256,7 +263,7 @@ export function FindingsTable({
                         </code>
                       ))}
                       {f.assets.length > 3 && (
-                        <span className="text-xs text-muted-foreground">+{f.assets.length - 3}</span>
+                        <span className="text-muted-foreground text-xs">+{f.assets.length - 3}</span>
                       )}
                     </div>
                   ) : (
@@ -269,14 +276,14 @@ export function FindingsTable({
                       <SelectTrigger
                         size="sm"
                         className="h-7 w-full border-none px-1 shadow-none"
-                        aria-label={`更新漏洞状态：${findingTitle}`}
+                        aria-label={uiText("更新漏洞状态：{v0}", { v0: findingTitle })}
                       >
                         <StatusBadge domain="finding" value={f.status} dot />
                       </SelectTrigger>
                       <SelectContent position="popper" align="end">
                         {FINDING_STATUSES.map((st) => (
                           <SelectItem key={st} value={st}>
-                            {statusMeta("finding", st).label}
+                            {uiText(statusMeta("finding", st).label)}
                           </SelectItem>
                         ))}
                       </SelectContent>
@@ -300,27 +307,32 @@ export function FindingsTable({
                     <span className="text-muted-foreground">—</span>
                   )}
                 </TableCell>
-                <TableCell className="text-xs text-muted-foreground tabular-nums">{fmtTime(f.ts)}</TableCell>
+                <TableCell className="text-muted-foreground text-xs tabular-nums">{fmtTime(f.ts)}</TableCell>
                 <TableCell onClick={(e) => e.stopPropagation()}>
                   <div className="flex items-center gap-1">
                     {retest ? (
                       <Button asChild size="sm" variant="ghost">
-                        <Link href={`/chat?c=${retest.conversation_id}`} title="查看正在进行的复测会话">
+                        <Link href={`/chat?c=${retest.conversation_id}`} title={uiText("查看正在进行的复测会话")}>
                           <Spinner aria-hidden="true" data-icon="inline-start" />
-                          复测中
+                          {uiText("复测中")}
                         </Link>
                       </Button>
                     ) : null}
                     {!retest && f.finding_id && !f.inherited ? (
-                      <Button size="sm" variant="ghost" onClick={() => onRetest(f)} title="在独立会话中复测该漏洞">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => onRetest(f)}
+                        title={uiText("在独立会话中复测该漏洞")}
+                      >
                         <RotateCcwIcon aria-hidden="true" data-icon="inline-start" />
-                        复测
+                        {uiText("复测")}
                       </Button>
                     ) : null}
                     {f.finding_id && f.task_id && (
                       <Button size="sm" variant="ghost" onClick={() => onDeepen(f)}>
                         <FlaskConicalIcon aria-hidden="true" data-icon="inline-start" />
-                        深入
+                        {uiText("深入")}
                       </Button>
                     )}
                     {f.finding_id && (
@@ -330,25 +342,25 @@ export function FindingsTable({
                             size="icon"
                             variant="ghost"
                             className="size-7 text-muted-foreground hover:text-destructive"
-                            aria-label={`删除漏洞：${findingTitle}`}
+                            aria-label={uiText("删除漏洞：{v0}", { v0: findingTitle })}
                           >
                             <Trash2Icon aria-hidden="true" className="size-4" />
                           </Button>
                         </AlertDialogTrigger>
                         <AlertDialogContent>
                           <AlertDialogHeader>
-                            <AlertDialogTitle>确认删除该漏洞？</AlertDialogTitle>
+                            <AlertDialogTitle>{uiText("确认删除该漏洞？")}</AlertDialogTitle>
                             <AlertDialogDescription className="break-words">
                               「
                               <span className="break-all">
                                 {f.name || f.vulnclass || f.summary || `#${f.finding_id}`}
                               </span>
-                              」将被永久删除， 同时从发现列表、任务发现 Tab 与探索图中移除，此操作不可撤销。
+                              {uiText("」将被永久删除， 同时从发现列表、任务发现 Tab 与探索图中移除，此操作不可撤销。")}
                             </AlertDialogDescription>
                           </AlertDialogHeader>
                           <AlertDialogFooter>
-                            <AlertDialogCancel>取消</AlertDialogCancel>
-                            <AlertDialogAction onClick={() => onDelete(f)}>删除</AlertDialogAction>
+                            <AlertDialogCancel>{uiText("取消")}</AlertDialogCancel>
+                            <AlertDialogAction onClick={() => onDelete(f)}>{uiText("删除")}</AlertDialogAction>
                           </AlertDialogFooter>
                         </AlertDialogContent>
                       </AlertDialog>
@@ -359,30 +371,30 @@ export function FindingsTable({
               <TableRow id={detailsId} hidden={!open} className="hover:bg-transparent">
                 {/* whitespace-normal 覆盖 TableCell 默认的 nowrap,否则展开区文字
                       被强制单行、直接溢出单元格。 */}
-                <TableCell colSpan={COLUMN_COUNT} className="bg-muted/30 whitespace-normal">
+                <TableCell colSpan={COLUMN_COUNT} className="whitespace-normal bg-muted/30">
                   {open && (
                     <div className="flex flex-col gap-2 px-2 py-1">
                       {/* 行内编辑:名称/类别/严重等级,可改并保存(仅独立 finding 行)。 */}
                       {f.finding_id && edit && (
                         <div className="flex flex-wrap items-end gap-3 rounded-md border bg-background px-3 py-2.5">
                           <div className="flex min-w-[12rem] flex-1 flex-col gap-1">
-                            <Label className="text-xs text-muted-foreground">漏洞名称</Label>
+                            <Label className="text-muted-foreground text-xs">{uiText("漏洞名称")}</Label>
                             <Input
                               value={edit.name}
                               onChange={(e) => onEditChange((s) => (s ? { ...s, name: e.target.value } : s))}
-                              placeholder="可读标题，留空回退类别"
+                              placeholder={uiText("可读标题，留空回退类别")}
                             />
                           </div>
                           <div className="flex min-w-[10rem] flex-col gap-1">
-                            <Label className="text-xs text-muted-foreground">类别</Label>
+                            <Label className="text-muted-foreground text-xs">{uiText("类别")}</Label>
                             <Input
                               value={edit.vulnclass}
                               onChange={(e) => onEditChange((s) => (s ? { ...s, vulnclass: e.target.value } : s))}
-                              placeholder="如 SQL Injection"
+                              placeholder={uiText("如 SQL Injection")}
                             />
                           </div>
                           <div className="flex flex-col gap-1">
-                            <Label className="text-xs text-muted-foreground">严重等级</Label>
+                            <Label className="text-muted-foreground text-xs">{uiText("严重等级")}</Label>
                             <Select
                               value={edit.severity}
                               onValueChange={(v) => onEditChange((s) => (s ? { ...s, severity: v as Severity } : s))}
@@ -393,30 +405,30 @@ export function FindingsTable({
                               <SelectContent>
                                 {SEVERITIES.map((sv) => (
                                   <SelectItem key={sv} value={sv}>
-                                    {statusMeta("severity", sv).label}
+                                    {uiText(statusMeta("severity", sv).label)}
                                   </SelectItem>
                                 ))}
                               </SelectContent>
                             </Select>
                           </div>
                           <Button size="sm" disabled={saving} onClick={() => onSave(f)}>
-                            {saving ? "保存中…" : "保存"}
+                            {saving ? uiText("保存中…") : uiText("保存")}
                           </Button>
                         </div>
                       )}
-                      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                      <div className="flex flex-wrap items-center gap-2 text-muted-foreground text-xs">
                         <ShieldAlertIcon aria-hidden="true" className="size-3.5" />
-                        证据
+                        {uiText("证据")}
                         {f.vulnclass && (
                           <span>
-                            · 类型：
+                            {uiText("· 类型：")}
                             <code className="rounded bg-muted px-1.5 py-0.5 font-mono">{f.vulnclass}</code>
                           </span>
                         )}
                         {f.param_id && <code className="rounded bg-muted px-1.5 py-0.5 font-mono">{f.param_id}</code>}
                         {f.assets && f.assets.length > 0 && (
                           <span className="flex flex-wrap items-center gap-1">
-                            · 资产：
+                            {uiText("· 资产：")}
                             {f.assets.map((a) => (
                               <code key={a.id} className="rounded bg-muted px-1.5 py-0.5 font-mono" title={a.type}>
                                 {a.label}
@@ -425,22 +437,22 @@ export function FindingsTable({
                           </span>
                         )}
                       </div>
-                      <pre className="overflow-x-auto rounded-md bg-muted px-3 py-2 font-mono text-xs whitespace-pre-wrap">
+                      <pre className="overflow-x-auto whitespace-pre-wrap rounded-md bg-muted px-3 py-2 font-mono text-xs">
                         {f.evidence}
                       </pre>
 
                       {/* 详细报告(Markdown):展开时按 finding_id 懒加载,免进详情页即可查看。 */}
                       {f.finding_id && (
                         <div className="flex flex-col gap-1.5">
-                          <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                          <div className="flex items-center justify-between gap-2 text-muted-foreground text-xs">
                             <span className="flex items-center gap-2">
                               <FileTextIcon aria-hidden="true" className="size-3.5" />
-                              详细报告
+                              {uiText("详细报告")}
                             </span>
                             {reports[rowKey]?.status === "done" && reports[rowKey]?.text.trim() && (
                               <CopyButton
                                 text={reports[rowKey]?.text}
-                                successMessage="已复制详细报告"
+                                successMessage={uiText("已复制详细报告")}
                                 variant="ghost"
                                 className="h-6 px-2 text-xs"
                               />
@@ -449,11 +461,11 @@ export function FindingsTable({
                           {(() => {
                             const rep = reports[rowKey];
                             if (!rep || rep.status === "loading")
-                              return <p className="text-xs text-muted-foreground">加载中…</p>;
+                              return <p className="text-muted-foreground text-xs">{uiText("加载中…")}</p>;
                             if (rep.status === "error")
-                              return <p className="text-xs text-muted-foreground">报告加载失败。</p>;
+                              return <p className="text-muted-foreground text-xs">{uiText("报告加载失败。")}</p>;
                             if (!rep.text.trim())
-                              return <p className="text-xs text-muted-foreground">暂无详细报告。</p>;
+                              return <p className="text-muted-foreground text-xs">{uiText("暂无详细报告。")}</p>;
                             return (
                               // break-words 会继承到段落/列表,pre 另加
                               // whitespace-pre-wrap 让代码块也换行——否则长代码行/长 URL
@@ -474,8 +486,8 @@ export function FindingsTable({
         })}
         {items.length === 0 && (
           <TableRow>
-            <TableCell colSpan={COLUMN_COUNT} className="py-12 text-center text-sm text-muted-foreground">
-              没有匹配的发现。
+            <TableCell colSpan={COLUMN_COUNT} className="py-12 text-center text-muted-foreground text-sm">
+              {uiText("没有匹配的发现。")}
             </TableCell>
           </TableRow>
         )}
