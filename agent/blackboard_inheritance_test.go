@@ -25,7 +25,7 @@ func callReadJSON(t *testing.T, tool actool.CoreTool, input string) any {
 	return out
 }
 
-func TestGraphOverviewExpandsAssociatedCompanyScope(t *testing.T) {
+func TestAssociatedCompanyScopeAvailableOnDemand(t *testing.T) {
 	d := testDB(t)
 	defer d.Close()
 
@@ -82,26 +82,33 @@ func TestGraphOverviewExpandsAssociatedCompanyScope(t *testing.T) {
 	if !ok {
 		t.Fatalf("coverage missing: %#v", overview["coverage"])
 	}
-	scopeRows, ok := coverage["scope"].([]map[string]any)
-	if !ok || len(scopeRows) != 1 {
-		t.Fatalf("task scope missing: %#v", coverage["scope"])
+	// The distilled overview intentionally stopped embedding company scope in
+	// 06a43f3. Its on-demand read tool must still expose every configured value.
+	companyInput, _ := json.Marshal(map[string]string{"search": companiesName(t, companies, companyID)})
+	listed, ok := callReadJSON(t, tools.listCompanies(), string(companyInput)).(map[string]any)
+	if !ok {
+		t.Fatalf("company lookup missing: %#v", listed)
 	}
-	companyScope, ok := scopeRows[0]["company_scope"].([]map[string]any)
+	companyRows, ok := listed["companies"].([]any)
+	if !ok || len(companyRows) != 1 {
+		t.Fatalf("company lookup rows: %#v", listed["companies"])
+	}
+	company, ok := companyRows[0].(map[string]any)
+	if !ok || company["id"] != float64(companyID) {
+		t.Fatalf("company lookup returned wrong company: %#v", companyRows[0])
+	}
+	companyScope, ok := company["scope"].([]any)
 	if !ok || len(companyScope) != len(inputs) {
-		t.Fatalf("company scope not expanded: %#v", scopeRows[0])
+		t.Fatalf("company scope missing from lookup: %#v", company["scope"])
 	}
-	kinds := make(map[string]string, len(companyScope))
-	for _, rule := range companyScope {
-		kinds[fmt.Sprint(rule["kind"])] = fmt.Sprint(rule["value"])
+	values := make(map[string]bool, len(companyScope))
+	for _, value := range companyScope {
+		values[fmt.Sprint(value)] = true
 	}
 	for _, input := range inputs {
-		if kinds[input.Kind] != input.Value {
-			t.Errorf("scope %s=%q want %q", input.Kind, kinds[input.Kind], input.Value)
+		if !values[input.Value] {
+			t.Errorf("scope %s=%q missing from company lookup", input.Kind, input.Value)
 		}
-	}
-	keywords, ok := scopeRows[0]["company_keywords"].([]string)
-	if !ok || len(keywords) != 1 || keywords[0] != keyword {
-		t.Fatalf("company keywords missing: %#v", scopeRows[0]["company_keywords"])
 	}
 	if hc, _ := coverage["host_count"].(int); hc < 1 {
 		t.Fatalf("company asset host not counted in agent context: %#v", coverage["host_count"])

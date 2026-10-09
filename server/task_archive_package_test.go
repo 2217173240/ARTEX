@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"bytes"
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,6 +13,33 @@ import (
 	pgdb "github.com/Autumn-27/artex/db"
 	"github.com/klauspost/compress/zstd"
 )
+
+func TestTaskArchiveStageJournalMissingPlannedSourceFails(t *testing.T) {
+	root := t.TempDir()
+	stageRoot := filepath.Join(root, "stage")
+	payload := filepath.Join(stageRoot, "payload")
+	source := filepath.Join(root, "source.txt")
+	if err := os.MkdirAll(payload, archiveDirMode); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(source, []byte("source"), archiveFileMode); err != nil {
+		t.Fatal(err)
+	}
+	stage := &taskArchiveFileStage{root: stageRoot, payload: payload, journal: archiveStageJournal{Moves: []archiveFileMove{
+		{Source: source, Relative: "files/source.txt"},
+		{Source: filepath.Join(root, "missing.txt"), Relative: "files/missing.txt"},
+	}}}
+	err := stage.applyMoves()
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("applyMoves err=%v, want wrapped fs.ErrNotExist", err)
+	}
+	if err := stage.rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(source); err != nil || string(got) != "source" {
+		t.Fatalf("rollback source=%q err=%v", got, err)
+	}
+}
 
 func TestTaskArchivePackageFilesRoundTrip(t *testing.T) {
 	dataDir := t.TempDir()

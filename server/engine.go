@@ -76,6 +76,13 @@ const (
 
 var errWorkControlConflict = errors.New("work control conflict")
 
+var (
+	abortTaskTerminalExecution = agent.Causef("task_terminal", "任务已结束，拒绝启动新运行",
+		"只有显式重新准入任务后才会创建新的执行上下文")
+	abortTaskSettlingExecution = agent.Causef("task_settling", "任务正在超时收尾，拒绝启动新运行",
+		"已在执行的运行继续收尾，新运行等待重新准入")
+)
+
 // retryableWorkerModelError excludes errors already handled by the task router.
 // In particular, a quota error after partial streaming advances the task cursor
 // for the next LLM call but must not replay this whole intent on the backup.
@@ -141,6 +148,7 @@ type Engine struct {
 	deadline     sync.Map // taskID -> int64 unix, 绝对截止时刻(首次运行时盖章;0/缺省=不限)
 	stamped      sync.Map // taskID -> bool, first_run_at 是否已盖章(本进程内只盖一次)
 	inflight     sync.Map // taskID -> *int64, 在跑的 planner.Plan + worker.Execute 计数(用于 drain)
+	compacting   sync.Map // taskID -> token; shared across replacement agent bundles
 	coordStarted sync.Map // taskID -> bool, deadline 协调器是否已启动(Run/reload 去重)
 
 	// resolve returns a task's dedicated planner/worker (wired by the server as the
@@ -204,7 +212,11 @@ func (e *Engine) AbortDelete(taskID string, keepPaused bool) {
 	}
 	e.deleting.Delete(taskID)
 	if !keepPaused {
+		e.execMu.Lock()
+		delete(e.execCtx, taskID)
+		delete(e.execCancel, taskID)
 		e.paused.Delete(taskID)
+		e.execMu.Unlock()
 	}
 	e.deleteMu.Unlock()
 	if !keepPaused && e.m != nil {
@@ -284,20 +296,24 @@ func (e *Engine) StopTask(taskID string) {
 	e.deadline.Delete(taskID)
 	e.stamped.Delete(taskID)
 	e.inflight.Delete(taskID)
+	e.compacting.Delete(taskID)
 	e.coordStarted.Delete(taskID)
 	e.deleteMu.Lock()
 	e.deleting.Delete(taskID)
 	e.deleteMu.Unlock()
 }
 
-// cancelExec cancels a task's current per-task exec context (any in-flight
-// planner.Plan / worker.Execute), if present. Shared by Pause and the settle
+// cancelExec closes task execution admission and cancels its current context
+// (any in-flight planner.Plan / worker.Execute). Shared by Pause and the settle
 // sequence's hard-drain backstop.
 func (e *Engine) cancelExec(taskID string, cause error) {
 	e.execMu.Lock()
-	if cancel := e.execCancel[taskID]; cancel != nil {
-		cancel(cause)
+	if e.execCtx[taskID] == nil {
+		// Cancellation also closes admission when no run has obtained a context
+		// yet. A later worker must not manufacture a fresh live context.
+		e.execCtx[taskID], e.execCancel[taskID] = context.WithCancelCause(context.Background())
 	}
+	e.execCancel[taskID](cause)
 	e.execMu.Unlock()
 }
 
@@ -315,12 +331,25 @@ func (e *Engine) Resume(t *Task) {
 	if e.IsDeleting(t.ID) {
 		return
 	}
+	e.execMu.Lock()
+	// Lifecycle admission commits running before Resume. A stray wake-up on
+	// a completed/settling task cannot reopen its execution context.
+	if isTerminalStatus(t.lifecycleSnapshot().Status) || e.isSettling(t.ID) {
+		e.execMu.Unlock()
+		return
+	}
+	if c := e.execCtx[t.ID]; c != nil && c.Err() != nil {
+		delete(e.execCtx, t.ID)
+		delete(e.execCancel, t.ID)
+	}
 	e.paused.Delete(t.ID)
+	e.execMu.Unlock()
 	t.Notify()
 }
 
-// execContextFor returns a live per-task context derived from parent, recreating
-// it if a prior pause cancelled it.
+// execContextFor admits a run under the same lock as task cancellation and
+// settlement. Cancelled contexts stay cancelled until explicit Resume (or a
+// rolled-back delete) opens a new run; asking for a context cannot revive it.
 func (e *Engine) execContextFor(parent context.Context, taskID string) context.Context {
 	e.execMu.Lock()
 	defer e.execMu.Unlock()
@@ -330,7 +359,28 @@ func (e *Engine) execContextFor(parent context.Context, taskID string) context.C
 		cancel(agent.AbortPausedRaceGuard)
 		return c
 	}
-	if c := e.execCtx[taskID]; c != nil && c.Err() == nil {
+	if e.m != nil && isTerminalStatus(e.m.TaskStatus(taskID)) {
+		if e.execCtx[taskID] == nil {
+			e.execCtx[taskID], e.execCancel[taskID] = context.WithCancelCause(parent)
+			e.execCancel[taskID](abortTaskTerminalExecution)
+		}
+		if c := e.execCtx[taskID]; c.Err() != nil {
+			return c // keep the initiating cancellation cause
+		}
+		// A status commit can precede cancelExec. Reject this new admission
+		// without replacing the real cancellation cause for existing runs.
+		c, cancel := context.WithCancelCause(parent)
+		cancel(abortTaskTerminalExecution)
+		return c
+	}
+	if e.isSettling(taskID) {
+		// The shared context belongs to runs admitted before settlement; keep
+		// those alive for graceful drain while rejecting this new run.
+		c, cancel := context.WithCancelCause(parent)
+		cancel(abortTaskSettlingExecution)
+		return c
+	}
+	if c := e.execCtx[taskID]; c != nil {
 		return c
 	}
 	c, cancel := context.WithCancelCause(parent)
@@ -1099,7 +1149,10 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	}
 	// 任务超时收尾的硬兜底 cancel(非 pause、非 kill)取消了本 run → 归为 exhausted(已收尾),
 	// 不要误标 blocked。此时 worker 通常已在 settlement 阶段把结果写回。
-	if ectx.Err() != nil && e.isSettling(t.ID) {
+	execCause := context.Cause(ectx)
+	terminalCancelled := errors.Is(execCause, agent.AbortGoalMet) || errors.Is(execCause, abortTaskTerminalExecution)
+	if ectx.Err() != nil && (errors.Is(execCause, agent.AbortSettleDrainTimeout) ||
+		(e.isSettling(t.ID) && !terminalCancelled)) {
 		if err := transitionIntentState(t.Store, intent.ID, "running", "exhausted"); err != nil {
 			log.Printf("[worker %s] task %s 意图 #%d 超时收尾状态落库失败: %v", name, t.ID, intent.ID, err)
 		}
@@ -1109,7 +1162,7 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	}
 	// 任务已判完成(done via 常规路径)→ 上面 cancelExec 取消了本 run。意图结果已无意义,
 	// 标 stopped(不是 blocked),别污染已完成任务的意图状态。
-	if ectx.Err() != nil && isTerminalStatus(e.m.TaskStatus(t.ID)) {
+	if ectx.Err() != nil && (terminalCancelled || isTerminalStatus(e.m.TaskStatus(t.ID))) {
 		if err := transitionIntentState(t.Store, intent.ID, "running", "stopped"); err != nil {
 			log.Printf("[worker %s] task %s 意图 #%d 终态停止落库失败: %v", name, t.ID, intent.ID, err)
 		}

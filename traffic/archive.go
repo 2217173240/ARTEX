@@ -1,15 +1,19 @@
 package traffic
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -79,12 +83,16 @@ FROM exchanges WHERE host IN (`+strings.Join(placeholders, ",")+`) ORDER BY ts,i
 		err := t.db.QueryRow(`SELECT req_head,req_body,req_blob,resp_head,resp_body,resp_blob
 FROM exchange_bodies WHERE id=?`, item.ID).Scan(&item.ReqHead, &item.ReqBody, &reqBlob, &item.RespHead, &item.RespBody, &respBlob)
 		if errors.Is(err, sql.ErrNoRows) && strings.TrimSpace(legacyPath) != "" {
-			req, readErr := os.ReadFile(filepath.Join(t.dir, legacyPath, "request.http"))
-			if readErr != nil && !os.IsNotExist(readErr) {
+			if !filepath.IsLocal(legacyPath) {
+				return 0, fmt.Errorf("invalid legacy traffic path %q", legacyPath)
+			}
+			req, readErr := readArchiveFile(filepath.Join(t.dir, legacyPath, "request.http"))
+			if readErr != nil {
 				return 0, readErr
 			}
-			resp, readErr := os.ReadFile(filepath.Join(t.dir, legacyPath, "response.http"))
-			if readErr != nil && !os.IsNotExist(readErr) {
+			resp, readErr := readArchiveFile(filepath.Join(t.dir, legacyPath, "response.http"))
+			// Old captures without a response have no response body to preserve.
+			if readErr != nil && !(os.IsNotExist(readErr) && item.RespLen == 0) {
 				return 0, readErr
 			}
 			item.ReqHead, item.RespHead = string(req), string(resp)
@@ -92,6 +100,9 @@ FROM exchange_bodies WHERE id=?`, item.ID).Scan(&item.ReqHead, &item.ReqBody, &r
 			return 0, err
 		}
 		item.ReqBlob, item.RespBlob = reqBlob.String, respBlob.String
+		if err := normalizeArchiveExchange(&item); err != nil {
+			return 0, err
+		}
 		for _, hash := range []string{item.ReqBlob, item.RespBlob} {
 			if hash != "" {
 				blobs[hash] = struct{}{}
@@ -107,7 +118,7 @@ FROM exchange_bodies WHERE id=?`, item.ID).Scan(&item.ReqHead, &item.ReqBody, &r
 		if err != nil {
 			return 0, err
 		}
-		data, err := os.ReadFile(source)
+		data, err := readArchiveBlob(source, hash)
 		if err != nil {
 			return 0, err
 		}
@@ -115,6 +126,12 @@ FROM exchange_bodies WHERE id=?`, item.ID).Scan(&item.ReqHead, &item.ReqBody, &r
 			return 0, err
 		}
 		snapshot.Blobs = append(snapshot.Blobs, hash)
+	}
+	if err := validateArchiveBodies(snapshot, func(hash string) (int, error) {
+		data, err := readArchiveBlob(filepath.Join(dir, "blobs", hash+".bin"), hash)
+		return len(data), err
+	}); err != nil {
+		return 0, err
 	}
 	sort.Strings(snapshot.Blobs)
 	raw, err := json.Marshal(snapshot)
@@ -133,7 +150,7 @@ func (t *Traffic) ImportArchive(dir string) (int64, error) {
 	if t == nil {
 		return 0, nil
 	}
-	raw, err := os.ReadFile(filepath.Join(dir, "traffic.json"))
+	raw, err := readArchiveFile(filepath.Join(dir, "traffic.json"))
 	if os.IsNotExist(err) {
 		return 0, nil
 	}
@@ -149,26 +166,27 @@ func (t *Traffic) ImportArchive(dir string) (int64, error) {
 	}
 	t.wmu.Lock()
 	defer t.wmu.Unlock()
-	for _, hash := range snapshot.Blobs {
-		if !blobHashRe.MatchString(hash) {
-			return 0, fmt.Errorf("invalid archived traffic blob %q", hash)
+	for i := range snapshot.Exchanges {
+		if err := normalizeArchiveExchange(&snapshot.Exchanges[i]); err != nil {
+			return 0, err
 		}
-		data, err := os.ReadFile(filepath.Join(dir, "blobs", hash+".bin"))
+	}
+	// Validate the whole package before changing hot blobs or metadata. A retry
+	// must never accept a partial file left by an earlier failed restore.
+	if err := validateArchiveBodies(snapshot, func(hash string) (int, error) {
+		data, err := readArchiveBlob(filepath.Join(dir, "blobs", hash+".bin"), hash)
+		return len(data), err
+	}); err != nil {
+		return 0, err
+	}
+	for _, hash := range snapshot.Blobs {
+		data, err := readArchiveBlob(filepath.Join(dir, "blobs", hash+".bin"), hash)
 		if err != nil {
 			return 0, err
 		}
-		sum := sha256.Sum256(data)
-		if hex.EncodeToString(sum[:]) != hash {
-			return 0, fmt.Errorf("traffic blob checksum mismatch: %s", hash)
-		}
 		destination := filepath.Join(t.dir, "_blobs", "sha256", hash[:2], hash+".bin")
-		if _, err := os.Stat(destination); os.IsNotExist(err) {
-			if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
-				return 0, err
-			}
-			if err := os.WriteFile(destination, data, 0o644); err != nil {
-				return 0, err
-			}
+		if err := installArchiveBlob(t.dir, destination, data, hash); err != nil {
+			return 0, err
 		}
 	}
 	tx, err := t.db.Begin()
@@ -234,4 +252,177 @@ func uniqueArchiveHosts(hosts []string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+var legacyArchiveBlobRe = regexp.MustCompile(`^@blob sha256:([0-9a-f]{64}) \(len=([0-9]+)\)$`)
+
+// Earlier traffic archives placed the entire legacy .http file in the head
+// field. Separate its body, including the old content-addressed placeholder,
+// before checking lengths or restoring it to exchange_bodies.
+func normalizeArchiveExchange(item *ArchiveExchange) error {
+	for _, side := range []struct {
+		name   string
+		head   *string
+		body   *[]byte
+		blob   *string
+		length int
+	}{
+		{"request", &item.ReqHead, &item.ReqBody, &item.ReqBlob, item.ReqLen},
+		{"response", &item.RespHead, &item.RespBody, &item.RespBlob, item.RespLen},
+	} {
+		if side.length < 0 {
+			return fmt.Errorf("traffic %s %s has negative body length", item.ID, side.name)
+		}
+		if *side.blob != "" || len(*side.body) != 0 {
+			continue
+		}
+		raw := []byte(*side.head)
+		separator, headEnd := bytes.Index(raw, []byte("\n\n")), 1
+		if crlf := bytes.Index(raw, []byte("\r\n\r\n")); crlf >= 0 && (separator < 0 || crlf < separator) {
+			separator, headEnd = crlf, 2
+		}
+		if separator < 0 {
+			continue
+		}
+		*side.head = string(raw[:separator+headEnd])
+		*side.body = raw[separator+2*headEnd:]
+		if marker := legacyArchiveBlobRe.FindSubmatch(*side.body); marker != nil && len(*side.body) != side.length {
+			length, err := strconv.Atoi(string(marker[2]))
+			if err != nil || length != side.length {
+				return fmt.Errorf("traffic %s %s legacy blob length mismatch", item.ID, side.name)
+			}
+			*side.blob = string(marker[1])
+			*side.body = nil
+		}
+	}
+	return nil
+}
+
+func validateArchiveBodies(snapshot ArchiveSnapshot, blobSize func(string) (int, error)) error {
+	sizes := make(map[string]int, len(snapshot.Blobs))
+	for _, hash := range snapshot.Blobs {
+		if !blobHashRe.MatchString(hash) {
+			return fmt.Errorf("invalid archived traffic blob %q", hash)
+		}
+		if _, checked := sizes[hash]; checked {
+			continue
+		}
+		size, err := blobSize(hash)
+		if err != nil {
+			return err
+		}
+		sizes[hash] = size
+	}
+	for _, item := range snapshot.Exchanges {
+		for _, side := range []struct {
+			name   string
+			body   []byte
+			blob   string
+			length int
+		}{
+			{"request", item.ReqBody, item.ReqBlob, item.ReqLen},
+			{"response", item.RespBody, item.RespBlob, item.RespLen},
+		} {
+			size := len(side.body)
+			if side.blob != "" {
+				var present bool
+				size, present = sizes[side.blob]
+				if !present {
+					return fmt.Errorf("traffic %s %s references unlisted blob %q", item.ID, side.name, side.blob)
+				}
+			}
+			if size != side.length {
+				return fmt.Errorf("traffic %s %s body length mismatch: got %d, want %d", item.ID, side.name, size, side.length)
+			}
+		}
+	}
+	return nil
+}
+
+func readArchiveFile(path string) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("traffic archive file is not regular: %s", path)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	info, err = f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("traffic archive file is not regular: %s", path)
+	}
+	return io.ReadAll(f)
+}
+
+func readArchiveBlob(path, hash string) ([]byte, error) {
+	data, err := readArchiveFile(path)
+	if err != nil {
+		return nil, err
+	}
+	sum := sha256.Sum256(data)
+	if hex.EncodeToString(sum[:]) != hash {
+		return nil, fmt.Errorf("traffic blob checksum mismatch: %s", hash)
+	}
+	return data, nil
+}
+
+// A complete, synced temporary file is renamed into the managed store. Both
+// capture and archive operations hold wmu, so no row can observe half a body.
+func installArchiveBlob(root, destination string, data []byte, hash string) error {
+	dir := root
+	for _, component := range []string{"_blobs", "sha256", hash[:2]} {
+		dir = filepath.Join(dir, component)
+		if err := os.Mkdir(dir, 0o755); err != nil && !os.IsExist(err) {
+			return err
+		}
+		info, err := os.Lstat(dir)
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("traffic blob directory is not a directory: %s", dir)
+		}
+	}
+	if current, err := readArchiveFile(destination); err == nil {
+		if bytes.Equal(current, data) {
+			return nil
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	f, err := os.CreateTemp(dir, ".restore-*.tmp")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name()) //nolint:errcheck
+	defer f.Close()           //nolint:errcheck
+	if err := f.Chmod(0o644); err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(f.Name(), destination); err != nil {
+		return err
+	}
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
 }

@@ -5,6 +5,7 @@ package db
 // covers edges that are the source of truth for "which digest folds node X".
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -144,6 +145,51 @@ ON CONFLICT (exploration_id, src_id, rel, dst_id) DO NOTHING`, s.expID, id, RelC
 		}
 	}
 	return id, tx.Commit()
+}
+
+// DigestReplacement is one prepared digest and its covers edges.
+type DigestReplacement struct {
+	Payload   map[string]any
+	MemberIDs []int64
+}
+
+// ReplaceDigests publishes all replacements and retires old coverage in one
+// transaction. Cancellation or any write failure keeps the old digests intact.
+func (s *ExplorationStore) ReplaceDigests(ctx context.Context, staleIDs []int64, replacements []DigestReplacement) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, replacement := range replacements {
+		raw, err := json.Marshal(replacement.Payload)
+		if err != nil {
+			return err
+		}
+		var id int64
+		if err := tx.QueryRowContext(ctx, `INSERT INTO exploration_nodes(exploration_id, kind, payload, priority, state, origin)
+VALUES ($1, $2, $3, 0, $4, 'compactor') RETURNING id`, s.expID, KindDigest, string(raw), StateDigestActive).Scan(&id); err != nil {
+			return err
+		}
+		for _, member := range replacement.MemberIDs {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO exploration_edges(exploration_id, src_id, rel, dst_id) VALUES ($1,$2,$3,$4)
+ON CONFLICT (exploration_id, src_id, rel, dst_id) DO NOTHING`, s.expID, id, RelCovers, member); err != nil {
+				return err
+			}
+		}
+	}
+	for _, id := range staleIDs {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM exploration_edges WHERE exploration_id=$1 AND src_id=$2 AND rel=$3`, s.expID, id, RelCovers); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE exploration_nodes SET state=$1 WHERE id=$2 AND exploration_id=$3 AND kind=$4`, StateDigestSuperseded, id, s.expID, KindDigest); err != nil {
+			return err
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // CoveredMembers maps member id → covering digest id, for ACTIVE digests only

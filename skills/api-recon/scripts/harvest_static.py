@@ -107,6 +107,9 @@ def extract_endpoints(js_text):
         if ASSET_EXT.search(p): continue
         if p.count('/') < 2 and not API_HINT.search(p): continue
         (api if API_HINT.search(p) else other).add(p)
+    # Parameter rows belong only to retained endpoint paths, not ignored assets.
+    retained = api | other
+    qparams = {q for q in qparams if q.split('\t', 1)[0] in retained}
     return api, other, qparams
 
 def extract_routes(js_text):

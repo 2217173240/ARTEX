@@ -161,6 +161,13 @@ type Traffic struct {
 	// stopping() treats as "not closing".
 	closed    chan struct{}
 	closeOnce sync.Once
+	closeErr  error
+	// connsMu serializes startup and accepted-connection registration with Close.
+	// CONNECT/websocket connections are hijacked out of http.Server's ownership,
+	// so the addon keeps them here until ClientDisconnected.
+	connsMu sync.Mutex
+	conns   map[net.Conn]struct{}
+	serving sync.WaitGroup
 	// pass is the set of hosts whose MITM interception failed for a proxy/protocol
 	// reason; connections to them are tunneled transparently (fail-open) so the
 	// request still reaches the target — unrecorded — instead of being killed.
@@ -356,19 +363,63 @@ func (t *Traffic) CACertPath() string {
 }
 
 // Start runs the proxy (blocking); run in a goroutine.
-func (t *Traffic) Start() error { return t.proxy.Start() }
-
-// Close waits for background tree reclamation to finish before closing the
-// index, so shutdown never leaves a goroutine unlinking files out from under a
-// removed data directory. Index-space reclamation is signalled to stop first:
-// it holds a whole minutes-long budget, and finishing it is never worth delaying
-// shutdown for — the next deletion resumes it.
-func (t *Traffic) Close() error {
-	if t.closed != nil {
-		t.closeOnce.Do(func() { close(t.closed) })
+func (t *Traffic) Start() error {
+	t.connsMu.Lock()
+	if t.stopping() {
+		t.connsMu.Unlock()
+		return http.ErrServerClosed
 	}
-	t.reaping.Wait()
-	return t.db.Close()
+	t.serving.Add(1)
+	t.connsMu.Unlock()
+	defer t.serving.Done()
+	return t.proxy.Start()
+}
+
+// Close stops the listener and all client connections before closing the index.
+// In-flight writes and background tree reclamation finish first, so shutdown
+// never races SQLite writes or leaves a goroutine unlinking a removed directory.
+// Index-space reclamation is signalled to stop rather than spending its remaining
+// minutes-long budget; the next deletion resumes it. Concurrent calls share the
+// same shutdown and result.
+func (t *Traffic) Close() error {
+	t.closeOnce.Do(func() {
+		t.connsMu.Lock()
+		if t.closed != nil {
+			close(t.closed)
+		}
+		t.connsMu.Unlock()
+		var errs []error
+		if t.proxy != nil {
+			errs = append(errs, t.proxy.Close())
+		}
+		// http.Server.Close excludes hijacked connections. Close their wrapped
+		// client connections too; go-mitmproxy also closes the upstream side.
+		t.connsMu.Lock()
+		conns := make([]net.Conn, 0, len(t.conns))
+		for conn := range t.conns {
+			conns = append(conns, conn)
+		}
+		t.connsMu.Unlock()
+		for _, conn := range conns {
+			if err := conn.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+				errs = append(errs, err)
+			}
+		}
+		t.serving.Wait()
+		// Every background cleanup is registered with wmu held. This barrier
+		// lets an in-flight writer finish registration; the stopping checks in
+		// reapStage/reclaim prevent registrations after shutdown starts.
+		t.wmu.Lock()
+		t.wmu.Unlock()
+		t.reaping.Wait()
+		t.wmu.Lock()
+		defer t.wmu.Unlock()
+		if t.db != nil {
+			errs = append(errs, t.db.Close())
+		}
+		t.closeErr = errors.Join(errs...)
+	})
+	return t.closeErr
 }
 
 // stopping reports whether Close has been called. A nil channel (the zero value)
@@ -387,6 +438,26 @@ func (t *Traffic) DB() *sql.DB { return t.db }
 type sink struct {
 	mproxy.BaseAddon
 	t *Traffic
+}
+
+func (s *sink) ClientConnected(client *mproxy.ClientConn) {
+	s.t.connsMu.Lock()
+	if s.t.stopping() {
+		s.t.connsMu.Unlock()
+		_ = client.Conn.Close()
+		return
+	}
+	if s.t.conns == nil {
+		s.t.conns = make(map[net.Conn]struct{})
+	}
+	s.t.conns[client.Conn] = struct{}{}
+	s.t.connsMu.Unlock()
+}
+
+func (s *sink) ClientDisconnected(client *mproxy.ClientConn) {
+	s.t.connsMu.Lock()
+	delete(s.t.conns, client.Conn)
+	s.t.connsMu.Unlock()
 }
 
 func (s *sink) Response(f *mproxy.Flow) {
@@ -438,6 +509,9 @@ func (t *Traffic) record(f *mproxy.Flow) {
 	// can run under the same lock without racing a concurrent record.
 	t.wmu.Lock()
 	defer t.wmu.Unlock()
+	if t.stopping() {
+		return
+	}
 	host := f.Request.URL.Hostname()
 	method := f.Request.Method
 	tmpl := db.TemplatePath(f.Request.URL.EscapedPath())
@@ -522,7 +596,8 @@ type storedBody struct {
 // written to the content-addressed store and keep a readable preview inline so a
 // reader can identify them without fetching the blob. Either way, text bodies
 // are handed to the full-text index in full (up to maxIndexBody) — indexing is
-// independent of where the bytes end up.
+// independent of where the bytes end up. If the blob store is unavailable, the
+// complete body stays inline: a preview without a usable blob would lose data.
 func (t *Traffic) spill(body []byte, contentType string) storedBody {
 	if len(body) == 0 {
 		return storedBody{}
@@ -545,14 +620,28 @@ func (t *Traffic) spill(body []byte, contentType string) storedBody {
 	blobDir := filepath.Join(t.dir, "_blobs", "sha256", h[:2])
 	if err := os.MkdirAll(blobDir, 0o755); err != nil {
 		log.Printf("[traffic] 创建 blob 目录失败：%v", err)
-		return storedBody{inline: clipBytes(body, blobPreview), index: indexText()}
+		return storedBody{inline: body, index: indexText()}
 	}
 	blobPath := filepath.Join(blobDir, h+".bin")
-	if _, err := os.Stat(blobPath); os.IsNotExist(err) {
+	info, err := os.Stat(blobPath)
+	if os.IsNotExist(err) {
 		if err := os.WriteFile(blobPath, body, 0o644); err != nil {
 			log.Printf("[traffic] 写 blob %s 失败：%v", h, err)
-			return storedBody{inline: clipBytes(body, blobPreview), index: indexText()}
+			return storedBody{inline: body, index: indexText()}
 		}
+	} else if err != nil {
+		log.Printf("[traffic] 检查 blob %s 失败：%v", h, err)
+		return storedBody{inline: body, index: indexText()}
+	} else if !info.Mode().IsRegular() || info.Size() != int64(len(body)) {
+		// An earlier failed write can leave a partial file. A directory at the
+		// hash path is also not a blob, even though Stat succeeded.
+		log.Printf("[traffic] blob %s 不是完整正文文件，改为内联保存", h)
+		return storedBody{inline: body, index: indexText()}
+	} else if _, err := readArchiveBlob(blobPath, h); err != nil {
+		// Equal length does not prove identity. Preserve this fresh capture in
+		// full when an existing hash file is corrupt or is a symlink.
+		log.Printf("[traffic] 校验 blob %s 失败，改为内联保存：%v", h, err)
+		return storedBody{inline: body, index: indexText()}
 	}
 	sb := storedBody{hash: h, index: indexText()}
 	if text {
@@ -706,9 +795,17 @@ func (t *Traffic) blobPath(hash string) (string, error) {
 // Streaming matters here: the driver exposes no incremental BLOB API, so keeping
 // large bodies on disk is what lets them be served without loading them whole.
 func (t *Traffic) Blob(hash string) (*os.File, int64, error) {
+	hash = strings.ToLower(strings.TrimSpace(hash))
 	p, err := t.blobPath(hash)
 	if err != nil {
 		return nil, 0, err
+	}
+	info, err := os.Lstat(p)
+	if err != nil {
+		return nil, 0, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, 0, fmt.Errorf("traffic blob is not regular: %s", hash)
 	}
 	f, err := os.Open(p)
 	if err != nil {
@@ -716,6 +813,23 @@ func (t *Traffic) Blob(hash string) (*os.File, int64, error) {
 	}
 	st, err := f.Stat()
 	if err != nil {
+		f.Close()
+		return nil, 0, err
+	}
+	if !st.Mode().IsRegular() || !os.SameFile(info, st) {
+		f.Close()
+		return nil, 0, fmt.Errorf("traffic blob changed while opening: %s", hash)
+	}
+	checksum := sha256.New()
+	if _, err := io.Copy(checksum, f); err != nil {
+		f.Close()
+		return nil, 0, err
+	}
+	if hex.EncodeToString(checksum.Sum(nil)) != hash {
+		f.Close()
+		return nil, 0, fmt.Errorf("traffic blob checksum mismatch: %s", hash)
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		f.Close()
 		return nil, 0, err
 	}
@@ -1355,7 +1469,7 @@ func restoreTrees(stageDir string, moves []stagedTrafficPath) error {
 // this to a shutdown leaves garbage under _delete_staging, never inconsistent
 // state.
 func (t *Traffic) reapStage(stageDir string) {
-	if stageDir == "" {
+	if stageDir == "" || t.stopping() {
 		return
 	}
 	t.reaping.Go(func() {
@@ -1702,7 +1816,7 @@ func (t *Traffic) indexBytes() int64 {
 // Best-effort throughout. Failing to reclaim costs disk space, never
 // correctness, so errors are logged and the next deletion resumes the work.
 func (t *Traffic) reclaim() {
-	if !t.reclaiming.CompareAndSwap(false, true) {
+	if t.stopping() || !t.reclaiming.CompareAndSwap(false, true) {
 		return // one pass at a time; a second would only contend for the lock
 	}
 	t.reaping.Go(func() {

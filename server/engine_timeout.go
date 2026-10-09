@@ -33,6 +33,10 @@ func (e *Engine) isSettling(taskID string) bool {
 
 // markSettling flips settling on; returns true only for the first caller.
 func (e *Engine) markSettling(taskID string) bool {
+	// A run either obtains its context before settlement and drains, or observes
+	// the barrier and never starts. Synchronize with execContextFor/cancelExec.
+	e.execMu.Lock()
+	defer e.execMu.Unlock()
 	_, loaded := e.settling.LoadOrStore(taskID, true)
 	return !loaded
 }

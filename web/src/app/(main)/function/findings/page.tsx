@@ -82,6 +82,8 @@ interface AssetTreeState {
   droppedKinds: string[];
   loaded: boolean;
   loading: boolean;
+  queryKey: string | null;
+  error: string | null;
 }
 
 const EMPTY_ASSET_TREE: AssetTreeState = {
@@ -91,6 +93,28 @@ const EMPTY_ASSET_TREE: AssetTreeState = {
   droppedKinds: [],
   loaded: false,
   loading: false,
+  queryKey: null,
+  error: null,
+};
+
+interface FindingGroupsState {
+  items: FindingGroup[];
+  total: number;
+  findingTotal: number;
+  loaded: boolean;
+  loading: boolean;
+  queryKey: string | null;
+  error: string | null;
+}
+
+const EMPTY_GROUPS_STATE: FindingGroupsState = {
+  items: [],
+  total: 0,
+  findingTotal: 0,
+  loaded: false,
+  loading: false,
+  queryKey: null,
+  error: null,
 };
 
 // 分组视图里每个已展开任务组自带一份分页状态,彼此独立。
@@ -101,6 +125,8 @@ interface GroupFindingsState {
   pageSize: number;
   loaded: boolean;
   loading: boolean;
+  queryKey: string;
+  error: string | null;
 }
 
 // 平铺视图的页码单独放 state(而非塞进快照),筛选一变就能连带重置并触发重新加载。
@@ -109,9 +135,18 @@ interface FlatFindingsState {
   total: number;
   loaded: boolean;
   loading: boolean;
+  queryKey: string | null;
+  error: string | null;
 }
 
-const EMPTY_FLAT_STATE: FlatFindingsState = { items: [], total: 0, loaded: false, loading: false };
+const EMPTY_FLAT_STATE: FlatFindingsState = {
+  items: [],
+  total: 0,
+  loaded: false,
+  loading: false,
+  queryKey: null,
+  error: null,
+};
 
 function findingGroupKey(group: FindingGroup) {
   return group.task_id === null ? UNASSIGNED_TASK : String(group.task_id);
@@ -143,11 +178,9 @@ export default function FindingsPage() {
   const [flatPageSize, setFlatPageSize] = React.useState(20);
   const [assetTree, setAssetTree] = React.useState<AssetTreeState>(EMPTY_ASSET_TREE);
   const [assetScope, setAssetScope] = React.useState<string | null>(null);
-  const [groups, setGroups] = React.useState<FindingGroup[]>([]);
-  const [groupTotal, setGroupTotal] = React.useState(0);
+  const [groupList, setGroupList] = React.useState<FindingGroupsState>(EMPTY_GROUPS_STATE);
   const [expandedGroups, setExpandedGroups] = React.useState<Set<string>>(() => new Set());
   const [groupFindings, setGroupFindings] = React.useState<Record<string, GroupFindingsState>>({});
-  const [total, setTotal] = React.useState(0);
   const [stats, setStats] = React.useState<FindingStats>(EMPTY_STATS);
   const [statsLoaded, setStatsLoaded] = React.useState(false);
   const [preferencesHydrated, setPreferencesHydrated] = React.useState(false);
@@ -165,6 +198,12 @@ export default function FindingsPage() {
   const filterFingerprint = JSON.stringify([severity, status, vulnclass, task, sort, query]);
   const activeFilterFingerprint = React.useRef(filterFingerprint);
   activeFilterFingerprint.current = filterFingerprint;
+  const groupsQueryKey = JSON.stringify([view, filterFingerprint, page, pageSize]);
+  const activeGroupsQueryKey = React.useRef(groupsQueryKey);
+  activeGroupsQueryKey.current = groupsQueryKey;
+  const activeView = React.useRef(view);
+  activeView.current = view;
+  const groups = groupList.queryKey === groupsQueryKey ? groupList.items : [];
 
   // 一个轻量请求覆盖所有行/视图，避免逐行拉取完整复测历史；等待上一轮完成再轮询。
   React.useEffect(() => {
@@ -286,7 +325,15 @@ export default function FindingsPage() {
       await api.exportFindings({
         format: exportFormat,
         scope: exportScope,
-        filters: { severity, status, vulnclass, task, query, sort },
+        filters: {
+          severity,
+          status,
+          vulnclass,
+          task,
+          query,
+          sort,
+          assetScope: exportScope === "filtered" ? (activeAssetScope ?? undefined) : undefined,
+        },
         ids: [...selectedIds],
       });
       setExportOpen(false);
@@ -299,47 +346,75 @@ export default function FindingsPage() {
   }
 
   const flatRequest = React.useRef(0);
+  const flatInFlight = React.useRef<{ queryKey: string; request: number } | null>(null);
   const assetTreeRequest = React.useRef(0);
   const groupRequests = React.useRef<Record<string, number>>({});
+  const groupInFlight = React.useRef<Record<string, { queryKey: string; request: number }>>({});
   const groupsRequest = React.useRef(0);
-  const flatStateRef = React.useRef(flat);
+  const groupsInFlight = React.useRef<{ queryKey: string; request: number } | null>(null);
   const expandedGroupsRef = React.useRef(expandedGroups);
   const groupFindingsRef = React.useRef(groupFindings);
   const visibleGroupKeysRef = React.useRef<Set<string>>(new Set());
-  flatStateRef.current = flat;
   expandedGroupsRef.current = expandedGroups;
   groupFindingsRef.current = groupFindings;
   visibleGroupKeysRef.current = new Set(groups.map(findingGroupKey));
 
   // 资产视图右侧列表 = 平铺列表 + 选中子树的筛选,所以两个视图共用一份列表状态。
   const activeAssetScope = view === "asset" ? assetScope : null;
+  const flatQueryKey = JSON.stringify([view, filterFingerprint, activeAssetScope, flatPage, flatPageSize]);
+  const activeFlatQueryKey = React.useRef(flatQueryKey);
+  activeFlatQueryKey.current = flatQueryKey;
 
   // loadFlat 拉取平铺视图的当前页;task 筛选交给后端,与分组视图共用同一批筛选条件。
-  const loadFlat = React.useCallback(async () => {
-    const requestFilter = filterFingerprint;
-    if (activeFilterFingerprint.current !== requestFilter) return;
-    const request = ++flatRequest.current;
-    setFlat((current) => ({ ...current, loading: true }));
-    try {
-      const result = await api.findingsPage({
-        page: flatPage,
-        pageSize: flatPageSize,
-        severity,
-        status,
-        vulnclass,
-        task,
-        query,
-        sort,
-        assetScope: activeAssetScope ?? undefined,
-      });
-      if (request !== flatRequest.current || activeFilterFingerprint.current !== requestFilter) return;
-      setFlat({ items: result.items, total: result.total, loaded: true, loading: false });
-    } catch {
-      if (request !== flatRequest.current || activeFilterFingerprint.current !== requestFilter) return;
-      // Polling keeps the last successful snapshot visible.
-      setFlat((current) => ({ ...current, loading: false }));
-    }
-  }, [activeAssetScope, filterFingerprint, flatPage, flatPageSize, severity, status, vulnclass, task, query, sort]);
+  // 导航与行内改动立即刷新;只有定时轮询才跳过同一查询的在途请求。
+  const loadFlat = React.useCallback(
+    async (force = true) => {
+      const requestQueryKey = flatQueryKey;
+      if (activeFlatQueryKey.current !== requestQueryKey) return;
+      if (!force && flatInFlight.current?.queryKey === requestQueryKey) return;
+      const request = ++flatRequest.current;
+      flatInFlight.current = { queryKey: requestQueryKey, request };
+      setFlat((current) => ({
+        ...(current.queryKey === requestQueryKey ? current : EMPTY_FLAT_STATE),
+        queryKey: requestQueryKey,
+        loading: true,
+        error: null,
+      }));
+      try {
+        const result = await api.findingsPage({
+          page: flatPage,
+          pageSize: flatPageSize,
+          severity,
+          status,
+          vulnclass,
+          task,
+          query,
+          sort,
+          assetScope: activeAssetScope ?? undefined,
+        });
+        if (request !== flatRequest.current || activeFlatQueryKey.current !== requestQueryKey) return;
+        setFlat({
+          items: result.items,
+          total: result.total,
+          loaded: true,
+          loading: false,
+          queryKey: requestQueryKey,
+          error: null,
+        });
+      } catch (error) {
+        if (request !== flatRequest.current || activeFlatQueryKey.current !== requestQueryKey) return;
+        // Polling keeps the last successful snapshot visible.
+        setFlat((current) => ({
+          ...current,
+          loading: false,
+          error: error instanceof Error ? error.message : "请检查连接后重试",
+        }));
+      } finally {
+        if (flatInFlight.current?.request === request) flatInFlight.current = null;
+      }
+    },
+    [activeAssetScope, flatQueryKey, flatPage, flatPageSize, severity, status, vulnclass, task, query, sort],
+  );
 
   // loadAssetTree 取整棵资产树。树不随选中节点变化(否则选一下就塌成一条链),
   // 所以这里不带 assetScope。
@@ -347,7 +422,12 @@ export default function FindingsPage() {
     const requestFilter = filterFingerprint;
     if (activeFilterFingerprint.current !== requestFilter) return;
     const request = ++assetTreeRequest.current;
-    setAssetTree((current) => ({ ...current, loading: true }));
+    setAssetTree((current) => ({
+      ...(current.queryKey === requestFilter ? current : EMPTY_ASSET_TREE),
+      queryKey: requestFilter,
+      loading: true,
+      error: null,
+    }));
     try {
       const result = await api.findingAssetTree({ severity, status, vulnclass, task, query, sort });
       if (request !== assetTreeRequest.current || activeFilterFingerprint.current !== requestFilter) return;
@@ -358,53 +438,87 @@ export default function FindingsPage() {
         droppedKinds: result.dropped_kinds ?? [],
         loaded: true,
         loading: false,
+        queryKey: requestFilter,
+        error: null,
       });
     } catch (e) {
       if (request !== assetTreeRequest.current || activeFilterFingerprint.current !== requestFilter) return;
-      setAssetTree((current) => ({ ...current, loading: false }));
-      toast.error(`资产树加载失败：${(e as Error).message}`);
+      setAssetTree((current) => ({
+        ...current,
+        loading: false,
+        error: e instanceof Error ? e.message : "请检查连接后重试",
+      }));
     }
   }, [filterFingerprint, severity, status, vulnclass, task, query, sort]);
 
-  const refreshGroups = React.useCallback(async () => {
-    const requestFilter = filterFingerprint;
-    if (activeFilterFingerprint.current !== requestFilter) return;
-    const request = ++groupsRequest.current;
-    try {
-      const result = await api.findingGroups({
-        page,
-        pageSize,
-        severity,
-        status,
-        vulnclass,
-        task,
-        query,
-        sort,
-      });
-      if (request !== groupsRequest.current || activeFilterFingerprint.current !== requestFilter) return;
-      setGroups(result.items);
-      setGroupTotal(result.total);
-      setTotal(result.finding_total);
-    } catch {
-      // Polling keeps the last successful snapshot visible.
-    }
-  }, [filterFingerprint, page, pageSize, severity, status, vulnclass, task, query, sort]);
+  const refreshGroups = React.useCallback(
+    async (force = true) => {
+      const requestQueryKey = groupsQueryKey;
+      if (activeGroupsQueryKey.current !== requestQueryKey || activeView.current !== "grouped") return;
+      if (!force && groupsInFlight.current?.queryKey === requestQueryKey) return;
+      const request = ++groupsRequest.current;
+      groupsInFlight.current = { queryKey: requestQueryKey, request };
+      setGroupList((current) => ({
+        ...(current.queryKey === requestQueryKey ? current : EMPTY_GROUPS_STATE),
+        queryKey: requestQueryKey,
+        loading: true,
+        error: null,
+      }));
+      try {
+        const result = await api.findingGroups({
+          page,
+          pageSize,
+          severity,
+          status,
+          vulnclass,
+          task,
+          query,
+          sort,
+        });
+        if (request !== groupsRequest.current || activeGroupsQueryKey.current !== requestQueryKey) return;
+        setGroupList({
+          items: result.items,
+          total: result.total,
+          findingTotal: result.finding_total,
+          loaded: true,
+          loading: false,
+          queryKey: requestQueryKey,
+          error: null,
+        });
+      } catch (error) {
+        if (request !== groupsRequest.current || activeGroupsQueryKey.current !== requestQueryKey) return;
+        setGroupList((current) => ({
+          ...current,
+          loading: false,
+          error: error instanceof Error ? error.message : "请检查连接后重试",
+        }));
+      } finally {
+        if (groupsInFlight.current?.request === request) groupsInFlight.current = null;
+      }
+    },
+    [groupsQueryKey, page, pageSize, severity, status, vulnclass, task, query, sort],
+  );
 
   const loadGroup = React.useCallback(
-    async (key: string, groupPage: number, groupPageSize: number) => {
-      const request = (groupRequests.current[key] ?? 0) + 1;
+    async (key: string, groupPage: number, groupPageSize: number, force = true) => {
       const requestFilter = filterFingerprint;
-      if (activeFilterFingerprint.current !== requestFilter) return;
+      const requestQueryKey = JSON.stringify([requestFilter, key, groupPage, groupPageSize]);
+      if (activeFilterFingerprint.current !== requestFilter || activeView.current !== "grouped") return;
+      if (!force && groupInFlight.current[key]?.queryKey === requestQueryKey) return;
+      const request = (groupRequests.current[key] ?? 0) + 1;
       groupRequests.current[key] = request;
+      groupInFlight.current[key] = { queryKey: requestQueryKey, request };
       setGroupFindings((current) => ({
         ...current,
         [key]: {
-          items: current[key]?.items ?? [],
-          total: current[key]?.total ?? 0,
+          items: current[key]?.queryKey === requestQueryKey ? current[key].items : [],
+          total: current[key]?.queryKey === requestQueryKey ? current[key].total : 0,
           page: groupPage,
           pageSize: groupPageSize,
-          loaded: current[key]?.loaded ?? false,
+          loaded: current[key]?.queryKey === requestQueryKey && current[key].loaded,
           loading: true,
+          queryKey: requestQueryKey,
+          error: null,
         },
       }));
       try {
@@ -424,13 +538,15 @@ export default function FindingsPage() {
           [key]: {
             items: result.items,
             total: result.total,
-            page: result.page,
-            pageSize: result.page_size,
+            page: groupPage,
+            pageSize: groupPageSize,
             loaded: true,
             loading: false,
+            queryKey: requestQueryKey,
+            error: null,
           },
         }));
-      } catch {
+      } catch (error) {
         if (groupRequests.current[key] !== request || activeFilterFingerprint.current !== requestFilter) return;
         setGroupFindings((current) => ({
           ...current,
@@ -441,10 +557,14 @@ export default function FindingsPage() {
               page: groupPage,
               pageSize: groupPageSize,
               loaded: false,
+              queryKey: requestQueryKey,
             }),
             loading: false,
+            error: error instanceof Error ? error.message : "请检查连接后重试",
           },
         }));
+      } finally {
+        if (groupInFlight.current[key]?.request === request) delete groupInFlight.current[key];
       }
     },
     [filterFingerprint, severity, status, vulnclass, query, sort],
@@ -452,11 +572,17 @@ export default function FindingsPage() {
 
   React.useEffect(() => {
     for (const [key, state] of Object.entries(groupFindings)) {
-      if (!state.loaded || state.loading) continue;
+      if (
+        !state.loaded ||
+        state.loading ||
+        state.error ||
+        state.queryKey !== JSON.stringify([filterFingerprint, key, state.page, state.pageSize])
+      )
+        continue;
       const lastPage = Math.max(1, Math.ceil(state.total / state.pageSize));
       if (state.page > lastPage) void loadGroup(key, lastPage, state.pageSize);
     }
-  }, [groupFindings, loadGroup]);
+  }, [filterFingerprint, groupFindings, loadGroup]);
 
   const toggleGroup = React.useCallback(
     (key: string) => {
@@ -474,34 +600,40 @@ export default function FindingsPage() {
   );
 
   // 行内改动后刷新当前视图:平铺视图重拉当前页,分组视图刷组头 + 该发现所在的组。
-  const refreshAfterMutation = React.useCallback(
-    (finding: Finding, removed = false) => {
-      if (view === "asset") {
-        // 资产视图不轮询,所以改完要顺带把树的计数也重新算一次。
-        void loadFlat();
-        void loadAssetTree();
-        return;
-      }
-      if (view === "flat") {
-        // 删空最后一页时,页码由越界修正 effect 回退并连带重新加载。
-        void loadFlat();
-        return;
-      }
-      void refreshGroups();
-      const key = finding.task_id ?? UNASSIGNED_TASK;
-      const state = groupFindingsRef.current[key];
-      if (state?.loaded) {
-        const nextTotal = Math.max(0, state.total - (removed ? 1 : 0));
-        const lastPage = Math.max(1, Math.ceil(nextTotal / state.pageSize));
-        void loadGroup(key, Math.min(state.page, lastPage), state.pageSize);
-      }
-    },
-    [loadAssetTree, loadFlat, loadGroup, refreshGroups, view],
-  );
+  // 写操作完成时用户可能已换视图/资产/页码,因此使用最近一轮渲染的刷新函数。
+  const mutationRefreshRef = React.useRef({ view, loadFlat, loadAssetTree, refreshGroups, loadGroup });
+  mutationRefreshRef.current = { view, loadFlat, loadAssetTree, refreshGroups, loadGroup };
+  const refreshAfterMutation = React.useCallback((finding: Finding, removed = false) => {
+    const { view, loadFlat, loadAssetTree, refreshGroups, loadGroup } = mutationRefreshRef.current;
+    if (view === "asset") {
+      // 资产视图不轮询,所以改完要顺带把树的计数也重新算一次。
+      void loadFlat();
+      void loadAssetTree();
+      return;
+    }
+    if (view === "flat") {
+      // 删空最后一页时,页码由越界修正 effect 回退并连带重新加载。
+      void loadFlat();
+      return;
+    }
+    void refreshGroups();
+    const key = finding.task_id ?? UNASSIGNED_TASK;
+    const state = groupFindingsRef.current[key];
+    if (state) {
+      const nextTotal = Math.max(0, state.total - (removed ? 1 : 0));
+      const lastPage = Math.max(1, Math.ceil(nextTotal / state.pageSize));
+      const nextPage = state.loaded ? Math.min(state.page, lastPage) : state.page;
+      void loadGroup(key, nextPage, state.pageSize);
+    }
+  }, []);
 
   // Reset every view's pagination and expansion when a shared finding filter changes.
   React.useEffect(() => {
     void filterFingerprint;
+    // Invalidate requests even if the user returns to an earlier filter before they settle.
+    for (const key of Object.keys(groupRequests.current)) groupRequests.current[key]++;
+    groupInFlight.current = {};
+    assetTreeRequest.current++;
     setPage(1);
     setExpanded(null);
     setExpandedGroups(new Set());
@@ -533,34 +665,35 @@ export default function FindingsPage() {
   React.useEffect(() => {
     if (!preferencesHydrated) return;
     void activeRetestFingerprint; // 包括不定时轮询的资产视图，也在复测结束后刷新处置状态。
-    const refresh = () => {
+    const refresh = (force = false) => {
       if (view === "flat" || view === "asset") {
-        if (!flatStateRef.current.loading) void loadFlat();
+        void loadFlat(force);
         return;
       }
-      void refreshGroups();
+      void refreshGroups(force);
       for (const key of expandedGroupsRef.current) {
         if (!visibleGroupKeysRef.current.has(key)) continue;
         const state = groupFindingsRef.current[key];
-        if (state?.loaded && !state.loading) void loadGroup(key, state.page, state.pageSize);
+        if (state?.loaded && !state.loading) void loadGroup(key, state.page, state.pageSize, force);
       }
     };
-    refresh();
+    refresh(true);
     if (view === "asset") return;
     const timer = setInterval(refresh, 5000);
     return () => clearInterval(timer);
   }, [activeRetestFingerprint, loadFlat, loadGroup, preferencesHydrated, refreshGroups, view]);
 
   React.useEffect(() => {
-    const lastPage = Math.max(1, Math.ceil(groupTotal / pageSize));
+    if (!groupList.loaded || groupList.queryKey !== groupsQueryKey) return;
+    const lastPage = Math.max(1, Math.ceil(groupList.total / pageSize));
     if (page > lastPage) setPage(lastPage);
-  }, [groupTotal, page, pageSize]);
+  }, [groupList.loaded, groupList.queryKey, groupList.total, groupsQueryKey, page, pageSize]);
 
   React.useEffect(() => {
-    if (!flat.loaded) return;
+    if (!flat.loaded || flat.queryKey !== flatQueryKey) return;
     const lastPage = Math.max(1, Math.ceil(flat.total / flatPageSize));
     if (flatPage > lastPage) setFlatPage(lastPage);
-  }, [flat.loaded, flat.total, flatPage, flatPageSize]);
+  }, [flat.loaded, flat.queryKey, flat.total, flatPage, flatPageSize, flatQueryKey]);
 
   // Whole-table aggregates (stat cards + vuln-class options) — independent of the
   // current page, so they stay exact.
@@ -617,7 +750,7 @@ export default function FindingsPage() {
           });
         if (status !== "all" && next !== status) {
           setFindings((cur) => cur.filter((x) => !isSameFinding(x, f)));
-          setTotal((t) => Math.max(0, t - 1));
+          setGroupList((current) => ({ ...current, findingTotal: Math.max(0, current.findingTotal - 1) }));
           setFlat((cur) => ({ ...cur, total: Math.max(0, cur.total - 1) }));
         }
         refreshAfterMutation(f);
@@ -701,14 +834,23 @@ export default function FindingsPage() {
       if (!f.finding_id) return;
       try {
         await api.deleteFinding(f.finding_id);
+        // 删除期间可能已换查询。只扣当前快照里仍显示的行,其余计数由刷新结果更新。
+        setFlat((current) => {
+          if (
+            current.queryKey !== activeFlatQueryKey.current ||
+            !current.items.some((item) => isSameFinding(item, f))
+          ) {
+            return current;
+          }
+          return { ...current, total: Math.max(0, current.total - 1) };
+        });
         setFindings((cur) => cur.filter((x) => !isSameFinding(x, f)));
         setSelectedIds((current) => {
           const next = new Set(current);
           next.delete(f.finding_id as string);
           return next;
         });
-        setTotal((t) => Math.max(0, t - 1));
-        setFlat((cur) => ({ ...cur, total: Math.max(0, cur.total - 1) }));
+        setGroupList((current) => ({ ...current, findingTotal: Math.max(0, current.findingTotal - 1) }));
         const rowKey = findingRowKey(f);
         setExpanded((cur) => (cur === rowKey ? null : cur));
         toast.success("已删除漏洞");
@@ -753,19 +895,21 @@ export default function FindingsPage() {
 
   const statCards = [
     { label: "发现总数", value: stats.total, icon: BugIcon },
-    { label: "待处理", value: stats.pending, tone: "text-amber-500", icon: ClockIcon },
-    { label: "严重", value: stats.critical, tone: "text-rose-600", icon: ShieldAlertIcon },
-    { label: "高危", value: stats.high, tone: "text-red-500", icon: TriangleAlertIcon },
-    { label: "中危", value: stats.medium, tone: "text-amber-500", icon: TriangleAlertIcon },
-    { label: "低危", value: stats.low, tone: "text-slate-500", icon: InfoIcon },
+    { label: "待处理", value: stats.pending, tone: "text-amber-800 dark:text-amber-400", icon: ClockIcon },
+    { label: "严重", value: stats.critical, tone: "text-rose-700 dark:text-rose-400", icon: ShieldAlertIcon },
+    { label: "高危", value: stats.high, tone: "text-red-700 dark:text-red-400", icon: TriangleAlertIcon },
+    { label: "中危", value: stats.medium, tone: "text-amber-800 dark:text-amber-400", icon: TriangleAlertIcon },
+    { label: "低危", value: stats.low, tone: "text-slate-600 dark:text-slate-400", icon: InfoIcon },
   ];
 
   // 导出弹窗里「当前筛选」的条数:两个视图的筛选一致,只是统计口径来源不同。
   // 平铺与资产视图共用 flat 列表状态,分组视图的口径来自组接口的 finding_total。
-  const filteredTotal = view === "grouped" ? total : flat.total;
+  const groupedFindingTotal = groupList.queryKey === groupsQueryKey ? groupList.findingTotal : 0;
+  const filteredTotal = view === "grouped" ? groupedFindingTotal : flat.total;
   const assetPath = React.useMemo(
-    () => (view === "asset" ? assetPathOf(assetTree.nodes, assetScope) : []),
-    [assetScope, assetTree.nodes, view],
+    () =>
+      view === "asset" && assetTree.queryKey === filterFingerprint ? assetPathOf(assetTree.nodes, assetScope) : [],
+    [assetScope, assetTree.nodes, assetTree.queryKey, filterFingerprint, view],
   );
 
   const rowProps = {
@@ -788,14 +932,42 @@ export default function FindingsPage() {
 
   // 平铺视图与资产视图右侧是同一张表 + 同一份分页,只是筛选条件不同。
   const flatListCard = (
-    <Card className="gap-0 py-0">
+    <Card className="min-w-0 gap-0 overflow-hidden py-0" aria-busy={flat.loading}>
       <CardContent className="px-0">
-        {flat.loading && !flat.loaded ? (
-          <div className="flex min-h-36 items-center justify-center">
-            <Spinner />
+        {flat.queryKey !== flatQueryKey || (flat.loading && !flat.loaded) ? (
+          <div className="flex min-h-36 items-center justify-center gap-2 text-muted-foreground text-sm" role="status">
+            <Spinner aria-hidden="true" />
+            正在加载发现…
+          </div>
+        ) : flat.error && !flat.loaded ? (
+          <div className="flex min-h-36 flex-col items-center justify-center gap-3 p-6 text-center" role="alert">
+            <p className="font-medium">发现加载失败</p>
+            <p className="text-muted-foreground text-sm">{flat.error}</p>
+            <Button size="sm" variant="outline" onClick={() => void loadFlat()}>
+              重新加载
+            </Button>
           </div>
         ) : (
           <>
+            {flat.error && (
+              <div
+                className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3 text-sm"
+                role="status"
+              >
+                <span>更新失败，正在显示上次结果。</span>
+                <Button size="sm" variant="outline" onClick={() => void loadFlat()}>
+                  重试
+                </Button>
+              </div>
+            )}
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3 text-muted-foreground text-xs">
+              <span role="status" aria-live="polite">
+                当前筛选共 <strong className="font-medium text-foreground tabular-nums">{flat.total}</strong> 条发现
+              </span>
+              {flat.items.length > 0 && (
+                <span className={view === "asset" ? undefined : "lg:hidden"}>横向滚动查看资产、状态与操作</span>
+              )}
+            </div>
             <FindingsTable items={flat.items} selectAllLabel="选择当前页全部" {...rowProps} />
             <TablePagination
               page={flatPage}
@@ -815,10 +987,10 @@ export default function FindingsPage() {
   );
 
   return (
-    <div className="flex flex-1 flex-col gap-4 md:gap-6">
+    <div className="flex min-w-0 flex-1 flex-col gap-4 md:gap-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">发现</h1>
+          <h1 className="font-semibold text-2xl tracking-tight md:text-3xl">发现</h1>
           <p className="text-muted-foreground text-sm">跨任务漏洞汇总</p>
         </div>
         <Tabs value={view} onValueChange={(v) => setView(v as FindingView)}>
@@ -830,16 +1002,16 @@ export default function FindingsPage() {
         </Tabs>
       </div>
       <div className="flex flex-1 flex-col gap-4 md:gap-6">
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
+        <div className="grid grid-cols-3 gap-2 sm:gap-3 lg:grid-cols-6">
           {statCards.map((stat) => {
             const StatIcon = stat.icon;
             return (
-              <Card key={stat.label} className="gap-1 py-4">
-                <CardHeader className="px-4">
-                  <CardDescription>{stat.label}</CardDescription>
-                  <CardTitle className={cn("flex items-center gap-2 text-2xl tabular-nums", stat.tone)}>
-                    <StatIcon className="size-5" aria-hidden="true" />
-                    {stat.value}
+              <Card key={stat.label} className="gap-1 py-3 sm:py-4">
+                <CardHeader className="gap-1 px-3 sm:px-4">
+                  <CardDescription className="text-xs sm:text-sm">{stat.label}</CardDescription>
+                  <CardTitle className={cn("flex items-center gap-1.5 text-xl tabular-nums sm:text-2xl", stat.tone)}>
+                    <StatIcon className="size-4 shrink-0 sm:size-5" aria-hidden="true" />
+                    {statsLoaded ? stat.value : "—"}
                   </CardTitle>
                 </CardHeader>
               </Card>
@@ -847,7 +1019,10 @@ export default function FindingsPage() {
           })}
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        <fieldset
+          className="flex min-w-0 flex-wrap items-center gap-2 rounded-xl border bg-card p-3 sm:p-4"
+          aria-label="发现筛选"
+        >
           <InputGroup className="w-full sm:w-72">
             <InputGroupInput
               type="search"
@@ -885,7 +1060,7 @@ export default function FindingsPage() {
           </ToggleGroup>
 
           <Select value={status} onValueChange={(v) => setStatus(v as "all" | FindingStatus)}>
-            <SelectTrigger size="sm" className="w-32">
+            <SelectTrigger size="sm" className="h-8 w-32" aria-label="按状态筛选">
               <SelectValue placeholder="状态" />
             </SelectTrigger>
             <SelectContent>
@@ -899,7 +1074,7 @@ export default function FindingsPage() {
           </Select>
 
           <Select value={vulnclass} onValueChange={setVulnclass}>
-            <SelectTrigger size="sm" className="w-40">
+            <SelectTrigger size="sm" className="h-8 w-36 sm:w-40" aria-label="按漏洞类型筛选">
               <SelectValue placeholder="漏洞类型" />
             </SelectTrigger>
             <SelectContent>
@@ -913,7 +1088,7 @@ export default function FindingsPage() {
           </Select>
 
           <Select value={task} onValueChange={setTask}>
-            <SelectTrigger size="sm" className="w-48">
+            <SelectTrigger size="sm" className="h-8 w-48" aria-label="按任务筛选">
               <SelectValue placeholder="任务" />
             </SelectTrigger>
             <SelectContent>
@@ -940,7 +1115,7 @@ export default function FindingsPage() {
           </Select>
 
           <Select value={sort} onValueChange={(v) => setSort(v as "severity" | "time")}>
-            <SelectTrigger size="sm" className="w-36">
+            <SelectTrigger size="sm" className="h-8 w-36" aria-label="发现排序">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -951,13 +1126,13 @@ export default function FindingsPage() {
 
           <div className="ml-auto flex items-center gap-3">
             {selectedIds.size > 0 && (
-              <span className="text-xs text-muted-foreground tabular-nums">已选 {selectedIds.size} 条</span>
+              <span className="text-muted-foreground text-xs tabular-nums">已选 {selectedIds.size} 条</span>
             )}
             <Button size="sm" variant="outline" onClick={openExport}>
               <DownloadIcon /> 导出
             </Button>
           </div>
-        </div>
+        </fieldset>
 
         {view === "flat" && flatListCard}
 
@@ -965,26 +1140,53 @@ export default function FindingsPage() {
           <div className="grid min-h-0 items-start gap-4 lg:grid-cols-[20rem_minmax(0,1fr)] xl:grid-cols-[24rem_minmax(0,1fr)]">
             <Card className="gap-0 py-3 lg:sticky lg:top-4">
               <CardContent className="flex flex-col px-3">
-                {assetTree.loading && !assetTree.loaded ? (
-                  <div className="flex min-h-36 items-center justify-center">
-                    <Spinner />
+                {(assetTree.queryKey !== filterFingerprint || (!assetTree.loaded && !assetTree.error)) && (
+                  <div
+                    className="flex min-h-36 items-center justify-center gap-2 text-muted-foreground text-sm"
+                    role="status"
+                  >
+                    <Spinner aria-hidden="true" />
+                    正在加载资产树…
                   </div>
-                ) : (
-                  <AssetTree
-                    nodes={assetTree.nodes}
-                    selected={assetScope}
-                    onSelect={setAssetScope}
-                    loading={assetTree.loading}
-                    truncated={assetTree.truncated}
-                    droppedKinds={assetTree.droppedKinds}
-                    findingTotal={assetTree.findingTotal}
-                    onRefresh={() => void loadAssetTree()}
-                  />
+                )}
+                {assetTree.queryKey === filterFingerprint && assetTree.error && !assetTree.loaded && (
+                  <div
+                    className="flex min-h-36 flex-col items-center justify-center gap-3 p-3 text-center"
+                    role="alert"
+                  >
+                    <p className="font-medium">资产树加载失败</p>
+                    <p className="text-muted-foreground text-sm">{assetTree.error}</p>
+                    <Button size="sm" variant="outline" onClick={() => void loadAssetTree()}>
+                      重新加载资产树
+                    </Button>
+                  </div>
+                )}
+                {assetTree.queryKey === filterFingerprint && assetTree.loaded && (
+                  <>
+                    {assetTree.error && (
+                      <div className="flex flex-col items-start gap-2 border-b pb-3 text-sm" role="status">
+                        <span>资产树更新失败，正在显示上次结果。</span>
+                        <Button size="sm" variant="outline" onClick={() => void loadAssetTree()}>
+                          重试资产树
+                        </Button>
+                      </div>
+                    )}
+                    <AssetTree
+                      nodes={assetTree.nodes}
+                      selected={assetScope}
+                      onSelect={setAssetScope}
+                      loading={assetTree.loading}
+                      truncated={assetTree.truncated}
+                      droppedKinds={assetTree.droppedKinds}
+                      findingTotal={assetTree.findingTotal}
+                      onRefresh={() => void loadAssetTree()}
+                    />
+                  </>
                 )}
               </CardContent>
             </Card>
             <div className="flex min-w-0 flex-col gap-2">
-              <div className="flex min-w-0 flex-wrap items-center gap-1 text-sm text-muted-foreground">
+              <div className="flex min-w-0 flex-wrap items-center gap-1 text-muted-foreground text-sm">
                 <button
                   type="button"
                   className={cn("hover:text-foreground", assetScope === null && "font-medium text-foreground")}
@@ -1017,6 +1219,42 @@ export default function FindingsPage() {
 
         {view === "grouped" && (
           <div className="flex flex-col gap-3">
+            {(groupList.queryKey !== groupsQueryKey || (!groupList.loaded && !groupList.error)) && (
+              <Card>
+                <CardContent
+                  className="flex min-h-36 items-center justify-center gap-2 text-muted-foreground text-sm"
+                  role="status"
+                >
+                  <Spinner aria-hidden="true" />
+                  正在加载任务分组…
+                </CardContent>
+              </Card>
+            )}
+            {groupList.queryKey === groupsQueryKey && groupList.error && !groupList.loaded && (
+              <Card>
+                <CardContent
+                  className="flex min-h-36 flex-col items-center justify-center gap-3 p-6 text-center"
+                  role="alert"
+                >
+                  <p className="font-medium">任务分组加载失败</p>
+                  <p className="text-muted-foreground text-sm">{groupList.error}</p>
+                  <Button size="sm" variant="outline" onClick={() => void refreshGroups()}>
+                    重新加载
+                  </Button>
+                </CardContent>
+              </Card>
+            )}
+            {groupList.queryKey === groupsQueryKey && groupList.error && groupList.loaded && (
+              <div
+                className="flex flex-wrap items-center justify-between gap-2 rounded-lg border px-4 py-3 text-sm"
+                role="status"
+              >
+                <span>任务分组更新失败，正在显示上次结果。</span>
+                <Button size="sm" variant="outline" onClick={() => void refreshGroups()}>
+                  重试任务分组
+                </Button>
+              </div>
+            )}
             {groups.map((group) => {
               const key = findingGroupKey(group);
               const groupOpen = expandedGroups.has(key);
@@ -1027,6 +1265,8 @@ export default function FindingsPage() {
                 pageSize: 10,
                 loaded: false,
                 loading: false,
+                queryKey: JSON.stringify([filterFingerprint, key, 1, 10]),
+                error: null,
               };
               return (
                 <Card key={key} className="gap-0 py-0">
@@ -1065,11 +1305,11 @@ export default function FindingsPage() {
                           return (
                             <span key={level} className="inline-flex items-center gap-1">
                               <StatusBadge domain="severity" value={level} dot />
-                              <span className="text-xs tabular-nums text-muted-foreground">{count}</span>
+                              <span className="text-muted-foreground text-xs tabular-nums">{count}</span>
                             </span>
                           );
                         })}
-                        <span className="text-xs tabular-nums text-muted-foreground">
+                        <span className="text-muted-foreground text-xs tabular-nums">
                           {fmtTime(group.last_found_at)}
                         </span>
                         {group.task_id !== null && (
@@ -1086,13 +1326,49 @@ export default function FindingsPage() {
                     </div>
                   </CardHeader>
                   {groupOpen && (
-                    <CardContent className="px-0">
-                      {state.loading && !state.loaded ? (
-                        <div className="flex min-h-36 items-center justify-center">
-                          <Spinner />
+                    <CardContent className="px-0" aria-busy={state.loading}>
+                      {!state.loaded && !state.error && (
+                        <div
+                          className="flex min-h-36 items-center justify-center gap-2 text-muted-foreground text-sm"
+                          role="status"
+                        >
+                          <Spinner aria-hidden="true" />
+                          正在加载本组发现…
                         </div>
-                      ) : (
+                      )}
+                      {state.error && !state.loaded && (
+                        <div
+                          className="flex min-h-36 flex-col items-center justify-center gap-3 p-6 text-center"
+                          role="alert"
+                        >
+                          <p className="font-medium">本组发现加载失败</p>
+                          <p className="text-muted-foreground text-sm">{state.error}</p>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => void loadGroup(key, state.page, state.pageSize)}
+                          >
+                            重新加载
+                          </Button>
+                        </div>
+                      )}
+                      {state.loaded && (
                         <>
+                          {state.error && (
+                            <div
+                              className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3 text-sm"
+                              role="status"
+                            >
+                              <span>本组发现更新失败，正在显示上次结果。</span>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => void loadGroup(key, state.page, state.pageSize)}
+                              >
+                                重试本组发现
+                              </Button>
+                            </div>
+                          )}
                           <FindingsTable items={state.items} selectAllLabel="选择本组当前页全部" {...rowProps} />
                           <TablePagination
                             page={state.page}
@@ -1108,22 +1384,24 @@ export default function FindingsPage() {
                 </Card>
               );
             })}
-            {groups.length === 0 && (
+            {groupList.queryKey === groupsQueryKey && groupList.loaded && groups.length === 0 && (
               <Card>
-                <CardContent className="py-12 text-center text-sm text-muted-foreground">没有匹配的发现。</CardContent>
+                <CardContent className="py-12 text-center text-muted-foreground text-sm">没有匹配的发现。</CardContent>
               </Card>
             )}
-            <TablePagination
-              page={page}
-              pageSize={pageSize}
-              total={groupTotal}
-              onPageChange={setPage}
-              onPageSizeChange={(nextPageSize) => {
-                setPageSize(nextPageSize);
-                setPage(1);
-              }}
-              pageSizeOptions={[5, 10, 20]}
-            />
+            {groupList.queryKey === groupsQueryKey && groupList.loaded && (
+              <TablePagination
+                page={page}
+                pageSize={pageSize}
+                total={groupList.total}
+                onPageChange={setPage}
+                onPageSizeChange={(nextPageSize) => {
+                  setPageSize(nextPageSize);
+                  setPage(1);
+                }}
+                pageSizeOptions={[5, 10, 20]}
+              />
+            )}
           </div>
         )}
       </div>
@@ -1210,7 +1488,7 @@ export default function FindingsPage() {
 
           <div className="flex flex-col gap-5 py-1">
             <div className="flex flex-col gap-2">
-              <span className="text-xs text-muted-foreground">导出范围</span>
+              <span className="text-muted-foreground text-xs">导出范围</span>
               <RadioGroup value={exportScope} onValueChange={(v) => setExportScope(v as typeof exportScope)}>
                 <label htmlFor="export-scope-filtered" className="flex items-center gap-2 text-sm">
                   <RadioGroupItem id="export-scope-filtered" value="filtered" /> 导出当前筛选结果（共 {filteredTotal}{" "}
@@ -1230,7 +1508,7 @@ export default function FindingsPage() {
             </div>
 
             <div className="flex flex-col gap-2">
-              <span className="text-xs text-muted-foreground">导出格式</span>
+              <span className="text-muted-foreground text-xs">导出格式</span>
               <RadioGroup value={exportFormat} onValueChange={(v) => setExportFormat(v as typeof exportFormat)}>
                 <label htmlFor="export-format-md-single" className="flex items-center gap-2 text-sm">
                   <RadioGroupItem id="export-format-md-single" value="md-single" /> Markdown 汇总报告（单个 .md 文件）

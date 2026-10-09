@@ -31,7 +31,10 @@ func TestCaptureApprovalLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	priorConfig := ic.GetJudgeConfig()
+	priorConfig, err := ic.GetJudgeConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() { _ = ic.SetEnabledTools(priorTools); _ = ic.SetJudgeConfig(priorConfig) })
 	if err := ic.SetEnabledTools([]string{"ApprovalAuditProbe"}); err != nil {
 		t.Fatal(err)

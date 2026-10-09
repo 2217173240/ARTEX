@@ -529,6 +529,9 @@ export function SessionsTab({ taskId }: { taskId: string }) {
   const [olderIntentsHasMore, setOlderIntentsHasMore] = React.useState(false);
   const [hasLoadedOlderIntentsPage, setHasLoadedOlderIntentsPage] = React.useState(false);
   const [loadingOlderIntents, setLoadingOlderIntents] = React.useState(false);
+  const olderIntentsRequestRef = React.useRef<{ taskId: string; busy: boolean } | null>(null);
+  // Invalidate during navigation, before the replacement list effect runs.
+  if (olderIntentsRequestRef.current?.taskId !== taskId) olderIntentsRequestRef.current = null;
   const [input, setInput] = React.useState("");
   const [sending, setSending] = React.useState(false);
   const [stopping, setStopping] = React.useState(false);
@@ -1068,17 +1071,20 @@ export function SessionsTab({ taskId }: { taskId: string }) {
 
   // ── worker (intent) session list — paged, poll first page lightly ───────────────
   React.useEffect(() => {
-    let active = true;
+    const request = { taskId, busy: false };
+    olderIntentsRequestRef.current = request;
     firstIntentsRef.current = [];
     setIntents([]);
     setOlderIntents([]);
     setFirstIntentsHasMore(false);
     setOlderIntentsHasMore(false);
+    setHasLoadedOlderIntentsPage(false);
+    setLoadingOlderIntents(false);
     const load = () =>
       api
         .intentsPage(taskId, 0, 300)
         .then((r) => {
-          if (!active) return;
+          if (olderIntentsRequestRef.current !== request) return;
           const freshIds = new Set(r.items.map((item) => item.id));
           const oldestFreshId = r.items.reduce((minimum, item) => Math.min(minimum, Number(item.id)), Infinity);
           const displaced = r.hasMore
@@ -1101,20 +1107,23 @@ export function SessionsTab({ taskId }: { taskId: string }) {
     void load();
     const t = setInterval(load, 5000);
     return () => {
-      active = false;
+      if (olderIntentsRequestRef.current === request) olderIntentsRequestRef.current = null;
       clearInterval(t);
     };
   }, [taskId]);
 
   const loadOlderIntents = React.useCallback(() => {
-    if (loadingOlderIntents) return;
+    const request = olderIntentsRequestRef.current;
+    if (!request || request.busy || request.taskId !== taskId) return;
     const all = [...intents, ...olderIntents];
     const minId = all.reduce((m, n) => Math.min(m, Number(n.id)), Infinity);
     if (!Number.isFinite(minId)) return;
+    request.busy = true;
     setLoadingOlderIntents(true);
     api
       .intentsPage(taskId, minId, 300)
       .then((r) => {
+        if (olderIntentsRequestRef.current !== request) return;
         setOlderIntents((prev) => {
           const seen = new Set([...intents, ...prev].map((n) => n.id));
           return [...prev, ...r.items.filter((n) => !seen.has(n.id))];
@@ -1125,8 +1134,12 @@ export function SessionsTab({ taskId }: { taskId: string }) {
       .catch(() => {
         // A later manual retry can fetch this page again.
       })
-      .finally(() => setLoadingOlderIntents(false));
-  }, [taskId, intents, olderIntents, loadingOlderIntents]);
+      .finally(() => {
+        if (olderIntentsRequestRef.current !== request) return;
+        request.busy = false;
+        setLoadingOlderIntents(false);
+      });
+  }, [taskId, intents, olderIntents]);
 
   // Combined, de-duplicated worker list (newest first page + older loaded pages).
   const allIntents = React.useMemo(() => {

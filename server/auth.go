@@ -94,12 +94,9 @@ func signJWT(key []byte) (string, error) {
 
 // verifyJWT returns true when tokenStr is a valid, non-expired HS256 token.
 func verifyJWT(tokenStr string, key []byte) bool {
-	t, err := jwt.Parse(tokenStr, func(t *jwt.Token) (any, error) {
-		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method")
-		}
+	t, err := jwt.Parse(tokenStr, func(*jwt.Token) (any, error) {
 		return key, nil
-	})
+	}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}))
 	return err == nil && t.Valid
 }
 
@@ -156,6 +153,9 @@ func (s *Server) authStatus(w http.ResponseWriter, r *http.Request) {
 
 // POST /api/auth/init — sets the password for the first time; rejected if already set.
 func (s *Server) authInit(w http.ResponseWriter, r *http.Request) {
+	if !s.allowAuthAttempt(w, r) {
+		return
+	}
 	pg := s.pg(w)
 	if pg == nil {
 		return
@@ -260,6 +260,9 @@ func (s *Server) authChangePassword(w http.ResponseWriter, r *http.Request) {
 
 // POST /api/auth/login — validates username/password and returns a JWT.
 func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
+	if !s.allowAuthAttempt(w, r) {
+		return
+	}
 	pg := s.pg(w)
 	if pg == nil {
 		return

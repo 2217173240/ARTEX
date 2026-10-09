@@ -10,6 +10,7 @@ package guard
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"regexp"
 	"sync"
 	"time"
@@ -84,15 +85,28 @@ func (g *Guard) applyIntercept(ctx context.Context, ev hook.Event) hook.Result {
 	if g.interceptor == nil {
 		return hook.Result{}
 	}
-	if !g.interceptor.IsToolEnabled(ev.ToolName) {
+	enabled, err := g.interceptor.IsToolEnabled(ev.ToolName)
+	if err != nil {
+		log.Printf("[guard] intercept configuration read failed for tool %q: %v", ev.ToolName, err)
+		return g.block(ev.ToolName, systemBlockMessage("拦截配置读取失败，平台阻止执行"), "")
+	}
+	if !enabled {
 		return hook.Result{}
 	}
 	ctx = intercept.WithCall(ctx, ev.ToolName, ev.Input)
-	dec, matched := g.interceptor.Match(ev.ToolName, ev.Input)
+	dec, matched, err := g.interceptor.Match(ev.ToolName, ev.Input)
+	if err != nil {
+		log.Printf("[guard] intercept rule read failed for tool %q: %v", ev.ToolName, err)
+		return g.block(ev.ToolName, systemBlockMessage("拦截规则读取失败，平台阻止执行"), "")
+	}
 	if !matched {
 		// No rule matched. Ask the LLM fallback judge (if enabled); when it is off
 		// or unwired, keep current behavior and allow.
-		d, judged := g.interceptor.Judge(ctx, ev.ToolName, ev.Input)
+		d, judged, err := g.interceptor.Judge(ctx, ev.ToolName, ev.Input)
+		if err != nil {
+			log.Printf("[guard] judge configuration read failed for tool %q: %v", ev.ToolName, err)
+			return g.block(ev.ToolName, systemBlockMessage("模型审批配置读取失败，平台阻止执行"), "")
+		}
 		if !judged {
 			return hook.Result{}
 		}

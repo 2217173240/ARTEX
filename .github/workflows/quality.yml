@@ -1,0 +1,89 @@
+name: quality
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: artex_ci
+          POSTGRES_PASSWORD: fixture_only
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U artex_ci -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      ARTEX_CONFIG: /dev/null
+      ARTEX_REVIEW_LIVE_CONFIG: ""
+      OPENAI_API_KEY: ""
+      ANTHROPIC_API_KEY: ""
+      ARTEX_LLM_PROVIDER: ""
+      ARTEX_LLM_BASE_URL: ""
+      ARTEX_LLM_MODEL: ""
+      ARTEX_LLM_PROXY: ""
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+      - name: Race tests with a fresh database for each package
+        env:
+          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          packages=$(go list ./...)
+          index=0
+          for package in $packages; do
+            index=$((index + 1))
+            database="artex_ci_${index}"
+            docker exec "$POSTGRES_CONTAINER" psql -U artex_ci -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE ${database}"
+            fixture_dsn="postgres://artex_ci:fixture_only@127.0.0.1:5432/${database}?sslmode=disable"
+            ARTEX_PG_DSN="$fixture_dsn" ARTEX_INTERCEPT_TEST_DSN="$fixture_dsn" \
+              go test -race -count=1 -skip '^TestLiveContextReview$' "$package"
+          done
+      - name: Build CLI
+        run: go build -o "$RUNNER_TEMP/artex" ./cmd/artex
+      - name: Static harvest regression tests
+        run: python3 -m unittest discover -s skills/api-recon/scripts -p 'test_harvest_static.py'
+
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --ignore-scripts
+      - run: node --test src/lib/*.test.mjs
+      - run: npx --no-install tsc --noEmit
+      - name: Build static mock UI
+        env:
+          NEXT_EXPORT: "1"
+          NEXT_PUBLIC_MOCK: "1"
+        run: npm run build
+      - run: npm audit --audit-level=high

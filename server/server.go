@@ -43,8 +43,9 @@ type Server struct {
 	engine *Engine
 	ctx    context.Context
 
-	skillDir string // root directory for skill subdirectories
-	jwtKey   []byte // HS256 signing key loaded from / generated into dataDir/jwt.key
+	skillDir    string             // root directory for skill subdirectories
+	jwtKey      []byte             // HS256 signing key loaded from / generated into dataDir/jwt.key
+	authLimiter authRequestLimiter // shared login/init quota; zero value is ready for use
 
 	// concMu serializes concurrency-cap decisions (admission + reconcile) so a
 	// scheduler tick and an HTTP settings change / task creation can't both count

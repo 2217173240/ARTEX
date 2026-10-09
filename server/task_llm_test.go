@@ -63,21 +63,28 @@ func withZeroRetryBackoff() func() {
 }
 
 // flakyThenOKProvider fails its first failCount stream attempts pre-commit
-// (emitting only a non-committing SEMessageStart before the error, mirroring a
-// gateway that returns 200 then drops), then serves okEvents.
+// (emitting failEvents, or just a non-committing SEMessageStart by default,
+// mirroring a gateway that returns 200 then drops), then serves okEvents.
 type flakyThenOKProvider struct {
-	failCount int
-	failErr   error
-	okEvents  []llm.StreamEvent
-	calls     int
+	failCount  int
+	failErr    error
+	failEvents []llm.StreamEvent
+	okEvents   []llm.StreamEvent
+	calls      int
 }
 
 func (p *flakyThenOKProvider) Stream(context.Context, llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
 	return func(yield func(llm.StreamEvent, error) bool) {
 		p.calls++
 		if p.calls <= p.failCount {
-			if !yield(llm.StreamEvent{Type: llm.SEMessageStart}, nil) {
-				return
+			events := p.failEvents
+			if events == nil {
+				events = []llm.StreamEvent{{Type: llm.SEMessageStart}}
+			}
+			for _, event := range events {
+				if !yield(event, nil) {
+					return
+				}
 			}
 			yield(llm.StreamEvent{}, p.failErr)
 			return
@@ -402,6 +409,9 @@ func TestTaskLLMStreamAdvancesAfterMidStreamQuotaWithoutReplay(t *testing.T) {
 	if first.calls != 1 || second.calls != 0 {
 		t.Fatalf("mid-stream call was replayed: first=%d second=%d", first.calls, second.calls)
 	}
+	if !errors.Is(err, quota) || retryableWorkerModelError(harness.ReasonModelError, err) || isTaskLLMChainExhausted(err) {
+		t.Fatalf("partial quota failure must preserve its cause and stop worker replay without exhausting the chain: %T %v", err, err)
+	}
 
 	nextEvents, nextErr := collectTaskLLMStream(streamTaskLLM(context.Background(), "7", llm.CompletionRequest{}, hooks))
 	if nextErr != nil || len(nextEvents) != 1 || nextEvents[0].Text != "next-call" || second.calls != 1 {
@@ -433,11 +443,33 @@ func TestTaskLLMStreamMarkFailureAfterToolStartSkipsWorkerReplay(t *testing.T) {
 	if !isTaskLLMRuntimeError(err) {
 		t.Fatalf("committed mark failure must be router-classified: %T %v", err, err)
 	}
+	if !errors.Is(err, quota) || !errors.Is(err, markFailure) {
+		t.Fatalf("provider or persistence cause was lost: %v", err)
+	}
 	if retryableWorkerModelError(harness.ReasonModelError, err) {
 		t.Fatal("worker must not replay after a committed tool stream when quota persistence fails")
 	}
 	if provider.calls != 1 {
 		t.Fatalf("provider calls=%d, want 1", provider.calls)
+	}
+}
+
+func TestTaskLLMCompleteMarkFailureRetainsCauses(t *testing.T) {
+	t.Parallel()
+	quota := errors.New("openai: status 402: insufficient_quota")
+	markFailure := errors.New("database temporarily unavailable")
+	provider := &scriptedLLMProvider{err: quota}
+	hooks := taskLLMStreamHooks{
+		current: func() (taskLLMSelection, error) {
+			return taskLLMSelection{profileID: 11, provider: provider}, nil
+		},
+		exhaust: func(taskLLMSelection, error) (db.TaskLLMTransition, error) {
+			return db.TaskLLMTransition{}, markFailure
+		},
+	}
+	_, _, _, err := completeTaskLLM(t.Context(), "7", llm.CompletionRequest{}, hooks)
+	if !errors.Is(err, quota) || !errors.Is(err, markFailure) {
+		t.Fatalf("provider or persistence cause was lost: %v", err)
 	}
 }
 
