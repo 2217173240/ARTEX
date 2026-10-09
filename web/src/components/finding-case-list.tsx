@@ -86,14 +86,14 @@ export function FindingCaseMemberRow({
         />
       ) : null}
       <StatusBadge domain="severity" value={f.severity} />
-      <div className="flex min-w-0 flex-1 flex-col gap-1">
+      <div className="order-last flex min-w-0 flex-1 basis-full flex-col gap-1 sm:order-none sm:basis-auto">
         <Link
-          className="truncate font-medium hover:underline"
+          className="line-clamp-2 break-words font-medium hover:underline sm:truncate"
           href={`/function/findings/detail?id=${id}${contextTask ? `&context_task=${contextTask}` : ""}`}
         >
           #{id} {[f.name, f.vulnclass].find((v) => v?.trim()) ?? uiText("未分类")}
         </Link>
-        <span className="truncate text-muted-foreground text-xs">{f.summary}</span>
+        <span className="line-clamp-2 break-words text-muted-foreground text-xs sm:truncate">{f.summary}</span>
       </div>
       {!matched ? <Badge variant="outline">{uiText("未命中当前筛选")}</Badge> : null}
       {f.inherited ? <Badge variant="outline">{uiText("继承 · 只读")}</Badge> : null}
