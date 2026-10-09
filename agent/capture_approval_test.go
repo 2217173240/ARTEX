@@ -47,7 +47,7 @@ func TestCaptureApprovalLifecycle(t *testing.T) {
 		name, action, status, execution string
 		manual, approve, toolError      bool
 	}{
-		{"model_fallback", "invalid", "allowed", "succeeded", false, false, false},
+		{"model_fallback", "invalid", "denied", "not_executed", false, false, false},
 		{"model_allow", "allow", "allowed", "succeeded", false, false, false},
 		{"model_deny", "deny", "denied", "not_executed", false, false, false},
 		{"human_allow_tool_error", "ask", "allowed", "failed", true, true, true},
@@ -117,7 +117,7 @@ func TestCaptureApprovalLifecycle(t *testing.T) {
 			a := detail.Audit
 			initialAction := tc.action
 			if tc.action == "invalid" {
-				initialAction = "allow"
+				initialAction = "deny"
 			}
 			wantUserMessage := "record this review"
 			if initialAction == "allow" {

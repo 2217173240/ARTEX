@@ -13,7 +13,7 @@ type findingCaseExportPlan struct {
 	selected   map[int64]bool
 }
 
-// Expand selection to complete cases before the evidence store freezes snapshots.
+// Consolidate complete selected cases without widening filter or explicit-ID scope.
 func (s *Server) prepareFindingCaseExport(fs []*db.DBFinding) ([]*db.DBFinding, *findingCaseExportPlan, error) {
 	plan := &findingCaseExportPlan{cases: map[int64]*db.FindingCase{}, membership: map[int64]int64{}, selected: map[int64]bool{}}
 	expanded := append([]*db.DBFinding{}, fs...)
@@ -40,18 +40,27 @@ func (s *Server) prepareFindingCaseExport(fs []*db.DBFinding) ([]*db.DBFinding, 
 		if c == nil || !c.Active {
 			continue
 		}
-		plan.cases[cid] = c
 		members, _, err := s.m.pg.FindingCaseMembers(cid, 1, 1000000)
 		if err != nil {
 			return nil, nil, err
 		}
+		complete := true
 		for _, m := range members {
-			plan.membership[m.ID] = cid
 			if !seen[m.ID] {
-				seen[m.ID] = true
-				expanded = append(expanded, m)
+				complete = false
+				break
 			}
 		}
+		// A filtered or partial selection exports only those raw records. The
+		// unified report can contain excluded evidence, so it requires all members.
+		if !complete {
+			continue
+		}
+		plan.cases[cid] = c
+		for _, m := range members {
+			plan.membership[m.ID] = cid
+		}
+
 	}
 	return expanded, plan, nil
 }

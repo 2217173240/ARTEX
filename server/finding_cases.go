@@ -38,7 +38,7 @@ func (a findingCaseRequest) ids() []int64 {
 }
 func caseHTTPError(w http.ResponseWriter, err error) {
 	code := 400
-	if errors.Is(err, db.ErrFindingCaseConflict) {
+	if errors.Is(err, db.ErrFindingCaseConflict) || errors.Is(err, db.ErrTaskArchiveState) {
 		code = 409
 	}
 	writeErr(w, code, err.Error())
@@ -85,7 +85,12 @@ func (s *Server) listFindingCases(w http.ResponseWriter, r *http.Request) {
 		caseHTTPError(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"items": items, "total": total, "page": page, "page_size": size, "stats": stats})
+	matched, err := s.m.pg.CountFindingMatches(findingFilterFromQuery(q))
+	if err != nil {
+		caseHTTPError(w, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"items": items, "total": total, "matched_reports": matched, "page": page, "page_size": size, "stats": stats})
 }
 func (s *Server) findingCaseAccess(w http.ResponseWriter, r *http.Request, mutation bool) (*db.FindingCase, bool) {
 	id := int64(atoiDefault(r.PathValue("id"), 0))
@@ -183,6 +188,14 @@ func (s *Server) resolveCaseSuggestion(w http.ResponseWriter, r *http.Request) {
 	if !decodeCaseRequest(w, r, &a) {
 		return
 	}
+	var taskID int64
+	if err := s.m.pg.QueryRow(`SELECT task_id FROM finding_case_suggestions WHERE id=$1`, int64(atoiDefault(r.PathValue("id"), 0))).Scan(&taskID); err != nil {
+		caseHTTPError(w, err)
+		return
+	}
+	if !s.caseTaskMutationAccess(w, r, taskID) {
+		return
+	}
 	id, err := s.m.pg.ResolveFindingCaseSuggestion(r.Context(), int64(atoiDefault(r.PathValue("id"), 0)), a.Accept)
 	if err != nil {
 		caseHTTPError(w, err)
@@ -190,9 +203,27 @@ func (s *Server) resolveCaseSuggestion(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, map[string]string{"case_id": i64s(id)})
 }
+func (s *Server) caseTaskMutationAccess(w http.ResponseWriter, r *http.Request, taskID int64) bool {
+	if contextID := r.URL.Query().Get("context_task"); contextID != "" {
+		t := s.m.ResolveTask(contextID)
+		_, inherited, allowed := findingProvenanceInTask(t, &taskID)
+		if !allowed {
+			writeErr(w, 404, "任务中没有该漏洞")
+			return false
+		}
+		if inherited {
+			writeErr(w, 403, "继承漏洞只读")
+			return false
+		}
+	}
+	return true
+}
 func (s *Server) mergeFindingCase(w http.ResponseWriter, r *http.Request) {
 	var a findingCaseRequest
 	if !decodeCaseRequest(w, r, &a) {
+		return
+	}
+	if !s.caseTaskMutationAccess(w, r, parseProfileID(a.TaskID)) {
 		return
 	}
 	id, err := s.m.pg.MergeFindingCase(r.Context(), parseProfileID(a.TaskID), a.ids(), a.Title, a.Reason, "human")
@@ -294,7 +325,11 @@ func (s *Server) performFindingCaseTool(ctx context.Context, name string, a find
 		}
 		return map[string]any{"finding": dto, "finding_node_id": f.NodeID}, nil
 	case "merge_finding_records":
-		id, err := s.m.pg.MergeFindingCase(ctx, parseProfileID(a.TaskID), a.ids(), a.Title, a.Reason, "reporter")
+		selected, err := s.caseReviewSelection(ctx)
+		if err != nil {
+			return nil, err
+		}
+		id, err := s.m.pg.MergeFindingCaseSelection(ctx, parseProfileID(a.TaskID), a.ids(), a.Title, a.Reason, "reporter", selected)
 		return map[string]string{"case_id": i64s(id)}, err
 	case "suggest_finding_merge":
 		ids := a.ids()
@@ -391,6 +426,9 @@ func (s *Server) reviewFindingCases(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 400, "所选漏洞来源任务不可用")
 			return
 		}
+		if !s.caseTaskMutationAccess(w, r, *f.TaskID) {
+			return
+		}
 		batches[*f.TaskID] = append(batches[*f.TaskID], fid)
 	}
 	// Validate every source before starting any batch.
@@ -454,6 +492,24 @@ func (s *Server) caseReviewRuns(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, items)
 }
 
+func (s *Server) caseReviewSelection(ctx context.Context) ([]int64, error) {
+	conv := intercept.ConvIDFromContext(ctx)
+	if conv == 0 {
+		return nil, nil
+	}
+	var raw json.RawMessage
+	err := s.m.pg.QueryRow(`SELECT finding_ids FROM finding_case_review_runs WHERE conversation_id=$1`, conv).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	ids := []int64{}
+	err = json.Unmarshal(raw, &ids)
+	return ids, err
+}
+
 // Manual reviews cannot mutate a finding outside the explicit selection.
 func (s *Server) checkCaseReviewScope(ctx context.Context, name string, a findingCaseRequest) error {
 	conv := intercept.ConvIDFromContext(ctx)
@@ -477,10 +533,30 @@ func (s *Server) checkCaseReviewScope(ctx context.Context, name string, a findin
 		allowed[id] = true
 	}
 	switch name {
-	case "merge_finding_records", "suggest_finding_merge", "update_finding_report":
+	case "merge_finding_records", "suggest_finding_merge", "update_finding_report", "update_finding_record", "delete_finding_record":
 		checkIDs := a.ids()
-		if name == "update_finding_report" {
+		if name == "update_finding_report" || name == "update_finding_record" || name == "delete_finding_record" {
 			checkIDs = []int64{parseProfileID(a.FindingID)}
+		}
+		if name == "merge_finding_records" {
+			for _, id := range checkIDs {
+				cid, err := s.m.pg.FindingCaseID(id)
+				if err != nil {
+					return err
+				}
+				if cid == 0 {
+					continue
+				}
+				fs, _, err := s.m.pg.FindingCaseMembers(cid, 1, 100000)
+				if err != nil {
+					return err
+				}
+				for _, f := range fs {
+					if !allowed[f.ID] {
+						return errors.New("归并会加入未选择的既有组成员，请明确选择完整组")
+					}
+				}
+			}
 		}
 		for _, id := range checkIDs {
 			if !allowed[id] {

@@ -169,6 +169,18 @@ func (d *DB) ListFindingCases(filter FindingFilter, page, size int) ([]FindingCa
 	return out, total, nil
 }
 
+// CountFindingMatches uses the identical raw-record filters as case pagination.
+func (d *DB) CountFindingMatches(filter FindingFilter) (int, error) {
+	filter, err := d.applyAssetScope(filter)
+	if err != nil {
+		return 0, err
+	}
+	where, args := filter.where()
+	var count int
+	err = d.QueryRow(`SELECT count(*) FROM findings f LEFT JOIN tasks t ON t.id=f.task_id`+where, args...).Scan(&count)
+	return count, err
+}
+
 func sortedFindingIDs(ids []int64) ([]int64, error) {
 	set := map[int64]bool{}
 	out := []int64{}
@@ -194,13 +206,18 @@ func lockCaseTask(tx *sql.Tx, taskID int64) error {
 	if _, err := tx.Exec(`SELECT pg_advisory_xact_lock($1)`, int64(5100000000000000)+taskID); err != nil {
 		return err
 	}
-	var id int64
-	return tx.QueryRow(`SELECT id FROM tasks WHERE id=$1 FOR UPDATE`, taskID).Scan(&id)
+	return LockTaskEvidenceTx(tx, taskID)
 }
 func (d *DB) MergeFindingCase(ctx context.Context, taskID int64, ids []int64, title, reason, actor string) (int64, error) {
-	return d.mergeFindingCase(ctx, taskID, ids, title, reason, actor, 0)
+	return d.mergeFindingCase(ctx, taskID, ids, title, reason, actor, 0, nil)
 }
-func (d *DB) mergeFindingCase(ctx context.Context, taskID int64, ids []int64, title, reason, actor string, suggestionID int64) (int64, error) {
+
+// MergeFindingCaseSelection enforces the human selection after expanding existing
+// groups inside the same locked transaction as the membership changes.
+func (d *DB) MergeFindingCaseSelection(ctx context.Context, taskID int64, ids []int64, title, reason, actor string, selected []int64) (int64, error) {
+	return d.mergeFindingCase(ctx, taskID, ids, title, reason, actor, 0, selected)
+}
+func (d *DB) mergeFindingCase(ctx context.Context, taskID int64, ids []int64, title, reason, actor string, suggestionID int64, selected []int64) (int64, error) {
 	ids, err := sortedFindingIDs(ids)
 	if err != nil {
 		return 0, err
@@ -269,6 +286,17 @@ func (d *DB) mergeFindingCase(ctx context.Context, taskID int64, ids []int64, ti
 			ids = append(ids, id)
 		}
 		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+		if selected != nil {
+			allowed := map[int64]bool{}
+			for _, id := range selected {
+				allowed[id] = true
+			}
+			for _, id := range ids {
+				if !allowed[id] {
+					return errors.New("归并不能加入人工未选择的记录")
+				}
+			}
+		}
 		raw, _ := json.Marshal(ids)
 		var blocked bool
 		if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM finding_case_blocks WHERE left_id IN(SELECT value::bigint FROM jsonb_array_elements_text($1::jsonb)) AND right_id IN(SELECT value::bigint FROM jsonb_array_elements_text($1::jsonb)))`, string(raw)).Scan(&blocked); err != nil {
@@ -330,8 +358,7 @@ func (d *DB) RemoveFindingCaseMember(ctx context.Context, cid, fid int64, reason
 			return err
 		}
 		// Deleting a task retains its findings and folder history.
-		var live int64
-		if err := tx.QueryRow(`SELECT id FROM tasks WHERE id=$1 FOR UPDATE`, origin).Scan(&live); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		if err := LockTaskEvidenceTx(tx, origin); err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
 		var current int64
@@ -364,6 +391,13 @@ func (d *DB) UpdateFindingCaseReport(ctx context.Context, cid, version int64, ti
 		return errors.New("完整报告、名称、有效等级和评级依据必填")
 	}
 	return d.WithEvidenceTx(ctx, func(tx *sql.Tx) error {
+		var taskID sql.NullInt64
+		if err := tx.QueryRow(`SELECT task_id FROM finding_cases WHERE id=$1`, cid).Scan(&taskID); err != nil {
+			return err
+		}
+		if err := LockTaskEvidenceTx(tx, taskID.Int64); err != nil {
+			return err
+		}
 		c, err := scanCase(tx.QueryRow(`SELECT `+caseColumns+` FROM finding_cases c WHERE id=$1 FOR UPDATE`, cid))
 		if err != nil {
 			return err
@@ -440,7 +474,7 @@ func (d *DB) ResolveFindingCaseSuggestion(ctx context.Context, id int64, accept 
 		return 0, ErrFindingCaseConflict
 	}
 	if accept {
-		return d.mergeFindingCase(ctx, s.TaskID, []int64{s.LeftID, s.RightID}, s.Title, s.Reason, "human", id)
+		return d.mergeFindingCase(ctx, s.TaskID, []int64{s.LeftID, s.RightID}, s.Title, s.Reason, "human", id, nil)
 	}
 	return 0, d.WithEvidenceTx(ctx, func(tx *sql.Tx) error {
 		if err := lockCaseTask(tx, s.TaskID); err != nil {

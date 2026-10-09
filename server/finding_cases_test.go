@@ -111,7 +111,7 @@ func TestFindingCaseConsolidatedExportPreservesScope(t *testing.T) {
 	if err := s.m.pg.UpdateFindingCaseReport(ctx, cid, c.Version, "订单越权", "complete report", "high", "verified"); err != nil {
 		t.Fatal(err)
 	}
-	fs, err := s.m.pg.ListFindingsForExport(db.FindingFilter{}, ids[:1])
+	fs, err := s.m.pg.ListFindingsForExport(db.FindingFilter{}, ids)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,8 +119,20 @@ func TestFindingCaseConsolidatedExportPreservesScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	partial, err := s.m.pg.ListFindingsForExport(db.FindingFilter{}, ids[:1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	partial, partialPlan, err := s.prepareFindingCaseExport(partial)
+	if err != nil || len(partial) != 1 {
+		t.Fatalf("partial scope widened: %d %v", len(partial), err)
+	}
+	partialOut, err := s.consolidateFindingCaseExport(partial, partialPlan, false)
+	if err != nil || len(partialOut) != 1 || partialOut[0].ExportCaseID != 0 {
+		t.Fatalf("partial export leaked case report: %+v %v", partialOut, err)
+	}
 	if len(expanded) != 3 {
-		t.Fatal("selected one child did not include complete group")
+		t.Fatal("complete group was not retained")
 	}
 	out, err := s.consolidateFindingCaseExport(expanded, plan, false)
 	if err != nil || len(out) != 1 || out[0].Report != "complete report" || !strings.Contains(out[0].Summary, fmt.Sprint(ids[2])) {
@@ -251,7 +263,7 @@ func TestFindingCaseGroupedTrafficExportAndInheritedAccess(t *testing.T) {
 	if c.Version == c.ReportVersion {
 		t.Fatal("binding evidence did not invalidate unified report")
 	}
-	url := fmt.Sprintf("/api/exploration/findings/export?mode=consolidated&include_originals=true&scope=selected&ids=%d&format=md-zip", f.ID)
+	url := fmt.Sprintf("/api/exploration/findings/export?mode=consolidated&include_originals=true&scope=selected&ids=%d,%d&format=md-zip", f.ID, other.FindingID)
 	w = req("GET", url, "")
 	if w.Code != 200 {
 		t.Fatal(w.Code, w.Body)
@@ -293,7 +305,7 @@ func TestFindingCaseGroupedTrafficExportAndInheritedAccess(t *testing.T) {
 	if mdCount != 3 || caseCount != 1 || !recovered {
 		t.Fatalf("ZIP reports=%d folders=%d evidence=%v", mdCount, caseCount, recovered)
 	}
-	w = req("GET", fmt.Sprintf("/api/exploration/findings/export?mode=consolidated&scope=selected&ids=%d&format=json", f.ID), "")
+	w = req("GET", fmt.Sprintf("/api/exploration/findings/export?mode=consolidated&scope=selected&ids=%d,%d&format=json", f.ID, other.FindingID), "")
 	if w.Code != 200 || !strings.Contains(w.Body.String(), `"id": "case:`) || !strings.Contains(w.Body.String(), `"member_ids"`) {
 		t.Fatal(w.Code, w.Body)
 	}

@@ -81,6 +81,21 @@ WHERE relation.source_task_id=$1 LIMIT 1`, taskID).Scan(&dependent)
 	if _, err := tx.Exec(`DELETE FROM side_question_sessions WHERE task_id=$1`, taskID); err != nil {
 		return err
 	}
+	if err := validateTaskCaseOwnership(tx, taskID); err != nil {
+		return err
+	}
+	// Remove membership before findings. Its delete trigger may add history, so
+	// remove events afterwards and then the case itself in this transaction.
+	for _, query := range []string{
+		`DELETE FROM finding_case_members WHERE case_id IN (SELECT id FROM finding_cases WHERE task_id=$1)`,
+		`DELETE FROM finding_case_events WHERE case_id IN (SELECT id FROM finding_cases WHERE task_id=$1)`,
+		`DELETE FROM finding_cases WHERE task_id=$1`,
+		`DELETE FROM finding_case_review_runs WHERE task_id=$1`,
+	} {
+		if _, err := tx.Exec(query, taskID); err != nil {
+			return err
+		}
+	}
 	if _, err := tx.Exec(`DELETE FROM findings WHERE task_id=$1`, taskID); err != nil {
 		return err
 	}
@@ -271,6 +286,9 @@ WHERE archive.id=$1 FOR UPDATE OF archive,task`, archiveID).Scan(&taskID, &expID
 		if err := insertArchiveRows(tx, table, remappedTables[table]); err != nil {
 			return nil, fmt.Errorf("restore %s: %w", table, err)
 		}
+	}
+	if err := restoreFindingCasesTx(tx, snapshot); err != nil {
+		return nil, fmt.Errorf("restore finding cases: %w", err)
 	}
 	if err := restoreFindingTrafficTx(tx, snapshot); err != nil {
 		return nil, fmt.Errorf("restore finding traffic: %w", err)
@@ -800,4 +818,137 @@ WHERE task.archived_at IS NOT NULL`)
 		out = append(out, raw)
 	}
 	return out, rows.Err()
+}
+
+// Case metadata is restored after findings, without changing evidence or report
+// versions. Historical event finding IDs may name findings deleted before archive.
+func restoreFindingCasesTx(tx *sql.Tx, snapshot *TaskArchiveSnapshot) error {
+	caseIDs := map[int64]int64{}
+	ownedFinding := func(value any) error {
+		id, ok := jsonInt64(value)
+		if !ok || id <= 0 {
+			return errors.New("invalid archived case finding ID")
+		}
+		var owned bool
+		if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM findings WHERE id=$1 AND task_id=$2)`, id, snapshot.TaskID).Scan(&owned); err != nil {
+			return err
+		}
+		if !owned {
+			return fmt.Errorf("case references finding outside archived task: %d", id)
+		}
+		return nil
+	}
+	for _, table := range []string{"finding_cases", "finding_case_members", "finding_case_events", "finding_case_suggestions", "finding_case_blocks", "finding_case_review_runs"} {
+		rows, err := decodeArchiveRows(snapshot.Tables[table])
+		if err != nil {
+			return err
+		}
+		// History is displayed in ID order. If one ID is occupied, remap the
+		// entire ordered event stream so its relative chronology stays intact.
+		remapEvents := false
+		if table == "finding_case_events" {
+			for _, row := range rows {
+				id, ok := jsonInt64(row["id"])
+				if !ok {
+					return errors.New("invalid archived case event ID")
+				}
+				var exists bool
+				if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM finding_case_events WHERE id=$1)`, id).Scan(&exists); err != nil {
+					return err
+				}
+				remapEvents = remapEvents || exists
+			}
+		}
+		seenIDs := map[int64]bool{}
+		for _, row := range rows {
+			if row == nil {
+				return errors.New("archived case row must be an object")
+			}
+			if table == "finding_cases" || table == "finding_case_suggestions" || table == "finding_case_review_runs" {
+				if id, ok := jsonInt64(row["task_id"]); !ok || id != snapshot.TaskID {
+					return errors.New("archived case task mismatch")
+				}
+			}
+			if table == "finding_case_members" || table == "finding_case_events" {
+				old, ok := jsonInt64(row["case_id"])
+				replacement, exists := caseIDs[old]
+				if !ok || !exists {
+					return errors.New("archived case reference is missing")
+				}
+				row["case_id"] = replacement
+			}
+			if table == "finding_case_members" {
+				if err := ownedFinding(row["finding_id"]); err != nil {
+					return err
+				}
+			}
+			if table == "finding_case_suggestions" || table == "finding_case_blocks" {
+				for _, key := range []string{"left_id", "right_id"} {
+					if err := ownedFinding(row[key]); err != nil {
+						return err
+					}
+				}
+			}
+			if table == "finding_cases" || table == "finding_case_events" || table == "finding_case_suggestions" {
+				old, ok := jsonInt64(row["id"])
+				if !ok || old <= 0 || seenIDs[old] {
+					return errors.New("invalid or duplicate archived case row ID")
+				}
+				seenIDs[old] = true
+				candidate := old
+				var exists bool
+				if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM `+table+` WHERE id=$1)`, candidate).Scan(&exists); err != nil {
+					return err
+				}
+				if exists || remapEvents {
+					// Advance beyond occupied/imported IDs before allocating a replacement.
+					if _, err := tx.Exec(`SELECT setval(pg_get_serial_sequence('` + table + `','id'), GREATEST((SELECT COALESCE(max(id),1) FROM ` + table + `), (SELECT last_value FROM ` + table + `_id_seq)))`); err != nil {
+						return err
+					}
+					if err := tx.QueryRow(`SELECT nextval(pg_get_serial_sequence('` + table + `','id'))`).Scan(&candidate); err != nil {
+						return err
+					}
+				}
+				row["id"] = candidate
+				if table == "finding_cases" {
+					caseIDs[old] = candidate
+				}
+			}
+			encoded, err := json.Marshal(row)
+			if err != nil {
+				return err
+			}
+			if _, err := tx.Exec(`INSERT INTO `+table+` SELECT * FROM json_populate_record(NULL::`+table+`,$1::json)`, string(encoded)); err != nil {
+				return err
+			}
+		}
+		if len(rows) > 0 && (table == "finding_cases" || table == "finding_case_events" || table == "finding_case_suggestions") {
+			if _, err := tx.Exec(`SELECT setval(pg_get_serial_sequence('` + table + `','id'), GREATEST((SELECT COALESCE(max(id),1) FROM ` + table + `), (SELECT last_value FROM ` + table + `_id_seq)))`); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// Legacy cross-task group references must not be silently detached by compaction.
+func validateTaskCaseOwnership(tx *sql.Tx, taskID int64) error {
+	var invalid bool
+	err := tx.QueryRow(`SELECT EXISTS(
+ SELECT 1 FROM finding_case_members m JOIN finding_cases c ON c.id=m.case_id JOIN findings f ON f.id=m.finding_id
+ WHERE (c.task_id=$1 OR f.task_id=$1) AND c.task_id IS DISTINCT FROM f.task_id
+ UNION ALL
+ SELECT 1 FROM finding_case_suggestions s JOIN findings l ON l.id=s.left_id JOIN findings r ON r.id=s.right_id
+ WHERE (s.task_id=$1 OR l.task_id=$1 OR r.task_id=$1) AND (s.task_id IS DISTINCT FROM l.task_id OR s.task_id IS DISTINCT FROM r.task_id)
+ UNION ALL
+ SELECT 1 FROM finding_case_blocks b JOIN findings l ON l.id=b.left_id JOIN findings r ON r.id=b.right_id
+ WHERE (l.task_id=$1 OR r.task_id=$1) AND l.task_id IS DISTINCT FROM r.task_id
+ )`, taskID).Scan(&invalid)
+	if err != nil {
+		return err
+	}
+	if invalid {
+		return errors.New("case metadata references findings outside archived task")
+	}
+	return nil
 }

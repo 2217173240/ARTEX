@@ -289,3 +289,104 @@ func TestFindingCaseCandidatesAreCompactAndRelated(t *testing.T) {
 		t.Fatalf("veto excluded %d %v", total, err)
 	}
 }
+
+func TestFindingCaseArchiveQueueBlocksAllMutations(t *testing.T) {
+	d, task, ids := caseTestDB(t)
+	ctx := context.Background()
+	cid, err := d.MergeFindingCase(ctx, task.ID, ids[:2], "orders", "same permission check", "human")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, _ := d.GetFindingCase(cid)
+	sid, err := d.SuggestFindingCase(ctx, task.ID, ids[2], ids[3], "orders", "candidate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = d.Exec(`UPDATE tasks SET paused=true WHERE id=$1`, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = d.QueueTaskArchive(task.ID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { d.Exec(`DELETE FROM task_archives WHERE task_id=$1`, task.ID) })
+	checks := []func() error{
+		func() error { _, _, _, e := d.SetFindingStatusWithNotify(ctx, ids[0], "fixed"); return e },
+		func() error { _, e := d.MergeFindingCase(ctx, task.ID, ids[2:], "orders", "same", "human"); return e },
+		func() error {
+			_, e := d.SuggestFindingCase(ctx, task.ID, ids[0], ids[2], "orders", "candidate")
+			return e
+		},
+		func() error { _, e := d.ResolveFindingCaseSuggestion(ctx, sid, true); return e },
+		func() error { _, e := d.ResolveFindingCaseSuggestion(ctx, sid, false); return e },
+		func() error { return d.RemoveFindingCaseMember(ctx, cid, ids[0], "detach") },
+		func() error {
+			return d.UpdateFindingCaseReport(ctx, cid, c.Version, "orders", "report", "high", "verified")
+		},
+		func() error { sev := "low"; return d.MutateFindingRecord(ctx, task.ID, ids[0], &sev, nil) },
+		func() error { _, e := d.DeleteFindingInTask(ctx, task.ID, ids[0]); return e },
+	}
+	for i, check := range checks {
+		if e := check(); e != ErrTaskArchiveState {
+			t.Fatalf("mutation %d archive guard: %v", i, e)
+		}
+	}
+	after, _ := d.GetFindingCase(cid)
+	if after.Version != c.Version || after.Count != 2 {
+		t.Fatalf("archive mutation changed case: %+v", after)
+	}
+}
+
+func TestFindingRecordMutationIsAtomicAndSourceBound(t *testing.T) {
+	d, task, ids := caseTestDB(t)
+	ctx := context.Background()
+	sev, status := "low", "fixed"
+	if err := d.MutateFindingRecord(ctx, task.ID+999999, ids[0], &sev, &status); err == nil {
+		t.Fatal("cross-task mutation allowed")
+	}
+	f, _ := d.GetFinding(ids[0])
+	if f.Severity != "high" || f.Status == status {
+		t.Fatal("failed authorization changed record")
+	}
+	bad := "invalid"
+	if err := d.MutateFindingRecord(ctx, task.ID, ids[0], &sev, &bad); err == nil {
+		t.Fatal("invalid status accepted")
+	}
+	f, _ = d.GetFinding(ids[0])
+	if f.Severity != "high" {
+		t.Fatal("partial mutation")
+	}
+	if err := d.MutateFindingRecord(ctx, task.ID, ids[0], &sev, &status); err != nil {
+		t.Fatal(err)
+	}
+	f, _ = d.GetFinding(ids[0])
+	if f.Severity != sev || f.Status != status {
+		t.Fatalf("mutation lost %+v", f)
+	}
+	if _, err := d.DeleteFindingInTask(ctx, task.ID+999999, ids[0]); err == nil {
+		t.Fatal("cross-task delete allowed")
+	}
+	if n, err := d.DeleteFindingInTask(ctx, task.ID, ids[0]); err != nil || n != 1 {
+		t.Fatal(n, err)
+	}
+}
+
+func TestFindingCaseSelectedMergeDoesNotExpandUnselectedGroup(t *testing.T) {
+	d, task, ids := caseTestDB(t)
+	ctx := context.Background()
+	cid, err := d.MergeFindingCase(ctx, task.ID, ids[:2], "orders", "same", "human")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, _ := d.GetFindingCase(cid)
+	selected := []int64{ids[0], ids[2]}
+	if _, err = d.MergeFindingCaseSelection(ctx, task.ID, selected, "orders", "same", "reporter", selected); err == nil {
+		t.Fatal("unselected group member was absorbed")
+	}
+	after, _ := d.GetFindingCase(cid)
+	if after.Version != c.Version || after.Count != 2 {
+		t.Fatal("rejected selected merge changed case")
+	}
+	if other, _ := d.FindingCaseID(ids[2]); other != 0 {
+		t.Fatal("rejected selected merge partially committed")
+	}
+}

@@ -108,14 +108,19 @@ func (s *Server) admitPausedTask(t *Task) (queued bool, err error) {
 }
 
 func (s *Server) admitTaskWhen(t *Task, mode string, requirePaused bool) (queued bool, err error) {
+	s.concMu.Lock()
+	defer s.concMu.Unlock()
+	return s.admitTaskLocked(t, mode, requirePaused, false)
+}
+
+// admitTaskLocked requires concMu; running-only recovery cannot revive a paused or terminal task.
+func (s *Server) admitTaskLocked(t *Task, mode string, requirePaused, requireRunning bool) (queued bool, err error) {
 	if t == nil {
 		return false, fmt.Errorf("task not found")
 	}
 	if mode != "bootstrap" {
 		mode = "resume"
 	}
-	s.concMu.Lock()
-	defer s.concMu.Unlock()
 	// Delete installs its barrier under concMu as well. Re-resolve after acquiring
 	// the lock so a request that captured a task pointer before successful deletion
 	// cannot revive that stale handle after StopTask clears its Engine maps.
@@ -128,6 +133,9 @@ func (s *Server) admitTaskWhen(t *Task, mode string, requirePaused bool) (queued
 	}
 	defer s.engine.decInflight(t.ID)
 	lifecycle := t.lifecycleSnapshot()
+	if requireRunning && s.resolvedTaskStatus(t) != "running" {
+		return false, fmt.Errorf("task is no longer running")
+	}
 	if requirePaused {
 		if isTerminalStatus(lifecycle.Status) {
 			return false, fmt.Errorf("终态任务不能执行继续")
@@ -186,7 +194,7 @@ func (s *Server) admitTaskWhen(t *Task, mode string, requirePaused bool) (queued
 		status = "running"
 	}
 	if err := s.m.ApplyTaskAdmission(t.ID, lifecycle.Status, status, shouldQueue, mode, wasQueued); err != nil {
-		if !engineWasPaused && !wasPaused && !wasQueued {
+		if !requireRunning && !engineWasPaused && !wasPaused && !wasQueued {
 			s.engine.Resume(t)
 		}
 		return false, err

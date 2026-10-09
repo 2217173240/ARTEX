@@ -78,7 +78,7 @@ func (s *Server) orchestrationTools() []actool.CoreTool {
 		s.toolUpdateFindingReport(),
 		s.toolGetFindingTraffic(),
 		s.toolBindFindingTraffic(),
-	}, s.findingCaseTools()...)
+	}, append(s.findingCaseTools(), s.findingMutationTools()...)...)
 }
 
 // --- schema helpers ---
