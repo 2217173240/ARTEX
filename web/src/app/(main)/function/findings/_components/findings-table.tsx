@@ -9,12 +9,15 @@ import {
   ChevronRightIcon,
   FileTextIcon,
   FlaskConicalIcon,
+  FolderIcon,
+  FolderOpenIcon,
   RotateCcwIcon,
   ShieldAlertIcon,
   Trash2Icon,
 } from "lucide-react";
 
 import { CopyButton } from "@/components/copy-button";
+import { FindingCaseMembers, FindingSeverityCounts } from "@/components/finding-case-list";
 import { Markdown } from "@/components/markdown";
 import { StatusBadge } from "@/components/status-badge";
 import {
@@ -38,7 +41,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useI18n } from "@/lib/i18n";
 import { statusMeta } from "@/lib/status";
-import type { ActiveFindingRetest, Finding, FindingStatus, Severity } from "@/lib/types";
+import type { ActiveFindingRetest, Finding, FindingCaseListRow, FindingStatus, Severity } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 export const SEVERITIES: Severity[] = ["critical", "high", "medium", "low"];
@@ -91,6 +94,11 @@ const COLUMN_COUNT = 9;
 
 interface FindingsTableProps {
   items: Finding[];
+  caseRows?: FindingCaseListRow[];
+  hideHeader?: boolean;
+  matchedIds?: number[];
+  readOnly?: boolean;
+  refreshToken?: number;
   selectedIds: Set<string>;
   onToggleSelected: (id: string, checked: boolean) => void;
   onToggleSelectedPage: (ids: string[], checked: boolean) => void;
@@ -115,6 +123,11 @@ interface FindingsTableProps {
 // (勾选 / 行内展开 / 行内改名与改状态 / 复测 / 深入 / 删除),差异只在外层容器与分页。
 export function FindingsTable({
   items,
+  caseRows,
+  hideHeader = false,
+  matchedIds,
+  readOnly = false,
+  refreshToken = 0,
   selectedIds,
   onToggleSelected,
   onToggleSelectedPage,
@@ -134,7 +147,37 @@ export function FindingsTable({
 }: FindingsTableProps) {
   const { t: uiText } = useI18n();
   const tableId = React.useId();
-  const selectableIds = items.map((finding) => finding.finding_id).filter((id): id is string => Boolean(id));
+  const rows: FindingCaseListRow[] = caseRows ?? items.map((finding) => ({ finding, matched_ids: [] }));
+  const selectableIds = readOnly
+    ? []
+    : rows.flatMap((row) =>
+        row.case
+          ? row.matched_ids.map(String)
+          : row.finding &&
+              !row.finding.inherited &&
+              (!matchedIds || matchedIds.includes(Number(row.finding.finding_id)))
+            ? [row.finding.finding_id].filter((id): id is string => Boolean(id))
+            : [],
+      );
+  const shared = {
+    selectedIds,
+    onToggleSelected,
+    onToggleSelectedPage,
+    expandedKey,
+    onToggleRow,
+    reports,
+    edit,
+    onEditChange,
+    saving,
+    onSave,
+    onStatusChange,
+    onRetest,
+    activeRetests,
+    onDeepen,
+    onDelete,
+    readOnly,
+    refreshToken,
+  };
   const selectedCount = selectableIds.filter((id) => selectedIds.has(id)).length;
   let headerChecked: boolean | "indeterminate" = false;
   if (selectableIds.length > 0 && selectedCount === selectableIds.length) {
@@ -143,7 +186,7 @@ export function FindingsTable({
     headerChecked = "indeterminate";
   }
 
-  if (items.length === 0) {
+  if (rows.length === 0) {
     return (
       <div className="flex min-h-40 flex-col items-center justify-center gap-2 px-6 py-8 text-center" role="status">
         <FileTextIcon className="size-6 text-muted-foreground" aria-hidden="true" />
@@ -165,27 +208,34 @@ export function FindingsTable({
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/50",
       }}
     >
-      <TableHeader>
-        <TableRow>
-          <TableHead className="w-8">
-            <Checkbox
-              checked={headerChecked}
-              onCheckedChange={(checked) => onToggleSelectedPage(selectableIds, checked === true)}
-              aria-label={selectAllLabel ?? uiText("选择当前页全部")}
-            />
-          </TableHead>
-          <TableHead className="w-12" />
-          <TableHead className="w-20">{uiText("严重度")}</TableHead>
-          <TableHead className="w-64">{uiText("漏洞名称")}</TableHead>
-          <TableHead className="w-40">{uiText("资产")}</TableHead>
-          <TableHead className="w-28">{uiText("状态")}</TableHead>
-          <TableHead className="w-28">{uiText("所属任务")}</TableHead>
-          <TableHead className="w-24">{uiText("时间")}</TableHead>
-          <TableHead className="w-48">{uiText("操作")}</TableHead>
-        </TableRow>
-      </TableHeader>
+      {!hideHeader && (
+        <TableHeader>
+          <TableRow>
+            <TableHead className="w-8">
+              <Checkbox
+                checked={headerChecked}
+                onCheckedChange={(checked) => onToggleSelectedPage(selectableIds, checked === true)}
+                aria-label={selectAllLabel ?? uiText("选择当前页全部")}
+              />
+            </TableHead>
+            <TableHead className="w-12" />
+            <TableHead className="w-20">{uiText("严重度")}</TableHead>
+            <TableHead className="w-64">{uiText("漏洞名称")}</TableHead>
+            <TableHead className="w-40">{uiText("资产")}</TableHead>
+            <TableHead className="w-28">{uiText("状态")}</TableHead>
+            <TableHead className="w-28">{uiText("所属任务")}</TableHead>
+            <TableHead className="w-24">{uiText("时间")}</TableHead>
+            <TableHead className="w-48">{uiText("操作")}</TableHead>
+          </TableRow>
+        </TableHeader>
+      )}
       <TableBody>
-        {items.map((f) => {
+        {rows.map((row) => {
+          if (row.case) return <FindingFolderTableRows key={`case:${row.case.id}`} row={row} shared={shared} />;
+          const f = row.finding;
+          if (!f) return null;
+          const matched = !matchedIds || matchedIds.includes(Number(f.finding_id));
+          const canMutate = Boolean(f.finding_id) && !readOnly && !f.inherited;
           const rowKey = findingRowKey(f);
           const findingTitle = f.name || f.vulnclass || uiText("未分类");
           const detailsId = `${tableId}-details-${encodeURIComponent(rowKey)}`;
@@ -193,11 +243,11 @@ export function FindingsTable({
           const retest = f.finding_id ? activeRetests[f.finding_id] : undefined;
           return (
             <React.Fragment key={rowKey}>
-              <TableRow className="cursor-pointer" onClick={() => onToggleRow(f)}>
+              <TableRow className={cn("cursor-pointer", !matched && "bg-muted/30")} onClick={() => onToggleRow(f)}>
                 <TableCell onClick={(e) => e.stopPropagation()}>
-                  {f.finding_id && (
+                  {canMutate && matched && (
                     <Checkbox
-                      checked={selectedIds.has(f.finding_id)}
+                      checked={selectedIds.has(f.finding_id as string)}
                       onCheckedChange={(c) => onToggleSelected(f.finding_id as string, c === true)}
                       aria-label={uiText("选择漏洞：{v0}", { v0: findingTitle })}
                     />
@@ -230,7 +280,7 @@ export function FindingsTable({
                 </TableCell>
                 <TableCell className="whitespace-normal">
                   <div className="flex min-w-0 flex-col gap-0.5">
-                    {f.finding_id ? (
+                    {canMutate ? (
                       <Link
                         href={`/function/findings/detail?id=${f.finding_id}`}
                         onClick={(e) => e.stopPropagation()}
@@ -245,6 +295,8 @@ export function FindingsTable({
                       </span>
                     )}
                     <span className="truncate text-muted-foreground text-xs">{f.summary}</span>
+                    {!matched ? <Badge variant="outline">{uiText("未命中当前筛选")}</Badge> : null}
+                    {f.inherited || readOnly ? <Badge variant="outline">{uiText("继承 · 只读")}</Badge> : null}
                     <Badge variant="outline">
                       {uiText("流量证据")} {f.traffic_count ?? 0} {uiText("条")}
                     </Badge>
@@ -271,7 +323,7 @@ export function FindingsTable({
                   )}
                 </TableCell>
                 <TableCell onClick={(e) => e.stopPropagation()}>
-                  {f.finding_id ? (
+                  {canMutate ? (
                     <Select value={f.status} onValueChange={(v) => onStatusChange(f, v as FindingStatus)}>
                       <SelectTrigger
                         size="sm"
@@ -318,7 +370,7 @@ export function FindingsTable({
                         </Link>
                       </Button>
                     ) : null}
-                    {!retest && f.finding_id && !f.inherited ? (
+                    {!retest && canMutate ? (
                       <Button
                         size="sm"
                         variant="ghost"
@@ -329,13 +381,13 @@ export function FindingsTable({
                         {uiText("复测")}
                       </Button>
                     ) : null}
-                    {f.finding_id && f.task_id && (
+                    {canMutate && f.task_id && (
                       <Button size="sm" variant="ghost" onClick={() => onDeepen(f)}>
                         <FlaskConicalIcon aria-hidden="true" data-icon="inline-start" />
                         {uiText("深入")}
                       </Button>
                     )}
-                    {f.finding_id && (
+                    {canMutate && (
                       <AlertDialog>
                         <AlertDialogTrigger asChild>
                           <Button
@@ -375,7 +427,7 @@ export function FindingsTable({
                   {open && (
                     <div className="flex flex-col gap-2 px-2 py-1">
                       {/* 行内编辑:名称/类别/严重等级,可改并保存(仅独立 finding 行)。 */}
-                      {f.finding_id && edit && (
+                      {canMutate && edit && (
                         <div className="flex flex-wrap items-end gap-3 rounded-md border bg-background px-3 py-2.5">
                           <div className="flex min-w-[12rem] flex-1 flex-col gap-1">
                             <Label className="text-muted-foreground text-xs">{uiText("漏洞名称")}</Label>
@@ -442,7 +494,7 @@ export function FindingsTable({
                       </pre>
 
                       {/* 详细报告(Markdown):展开时按 finding_id 懒加载,免进详情页即可查看。 */}
-                      {f.finding_id && (
+                      {canMutate && (
                         <div className="flex flex-col gap-1.5">
                           <div className="flex items-center justify-between gap-2 text-muted-foreground text-xs">
                             <span className="flex items-center gap-2">
@@ -493,5 +545,129 @@ export function FindingsTable({
         )}
       </TableBody>
     </Table>
+  );
+}
+
+// Folder summaries occupy the same columns as the current view's ordinary rows.
+// Expanded members reuse those rows without a second heading or column header.
+function FindingFolderTableRows({
+  row,
+  shared,
+}: {
+  row: FindingCaseListRow;
+  shared: Omit<FindingsTableProps, "items" | "caseRows">;
+}) {
+  const { t: uiText } = useI18n();
+  const [open, setOpen] = React.useState(false);
+  const group = row.case;
+  if (!group) return null;
+  // Match ordinary rows, which display the task description.
+  const taskLabel = row.task_description;
+  const assets = row.assets ?? [];
+  const assetCount = row.asset_count ?? assets.length;
+  return (
+    <>
+      <TableRow className={cn(open && "bg-muted/60")}>
+        <TableCell />
+        <TableCell>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            onClick={() => setOpen((v) => !v)}
+            aria-expanded={open}
+            aria-controls={`finding-table-members-${group.id}`}
+            aria-label={`${open ? uiText("收起") : uiText("展开")}${group.title}`}
+          >
+            <ChevronRightIcon className={cn("size-4 transition-transform", open && "rotate-90")} />
+          </Button>
+        </TableCell>
+        <TableCell>
+          <FindingSeverityCounts counts={group} />
+        </TableCell>
+        <TableCell className="whitespace-normal">
+          <div className="flex min-w-0 items-start gap-2">
+            {open ? (
+              <FolderOpenIcon className="mt-0.5 size-4 shrink-0 text-primary" />
+            ) : (
+              <FolderIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+            )}
+            <div className="flex min-w-0 flex-col gap-0.5">
+              <Link
+                className="line-clamp-2 break-words font-medium hover:text-primary hover:underline"
+                title={group.title}
+                href={`/function/findings/case?id=${group.id}`}
+              >
+                {group.title}
+              </Link>
+              <span className="truncate text-muted-foreground text-xs">
+                {group.count} {uiText("条上报 ·")}{" "}
+                {group.report_version !== group.version ? uiText("统一报告待更新") : uiText("统一报告已生成")}
+              </span>
+            </div>
+          </div>
+        </TableCell>
+        <TableCell>
+          {assets.length ? (
+            <div className="flex flex-col gap-0.5">
+              {assets.slice(0, 3).map((a) => (
+                <code key={a.id} className="max-w-full truncate text-xs" title={`${a.type} · ${a.label}`}>
+                  {a.label}
+                </code>
+              ))}
+              {assetCount > 3 ? <span className="text-muted-foreground text-xs">+{assetCount - 3}</span> : null}
+            </div>
+          ) : (
+            <span className="text-muted-foreground">—</span>
+          )}
+        </TableCell>
+        <TableCell>
+          <span className="text-muted-foreground" title={uiText("请查看成员各自的处置状态")}>
+            —
+          </span>
+        </TableCell>
+        <TableCell>
+          {group.task_id ? (
+            <Link
+              className="inline-flex max-w-full items-center gap-1 text-primary hover:underline"
+              title={taskLabel}
+              href={`/function/tasks/detail?id=${group.task_id}`}
+            >
+              <span className="truncate">{taskLabel}</span>
+              <ArrowUpRightIcon className="size-3 shrink-0" />
+            </Link>
+          ) : (
+            <span className="text-muted-foreground">—</span>
+          )}
+        </TableCell>
+        <TableCell className="text-muted-foreground text-xs tabular-nums">
+          {row.last_found_at ? fmtTime(row.last_found_at) : "—"}
+        </TableCell>
+        <TableCell>
+          <Button asChild size="sm" variant="ghost">
+            <Link href={`/function/findings/case?id=${group.id}`}>{uiText("统一报告")}</Link>
+          </Button>
+        </TableCell>
+      </TableRow>
+      {open ? (
+        <TableRow>
+          <TableCell colSpan={COLUMN_COUNT} className="whitespace-normal bg-muted/20 px-4 py-4">
+            <section
+              id={`finding-table-members-${group.id}`}
+              aria-label={uiText("{title}的原始上报", { title: group.title })}
+            >
+              <FindingCaseMembers
+                caseId={group.id}
+                version={group.version}
+                refreshToken={shared.refreshToken}
+                nested
+                renderRecords={(members) => (
+                  <FindingsTable {...shared} items={members} matchedIds={row.matched_ids} hideHeader />
+                )}
+              />
+            </section>
+          </TableCell>
+        </TableRow>
+      ) : null}
+    </>
   );
 }

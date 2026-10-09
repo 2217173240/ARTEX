@@ -249,3 +249,19 @@ test("nonmatching members and inherited reports cannot be selected", async () =>
     );
   }
 });
+
+test("member mutation refresh reloads evidence even when the folder version is unchanged", async () => {
+  const rendered = [];
+  const renderRecords = (items) => {
+    rendered.push(items.map((item) => item.finding_id));
+    return { type: "records", props: { children: items.map((item) => item.name) } };
+  };
+  const h = harness("FindingCaseMembers", { caseId: "42", version: 1, refreshToken: 0, renderRecords });
+  await h.flush();
+  await h.resolve(0, { items: [finding("7")], total: 1 });
+  await h.props({ caseId: "42", version: 1, refreshToken: 1, renderRecords });
+  assert.equal(h.requests.length, 2);
+  await h.reject(1);
+  assert.match(h.text(), /offline/);
+  assert.deepEqual(rendered.at(-1), ["7"]);
+});
