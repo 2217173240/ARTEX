@@ -31,7 +31,7 @@ docker run --name artex-contrib-pg --rm -d \
 until docker exec artex-contrib-pg pg_isready -U artex_ci -d postgres; do sleep 1; done
 
 export ARTEX_CONFIG=/dev/null ARTEX_REVIEW_LIVE_CONFIG=''
-export OPENAI_API_KEY='' ANTHROPIC_API_KEY=''
+unset OPENAI_API_KEY ANTHROPIC_API_KEY
 export ARTEX_LLM_PROVIDER='' ARTEX_LLM_BASE_URL='' ARTEX_LLM_MODEL='' ARTEX_LLM_PROXY=''
 index=0
 for package in $(go list ./...); do

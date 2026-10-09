@@ -20,6 +20,13 @@ regexes = [
 id = "generic-api-key"
 
 [[rules.allowlists]]
+description = "Documented empty API-key environment reset; contains no credential"
+condition = "AND"
+regexTarget = "line"
+paths = ["(^|/)CONTRIBUTING\\.md$"]
+regexes = ["(?m)^export OPENAI_API_KEY='' ANTHROPIC_API_KEY=''$"]
+
+[[rules.allowlists]]
 description = "Audited deterministic test/mock fixture lines"
 condition = "AND"
 regexTarget = "line"
