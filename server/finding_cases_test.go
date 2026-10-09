@@ -333,3 +333,80 @@ func TestFindingCaseGroupedTrafficExportAndInheritedAccess(t *testing.T) {
 		t.Fatal(w.Code, w.Body)
 	}
 }
+
+func TestFindingCaseListIncludesContextAndFilteredCounts(t *testing.T) {
+	s, task, ids := testCaseServer(t)
+	cid, err := s.m.pg.MergeFindingCase(t.Context(), task, ids[:3], "same defect", "verified root cause", "human")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest("GET", fmt.Sprintf("/api/finding-cases?task_id=%d&severity=medium", task), nil)
+	w := httptest.NewRecorder()
+	s.listFindingCases(w, r)
+	if w.Code != 200 {
+		t.Fatalf("status %d %s", w.Code, w.Body.String())
+	}
+	var page struct {
+		Total           int `json:"total"`
+		MatchingReports int `json:"matched_reports"`
+		Items           []struct {
+			Case            *db.FindingCase   `json:"case"`
+			TaskDescription string            `json:"task_description"`
+			Assets          []FindingAssetDTO `json:"assets"`
+			AssetCount      int               `json:"asset_count"`
+			LastFoundAt     string            `json:"last_found_at"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 1 || page.MatchingReports != 1 || len(page.Items) != 1 || page.Items[0].Case.ID != cid || page.Items[0].Case.Count != 3 || page.Items[0].Case.Report != "" || page.Items[0].TaskDescription == "" || page.Items[0].LastFoundAt == "" || page.Items[0].Assets == nil {
+		t.Fatalf("list payload %s", w.Body.String())
+	}
+}
+
+func TestFindingCaseOriginalRowsIncludesOnlyStandaloneEvidence(t *testing.T) {
+	s, task, ids := testCaseServer(t)
+	if _, err := s.m.pg.Exec(`UPDATE findings SET report='hidden report' WHERE task_id=$1`, task); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.m.pg.MergeFindingCase(t.Context(), task, ids[:2], "same defect", "verified root cause", "human"); err != nil {
+		t.Fatal(err)
+	}
+	for _, original := range []bool{false, true} {
+		suffix := ""
+		if original {
+			suffix = "&original_rows=1"
+		}
+		r := httptest.NewRequest("GET", fmt.Sprintf("/api/finding-cases?task_id=%d%s", task, suffix), nil)
+		w := httptest.NewRecorder()
+		s.listFindingCases(w, r)
+		if w.Code != 200 {
+			t.Fatal(w.Code, w.Body.String())
+		}
+		var page struct {
+			Items []struct {
+				Case    *db.FindingCase `json:"case"`
+				Finding *FindingDTO     `json:"finding"`
+			} `json:"items"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &page); err != nil {
+			t.Fatal(err)
+		}
+		standalone := false
+		for _, item := range page.Items {
+			if item.Case != nil && item.Case.Report != "" {
+				t.Fatal("collapsed folder loaded report")
+			}
+			if item.Finding != nil {
+				standalone = true
+				if item.Finding.Report != "" || (item.Finding.Evidence != "") != original {
+					t.Fatal("wrong original row payload", original, item.Finding)
+				}
+			}
+		}
+		if !standalone {
+			t.Fatal("missing standalone row")
+		}
+	}
+}

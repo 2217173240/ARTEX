@@ -914,6 +914,14 @@ func restoreFindingCasesTx(tx *sql.Tx, snapshot *TaskArchiveSnapshot) error {
 					caseIDs[old] = candidate
 				}
 			}
+			if table == "finding_case_review_runs" {
+				// Archives from before completion tracking have no acceptance fields.
+				for key, fallback := range map[string]any{"reviewed_ids": []int64{}, "conclusion": map[string]any{}} {
+					if row[key] == nil {
+						row[key] = fallback
+					}
+				}
+			}
 			encoded, err := json.Marshal(row)
 			if err != nil {
 				return err

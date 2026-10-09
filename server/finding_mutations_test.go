@@ -76,3 +76,26 @@ func TestFindingRecordChatToolsRespectRuntimeTaskContext(t *testing.T) {
 		t.Fatal("source task mutation missing")
 	}
 }
+
+func TestHistoricalFindingReviewRejectsSelectedRecordMutations(t *testing.T) {
+	s, task, ids := testCaseServer(t)
+	s.m.tasks = map[string]*Task{i64s(task): {ID: i64s(task)}}
+	runs, err := s.m.pg.CreateFindingCaseReviews(t.Context(), map[int64][]int64{task: ids[:1]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conv := runs[0].ConversationID
+	defer s.m.pg.Exec(`DELETE FROM conversations WHERE id=$1`, conv)
+	ctx := intercept.WithConvID(context.Background(), conv)
+	input := json.RawMessage(fmt.Sprintf(`{"task_id":%d,"finding_id":%d,"severity":"low","status":"fixed"}`, task, ids[0]))
+	for _, tool := range s.findingMutationTools() {
+		result, err := tool.Call(ctx, input, nil)
+		if err != nil || !result.IsError {
+			t.Fatal("historical original mutation accepted", tool.Name(), result, err)
+		}
+	}
+	f, err := s.m.pg.GetFinding(ids[0])
+	if err != nil || f == nil || f.Severity != "high" || f.Status == "fixed" {
+		t.Fatal("protected record changed", f, err)
+	}
+}
