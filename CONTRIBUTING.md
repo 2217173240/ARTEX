@@ -16,7 +16,7 @@ npm ci --ignore-scripts
 cd ..
 ```
 
-使用 `go.mod` 指定的 Go 版本、Node.js 22、Python 3，以及 Docker（运行隔离 PostgreSQL 测试）。源码安装和运行方式见 [README](README.md#安装)。仅查看前端可在 `web` 目录运行 `NEXT_PUBLIC_MOCK=1 npm run dev`，使用内置合成数据，不需要模型密钥。
+使用 `go.mod` 指定的 Go 版本、Node.js 22.12 或更新的 22.x、Python 3，以及 Docker（运行隔离 PostgreSQL 测试）。源码安装和运行方式见 [README](README.md#安装)。仅查看前端可在 `web` 目录运行 `NEXT_PUBLIC_MOCK=1 npm run dev`，使用内置合成数据，不需要模型密钥。
 
 ## 本地验证
 
@@ -40,7 +40,7 @@ for package in $(go list ./...); do
   docker exec artex-contrib-pg psql -U artex_ci -d postgres \
     -v ON_ERROR_STOP=1 -c "CREATE DATABASE ${database}"
   fixture_dsn="postgres://artex_ci:fixture_only@127.0.0.1:55432/${database}?sslmode=disable"
-  ARTEX_PG_DSN="$fixture_dsn" ARTEX_INTERCEPT_TEST_DSN="$fixture_dsn" \
+  ARTEX_PG_DSN="$fixture_dsn" ARTEX_INTERCEPT_TEST_DSN="$fixture_dsn" ARTEX_AUTH_TEST_DSN="$fixture_dsn" \
     go test -race -count=1 -skip '^TestLiveContextReview$' "$package"
 done
 go build -o /tmp/artex-contrib ./cmd/artex
@@ -61,6 +61,8 @@ npm audit --audit-level=high
 ```
 
 涉及后端、前端或采集脚本时运行对应检查，并在 PR 中写明实际执行结果和跳过项。完整检查定义见 [quality.yml](.github/workflows/quality.yml)。其跨平台检查验证编译，镜像检查验证启动和文件层；不代表已在每种操作系统上执行所有运行测试。
+
+修改采集脚本依赖时，在 `skills/api-recon/scripts` 中执行 `npm ci --ignore-scripts` 和 `npm audit --audit-level=high`。运行时需要系统 Chromium；Puppeteer Core 不下载浏览器。CI 对该依赖树执行同样的安装和审计。
 
 本 fork 的修复以当前源码为准，README 中沿用的上游镜像和发布包不一定包含这些改动。验证本 fork 请从源码构建。发布流程要求准确提交的 `quality` 已通过；Docker 发布还需维护者显式设置 `DOCKER_IMAGE` 目标和相应发布凭据。流水线没有配置目标时跳过镜像发布。工具链升级应更新 Dockerfile 的版本，并通过镜像检查。
 

@@ -10,7 +10,7 @@ __pycache__/
 *.pyo
 
 # frontend
-web/node_modules/
+**/node_modules/
 web/.next/
 web/tsconfig.tsbuildinfo
 web/next-env.d.ts

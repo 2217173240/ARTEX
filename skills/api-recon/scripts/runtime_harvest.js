@@ -11,7 +11,8 @@
  *   2. interceptor gate-> rewrite the "unauthorized" code field to success
  *   3. content gate   -> stub the menu/permission endpoint with a full-feature payload
  *
- * Requires puppeteer-core + a system Chromium.  ( cd scripts && npm install )
+ * Requires Node.js >=22.12.0, puppeteer-core, and a system Chromium.
+ * Install dependencies with: ( cd scripts && npm ci )
  *
  * config.json schema (all fields optional except baseUrl):
  * {
@@ -27,12 +28,12 @@
  *   "routes": ["/dashboard","/device", ...],   // from routes.txt or the forged menu
  *   "apiPattern": "/api/|/rest/|/graphql",      // what counts as an API call to record
  *   "proxy": "http://127.0.0.1:8080",           // optional; also HTTP_PROXY / HTTPS_PROXY
+ *   "insecureTLS": false,                       // true only for authorized targets with untrusted certificates
  *   "waitUntil": "domcontentloaded",            // prefer over networkidle2 for large SPAs
  *   "routeTimeout": 12000,
  *   "waitMs": 1200, "perRouteMs": 900, "headless": true
  * }
  */
-process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 const fs = require('fs');
 const path = require('path');
 
@@ -51,6 +52,7 @@ function loadCfg(p) {
   c.routes = c.routes || ['/'];
   c.waitMs = c.waitMs || 1200; c.perRouteMs = c.perRouteMs || 900;
   c.headless = c.headless !== false;
+  c.insecureTLS = c.insecureTLS === true;
   c.waitUntil = c.waitUntil || 'domcontentloaded';
   c.routeTimeout = c.routeTimeout || 12000;
   c.captureResponses = c.captureResponses !== false; // record response body samples (forward mode)
@@ -94,10 +96,15 @@ function neutralize(txt, n) {
     process.env.HTTP_PROXY = cfg.proxy;
     process.env.HTTPS_PROXY = cfg.proxy;
   }
-  const launchArgs = ['--no-sandbox', '--disable-dev-shm-usage', '--ignore-certificate-errors'];
+  const launchArgs = ['--no-sandbox', '--disable-dev-shm-usage'];
+  if (cfg.insecureTLS) {
+    // Explicit opt-in applies to this dedicated harvester process, including forwarded fetch requests.
+    process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+    launchArgs.push('--ignore-certificate-errors');
+  }
   if (cfg.proxy) launchArgs.push(`--proxy-server=${cfg.proxy}`);
   const browser = await puppeteer.launch({
-    executablePath: cfg.chromium, headless: cfg.headless ? 'new' : false,
+    executablePath: cfg.chromium, headless: cfg.headless,
     args: launchArgs
   });
   const page = await browser.newPage();

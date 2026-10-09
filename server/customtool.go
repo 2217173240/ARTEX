@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/internal/httpsecurity"
 	"github.com/Autumn-27/norma/permission"
 	actool "github.com/Autumn-27/norma/tool"
 )
@@ -441,7 +442,7 @@ func (s *Server) runHTTPTool(ctx context.Context, execRaw json.RawMessage, param
 	for k, v := range spec.Headers {
 		req.Header.Set(k, renderTemplate(v, params, identity))
 	}
-	client := &http.Client{Timeout: timeoutOr(spec.TimeoutMs, 30000)}
+	client := &http.Client{Timeout: timeoutOr(spec.TimeoutMs, 30000), CheckRedirect: httpsecurity.SameOriginRedirect}
 	if tr := s.httpProxyTransport(spec); tr != nil {
 		client.Transport = tr
 	}

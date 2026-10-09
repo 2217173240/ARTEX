@@ -64,7 +64,7 @@ export default function LogsPage() {
       setLines(MOCK_LOGS);
       return;
     }
-    const es = new EventSource(sseUrl("/api/logs/stream?since=0"));
+    const es = new EventSource(sseUrl("/api/logs/stream?since=0"), { withCredentials: true });
     es.onmessage = (e) => {
       if (pausedRef.current) return;
       try {

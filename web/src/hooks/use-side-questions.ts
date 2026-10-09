@@ -128,7 +128,7 @@ export function useSideQuestions(parent: string | null) {
   useEffect(() => {
     if (!runningID) return;
     const version = epoch.current;
-    const stream = new EventSource(sseUrl(`/api/side-questions/${runningID}/events`));
+    const stream = new EventSource(sseUrl(`/api/side-questions/${runningID}/events`), { withCredentials: true });
     stream.addEventListener("snapshot", (event) => {
       if (version !== epoch.current) return;
       try {

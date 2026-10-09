@@ -10,8 +10,14 @@ export function useCurrentUser(): CurrentUser {
   const [user, setUser] = useState<CurrentUser>(FALLBACK);
 
   useEffect(() => {
-    const u = auth.getCurrentUser();
-    if (u) setUser(u);
+    auth
+      .loadSession()
+      .then((u) => {
+        if (u) setUser(u);
+      })
+      .catch(() => {
+        // Keep the display fallback while the layout handles session failures.
+      });
   }, []);
 
   return user;

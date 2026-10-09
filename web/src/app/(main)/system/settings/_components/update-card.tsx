@@ -100,7 +100,7 @@ export function UpdateCard() {
   // 订阅更新进度。SSE 不走 Next 的 /api 重写（那层会缓冲，事件推不出来）。
   const openStream = React.useCallback(
     (fromVersion: string) => {
-      const es = new EventSource(sseUrl("/api/update/stream"));
+      const es = new EventSource(sseUrl("/api/update/stream"), { withCredentials: true });
       es.onmessage = (ev) => {
         let p: UpdateProgress;
         try {
