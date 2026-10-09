@@ -465,6 +465,8 @@ flowchart TB
 ---
 ## 参考
 
+参与开发请阅读 [贡献指南](CONTRIBUTING.md)；安全问题请阅读 [安全报告说明](SECURITY.md)。
+
 https://github.com/oritera/Cairn
 
 

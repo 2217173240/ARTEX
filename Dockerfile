@@ -25,7 +25,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # @playwright/cli：提供 playwright-cli，装完顺带 --help 验证可执行。
 # 再装 playwright（提供浏览器管理），装完用 --with-deps 预置 chromium 及其系统依赖，
 # 这样容器内 MCP/CLI 首次启动即可用，不再联网下载浏览器。
-RUN npm install -g @playwright/mcp@latest @playwright/cli@latest playwright@latest \
+# MCP 与 CLI 都依赖此精确 Playwright 版本；浏览器安装器必须使用同一版本，
+# 否则其下载的 Chromium revision 与工具查找的 revision 不一致。
+RUN npm install -g @playwright/mcp@0.0.83 @playwright/cli@0.1.22 playwright@1.64.0-alpha-1790635538000 \
     && playwright-cli --help \
     && playwright install --with-deps chromium \
     && rm -rf /var/lib/apt/lists/*
