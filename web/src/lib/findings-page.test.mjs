@@ -102,6 +102,11 @@ function pageHarness(view = "asset", { deferAssetTree = false, storage = new Map
       groupRequests.push(request);
       return request.promise;
     },
+    findingCases(query, originalRows) {
+      const request = { query, kind: "cases", originalRows, ...deferred() };
+      requests.push(request);
+      return request.promise;
+    },
     findingsPage(query) {
       const request = { query, ...deferred() };
       requests.push(request);
@@ -231,6 +236,7 @@ function pageHarness(view = "asset", { deferAssetTree = false, storage = new Map
       hooks.find(
         (hook) => hook?.value && typeof hook.value === "object" && "items" in hook.value && "loaded" in hook.value,
       )?.value,
+    caseRows: () => find("FindingsTable").caseRows,
     rows: () => Array.from(find("FindingsTable").items, (finding) => finding.finding_id),
     selected: () => [...find("FindingsTable").selectedIds],
     async bulkStatus(status) {
@@ -304,7 +310,16 @@ function pageHarness(view = "asset", { deferAssetTree = false, storage = new Map
     },
     async resolve(index, items = [], total = 100) {
       const { query } = requests[index];
-      requests[index].resolve({ items, total, page: query.page, page_size: query.pageSize });
+      requests[index].resolve({
+        items:
+          requests[index].kind === "cases"
+            ? items.map((finding) => (finding.case ? finding : { finding, matched_ids: [] }))
+            : items,
+        total,
+        matched_reports: total,
+        page: query.page,
+        page_size: query.pageSize,
+      });
       await flush();
     },
     async reject(index) {
@@ -926,4 +941,27 @@ test("selected task autoopens once and a deliberate collapse persists on back", 
   await back.resolveGroups(0, [group()], 1);
   assert.equal(back.requests.length, 0);
   assert.equal(back.hasTable(), false);
+});
+
+test("raw reports stay flat while asset and task table feeds request folders with original row evidence", async () => {
+  const raw = pageHarness("flat");
+  await raw.flush();
+  assert.equal(raw.requests[0].kind, undefined);
+  await raw.resolve(0, [finding("7")], 1);
+  assert.equal(raw.caseRows(), undefined);
+  const asset = pageHarness("asset");
+  await asset.flush();
+  assert.equal(asset.requests[0].kind, "cases");
+  assert.equal(asset.requests[0].originalRows, true);
+  const folder = { case: { id: "42", title: "Merged" }, matched_ids: [7] };
+  await asset.resolve(0, [folder], 1);
+  assert.equal(asset.caseRows()[0].case.id, "42");
+  const task = pageHarness("grouped");
+  await task.flush();
+  await task.resolveGroups(0, [group()], 1);
+  await task.expandGroup();
+  assert.equal(task.requests[0].kind, "cases");
+  assert.equal(task.requests[0].originalRows, true);
+  await task.resolve(0, [folder], 1);
+  assert.equal(task.caseRows()[0].case.id, "42");
 });

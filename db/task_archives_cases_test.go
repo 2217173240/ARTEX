@@ -72,7 +72,7 @@ func TestTaskArchiveCaseRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer must(`DELETE FROM conversations WHERE id=$1`, conversationID)
-	must(`INSERT INTO finding_case_review_runs(conversation_id,task_id,state,error,finding_ids) VALUES($1,$2,'completed','',jsonb_build_array($3::bigint))`, conversationID, task.ID, ids[0])
+	must(`INSERT INTO finding_case_review_runs(conversation_id,task_id,state,error,finding_ids,reviewed_ids,conclusion) VALUES($1,$2,'completed','',jsonb_build_array($3::bigint),jsonb_build_array($3::bigint),'{"summary":"archive conclusion"}'::jsonb)`, conversationID, task.ID, ids[0])
 	if err = d.SetPaused(task.ID, true); err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +152,7 @@ func TestTaskArchiveCaseRoundTrip(t *testing.T) {
 	if err = d.QueryRow(`SELECT count(*) FROM finding_case_blocks WHERE left_id=$1 AND right_id=$2`, ids[1], ids[2]).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("blocks=%d err=%v", count, err)
 	}
-	if err = d.QueryRow(`SELECT count(*) FROM finding_case_review_runs WHERE conversation_id=$1 AND task_id=$2 AND state='completed' AND finding_ids=jsonb_build_array($3::bigint)`, conversationID, task.ID, ids[0]).Scan(&count); err != nil || count != 1 {
+	if err = d.QueryRow(`SELECT count(*) FROM finding_case_review_runs WHERE conversation_id=$1 AND task_id=$2 AND state='completed' AND finding_ids=jsonb_build_array($3::bigint) AND reviewed_ids=jsonb_build_array($3::bigint) AND conclusion->>'summary'='archive conclusion'`, conversationID, task.ID, ids[0]).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("review runs=%d err=%v", count, err)
 	}
 	traffic, err := d.GetFindingTraffic(t.Context(), ids[0])

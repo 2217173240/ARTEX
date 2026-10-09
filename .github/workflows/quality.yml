@@ -213,6 +213,10 @@ jobs:
         run: |
           npm ci --ignore-scripts --prefix skills/api-recon/scripts
           npm audit --audit-level=high --prefix skills/api-recon/scripts
+      - name: Check installer and release helpers
+        run: |
+          python3 scripts/install_test.py
+          python3 -m unittest discover -s scripts -p 'test_release*.py'
       - name: Check publication inputs
         run: python3 scripts/check-publication-inputs.py
       - name: Install verified Gitleaks 8.30.1

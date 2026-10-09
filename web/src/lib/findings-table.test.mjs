@@ -99,6 +99,7 @@ const finding = (overrides = {}) => ({
 
 function tableHarness(items = [finding()]) {
   const ids = [];
+  const state = [];
   let nextHook = 0;
   let tree;
   const toggles = [];
@@ -107,6 +108,16 @@ function tableHarness(items = [finding()]) {
   const React = {
     __esModule: true,
     Fragment: "Fragment",
+    useState(initial) {
+      const i = nextHook++;
+      state[i] ??= { value: initial };
+      return [
+        state[i].value,
+        (value) => {
+          state[i].value = typeof value === "function" ? value(state[i].value) : value;
+        },
+      ];
+    },
     useId() {
       const index = nextHook++;
       ids[index] ??= `_table_${++nextTableId}_`;
@@ -307,4 +318,110 @@ test("the named keyboard scroll region preserves table semantics and readable ti
   assert.equal(classNames(cell).has("whitespace-nowrap"), false);
   const chevron = table.find((node) => node.props["data-icon-name"] === "ChevronRightIcon");
   assert.ok(classNames(chevron).has("motion-reduce:transition-none"));
+});
+
+test("folders use current table columns and expanded members keep controls without duplicate headers", () => {
+  const table = tableHarness([]);
+  const row = {
+    case: {
+      id: "42",
+      title: "Merged finding",
+      task_id: "1",
+      count: 2,
+      critical: 0,
+      high: 2,
+      medium: 0,
+      low: 0,
+      version: 1,
+      report_version: 1,
+    },
+    matched_ids: [7],
+    task_name: "Name",
+    task_description: "Original task label",
+    assets: [{ id: "8", label: "service.example", type: "host" }],
+    asset_count: 5,
+    last_found_at: "2026-10-09T00:00:00Z",
+  };
+  let tree = table.render({ caseRows: [row] });
+  assert.equal(elements(tree).filter((node) => node.type === "th").length, 9);
+  assert.ok(elements(tree).some((node) => node.type === "span" && node.props.children === "Original task label"));
+  assert.ok(elements(tree).some((node) => node.type === "code" && node.props.children === "service.example"));
+  table
+    .find((node) => node.type === "button" && node.props["aria-controls"] === "finding-table-members-42")
+    .props.onClick();
+  tree = table.render({ caseRows: [row] });
+  const members = table.find((node) => node.type === "FindingCaseMembers");
+  const records = members.props.renderRecords([
+    finding({ finding_id: "7" }),
+    finding({ id: "other", finding_id: "9" }),
+  ]);
+  assert.equal(records.props.hideHeader, true);
+  assert.deepEqual(records.props.matchedIds, [7]);
+  assert.equal(typeof records.props.onRetest, "function");
+  assert.equal(typeof records.props.onSave, "function");
+  assert.equal(typeof records.props.onStatusChange, "function");
+});
+
+test("member selection excludes nonmatches and read-only members retain viewing without mutation controls", () => {
+  const table = tableHarness([finding({ finding_id: "7" }), finding({ id: "other", finding_id: "9" })]);
+  let tree = table.render({ matchedIds: [7], hideHeader: true });
+  assert.equal(elements(tree).filter((node) => node.type === "Checkbox").length, 1);
+  assert.equal(elements(tree).filter((node) => node.type === "th").length, 0);
+  tree = table.render({ readOnly: true });
+  assert.equal(
+    elements(tree).filter((node) => node.type === "Checkbox" && node.props["aria-label"] === "选择该漏洞").length,
+    0,
+  );
+  assert.equal(elements(tree).filter((node) => node.type === "SelectTrigger").length, 0);
+  assert.equal(
+    elements(tree).filter((node) => node.type === "button" && ["复测", "深入", "保存"].includes(node.props.children))
+      .length,
+    0,
+  );
+});
+
+test("a standalone case page has one header and mixed folders preserve row order and selection", () => {
+  const table = tableHarness([]);
+  const singles = Array.from({ length: 17 }, (_, i) => ({
+    finding: finding({ id: String(i), finding_id: String(i), name: `Report ${i}` }),
+    matched_ids: [],
+  }));
+  let tree = table.render({ caseRows: singles });
+  assert.equal(elements(tree).filter((node) => node.type === "table").length, 1);
+  assert.equal(elements(tree).filter((node) => node.type === "thead").length, 1);
+  assert.equal(elements(tree).filter((node) => node.type === "th").length, 9);
+  const folder = {
+    case: {
+      id: "42",
+      title: "Merged",
+      count: 2,
+      task_id: "1",
+      version: 1,
+      report_version: 1,
+      critical: 0,
+      high: 2,
+      medium: 0,
+      low: 0,
+    },
+    matched_ids: [7, 8],
+  };
+  let selected;
+  tree = table.render({
+    caseRows: [singles[0], folder, singles[1]],
+    onToggleSelectedPage: (ids) => {
+      selected = ids;
+    },
+  });
+  const links = elements(tree).filter(
+    (node) => node.type === "a" && /function\/findings\/(detail|case)/.test(node.props.href ?? ""),
+  );
+  assert.deepEqual(
+    links.slice(0, 3).map((node) => node.props.href),
+    ["/function/findings/detail?id=0", "/function/findings/case?id=42", "/function/findings/case?id=42"],
+  );
+  const header = table.find((node) => node.type === "Checkbox" && node.props["aria-label"] === "选择当前页全部");
+  header.props.onCheckedChange(true);
+  assert.deepEqual(Array.from(selected), ["0", "7", "8", "1"]);
+  assert.equal(elements(tree).filter((node) => node.type === "thead").length, 1);
+  assert.equal(elements(tree).filter((node) => node.type === "SelectTrigger").length, 2);
 });

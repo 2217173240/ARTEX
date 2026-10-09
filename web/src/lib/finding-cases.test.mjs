@@ -249,3 +249,74 @@ test("nonmatching members and inherited reports cannot be selected", async () =>
     );
   }
 });
+
+test("member mutation refresh reloads evidence even when the folder version is unchanged", async () => {
+  const rendered = [];
+  const renderRecords = (items) => {
+    rendered.push(items.map((item) => item.finding_id));
+    return { type: "records", props: { children: items.map((item) => item.name) } };
+  };
+  const h = harness("FindingCaseMembers", { caseId: "42", version: 1, refreshToken: 0, renderRecords });
+  await h.flush();
+  await h.resolve(0, { items: [finding("7")], total: 1 });
+  await h.props({ caseId: "42", version: 1, refreshToken: 1, renderRecords });
+  assert.equal(h.requests.length, 2);
+  await h.reject(1);
+  assert.match(h.text(), /offline/);
+  assert.deepEqual(rendered.at(-1), ["7"]);
+});
+
+test("finished review history is collapsed and failures are never duplicated", async () => {
+  const h = harness("FindingCaseReviewPanel", { taskId: "a" });
+  await h.flush();
+  await h.resolve(0, []);
+  await h.resolve(1, [
+    { conversation_id: 103, task_id: "a", state: "failed", error: "fixture failure" },
+    { conversation_id: 101, task_id: "a", state: "done", error: "" },
+  ]);
+  await h.flush();
+  const ids = () =>
+    h
+      .nodes()
+      .filter((node) => node.props?.run)
+      .map((node) => node.props.run.conversation_id);
+  assert.deepEqual(ids(), [103]);
+  h.nodes()
+    .find((node) => node.type === "Collapsible")
+    .props.onOpenChange(true);
+  await h.flush();
+  assert.deepEqual(ids(), [103, 101]);
+  h.nodes()
+    .find((node) => node.type === "Collapsible")
+    .props.onOpenChange(false);
+  await h.flush();
+  assert.deepEqual(ids(), [103]);
+});
+
+test("case pages render one shared table for all standalone reports and retain mixed API order", async () => {
+  const calls = [];
+  const renderCaseRows = (rows) => {
+    calls.push(rows);
+    return { type: "FindingsTable", props: { rows } };
+  };
+  const h = harness("FindingCaseList", { query: {}, readOnly: true, renderCaseRows });
+  await h.flush();
+  assert.equal(h.requests[0].args[1], true);
+  const standalone = Array.from({ length: 17 }, (_, i) => ({ finding: finding(String(i)), matched_ids: [] }));
+  await h.resolve(0, { items: standalone, total: 17, matched_reports: 17 });
+  assert.equal(h.nodes().filter((node) => node.type === "FindingsTable").length, 1);
+  assert.equal(calls.at(-1).length, 17);
+  assert.equal(h.nodes().filter((node) => node.props?.finding).length, 0);
+  await h.poll();
+  const mixed = [standalone[0], { case: { id: "42", title: "Merged" }, matched_ids: [7, 8] }, standalone[1]];
+  await h.resolve(1, { items: mixed, total: 3, matched_reports: 4 });
+  assert.equal(h.nodes().filter((node) => node.type === "FindingsTable").length, 1);
+  assert.deepEqual(
+    calls.at(-1).map((row) => row.case?.id ?? row.finding.id),
+    ["0", "42", "1"],
+  );
+  await h.poll();
+  await h.reject(2);
+  assert.match(h.text(), /offline/);
+  assert.equal(h.nodes().filter((node) => node.type === "FindingsTable").length, 1);
+});

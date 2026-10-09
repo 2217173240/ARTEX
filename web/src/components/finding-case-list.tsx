@@ -4,7 +4,7 @@ import * as React from "react";
 
 import Link from "next/link";
 
-import { ChevronRightIcon, FolderIcon } from "lucide-react";
+import { ChevronRightIcon, FolderIcon, FolderOpenIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { StatusBadge } from "@/components/status-badge";
@@ -12,14 +12,16 @@ import { TablePagination } from "@/components/table-pagination";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Spinner } from "@/components/ui/spinner";
 import { api } from "@/lib/api";
 import { useI18n } from "@/lib/i18n";
 import type {
   Finding,
   FindingCase,
+  FindingCaseListRow,
   FindingCasePage,
   FindingCaseReviewRun,
   FindingCaseSuggestion,
@@ -62,19 +64,24 @@ export function FindingCaseMemberRow({
   onSelect,
   contextTask,
   matched = true,
+  nested = false,
 }: {
   finding: Finding;
   selected?: boolean;
   onSelect?: (id: string, checked: boolean) => void;
   contextTask?: string;
   matched?: boolean;
+  nested?: boolean;
 }) {
   const { t: uiText } = useI18n();
   const id = f.finding_id ?? f.id;
   return (
     <div
       className={cn(
-        "flex min-w-0 flex-wrap items-center gap-3 border-b px-4 py-3 text-sm last:border-b-0",
+        "flex min-w-0 flex-wrap items-center gap-3 py-3 text-sm",
+        nested
+          ? "relative rounded-lg border bg-background px-3 before:absolute before:top-1/2 before:-left-4 before:w-4 before:border-border before:border-t sm:before:-left-5 sm:before:w-5"
+          : "border-b px-4 last:border-b-0",
         !matched && "bg-muted/30",
       )}
     >
@@ -114,6 +121,9 @@ export function FindingCaseMembers({
   selectedIds,
   onSelect,
   contextTask,
+  nested = false,
+  renderRecords,
+  refreshToken = 0,
 }: {
   caseId: string;
   version?: number;
@@ -121,6 +131,9 @@ export function FindingCaseMembers({
   selectedIds?: Set<string>;
   onSelect?: (id: string, checked: boolean) => void;
   contextTask?: string;
+  nested?: boolean;
+  renderRecords?: (items: Finding[]) => React.ReactNode;
+  refreshToken?: number;
 }) {
   const { t: uiText } = useI18n();
   const [page, setPage] = React.useState(1);
@@ -154,7 +167,7 @@ export function FindingCaseMembers({
     return () => {
       active = false;
     };
-  }, [caseId, page, version, contextTask, retry, requestKey]);
+  }, [caseId, page, version, contextTask, retry, requestKey, refreshToken]);
   if (error && !data)
     return (
       <Alert>
@@ -174,7 +187,7 @@ export function FindingCaseMembers({
       </div>
     );
   return (
-    <div className="flex min-w-0 flex-col">
+    <div className={cn("flex min-w-0 flex-col", nested && "gap-2 border-primary/25 border-l-2 pl-4 sm:pl-5")}>
       {error ? (
         <Alert>
           <AlertDescription>
@@ -186,16 +199,19 @@ export function FindingCaseMembers({
           </AlertDescription>
         </Alert>
       ) : null}
-      {data.items.map((f) => (
-        <FindingCaseMemberRow
-          key={f.finding_id ?? f.id}
-          finding={f}
-          selected={selectedIds?.has(f.finding_id ?? f.id)}
-          onSelect={onSelect}
-          contextTask={contextTask}
-          matched={!matchedIds || matchedIds.includes(Number(f.finding_id ?? f.id))}
-        />
-      ))}
+      {renderRecords
+        ? renderRecords(data.items)
+        : data.items.map((f) => (
+            <FindingCaseMemberRow
+              key={f.finding_id ?? f.id}
+              finding={f}
+              nested={nested}
+              selected={selectedIds?.has(f.finding_id ?? f.id)}
+              onSelect={onSelect}
+              contextTask={contextTask}
+              matched={!matchedIds || matchedIds.includes(Number(f.finding_id ?? f.id))}
+            />
+          ))}
       {data.total > 20 ? (
         <TablePagination
           page={page}
@@ -206,6 +222,100 @@ export function FindingCaseMembers({
           pageSizeOptions={[20]}
         />
       ) : null}
+    </div>
+  );
+}
+
+function FindingMergeSuggestionCard({
+  suggestion: s,
+  onResolve,
+}: {
+  suggestion: FindingCaseSuggestion;
+  onResolve: (s: FindingCaseSuggestion, accept: boolean) => Promise<void>;
+}) {
+  const { t: uiText } = useI18n();
+  const [expanded, setExpanded] = React.useState(false);
+  const [busy, setBusy] = React.useState(false);
+  async function resolve(accept: boolean) {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await onResolve(s, accept);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <Card size="sm" className="min-w-0">
+      <CardHeader>
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant="outline">{uiText("疑似重复 · 待确认")}</Badge>
+          <CardDescription>
+            {uiText("任务 #")}
+            {s.task_id}
+          </CardDescription>
+        </div>
+        <CardTitle className="break-words">{s.title}</CardTitle>
+        <CardDescription className="flex flex-wrap gap-3">
+          <Link className="underline underline-offset-4" href={`/function/findings/detail/?id=${s.left_id}`}>
+            {uiText("查看原报告 #")}
+            {s.left_id}
+          </Link>
+          <Link className="underline underline-offset-4" href={`/function/findings/detail/?id=${s.right_id}`}>
+            {uiText("查看原报告 #")}
+            {s.right_id}
+          </Link>
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <Collapsible open={expanded} onOpenChange={setExpanded}>
+          {!expanded ? (
+            <p className="line-clamp-2 whitespace-pre-wrap break-words text-muted-foreground text-sm">{s.reason}</p>
+          ) : null}
+          <CollapsibleContent className="whitespace-pre-wrap break-words text-muted-foreground text-sm">
+            {s.reason}
+          </CollapsibleContent>
+          <CollapsibleTrigger asChild>
+            <Button variant="link" size="sm">
+              {expanded ? uiText("收起判断依据") : uiText("展开判断依据")}
+            </Button>
+          </CollapsibleTrigger>
+        </Collapsible>
+      </CardContent>
+      <CardFooter className="flex flex-wrap gap-2">
+        <Button variant="outline" size="sm" disabled={busy} onClick={() => resolve(true)}>
+          {busy ? <Spinner /> : null}
+          {uiText("确认归并")}
+        </Button>
+        <Button variant="ghost" size="sm" disabled={busy} onClick={() => resolve(false)}>
+          {uiText("不是同一漏洞")}
+        </Button>
+      </CardFooter>
+    </Card>
+  );
+}
+
+function FindingReviewRunRow({ run: r }: { run: FindingCaseReviewRun }) {
+  const { t: uiText } = useI18n();
+  return (
+    <div className="flex min-w-0 flex-wrap items-center gap-2 text-sm">
+      {r.state === "running" ? <Spinner /> : null}
+      <span>
+        {uiText("任务 #")}
+        {r.task_id} · {uiText("整理 #")}
+        {r.conversation_id}
+      </span>
+      <Badge variant={r.state === "failed" ? "destructive" : "secondary"}>
+        {
+          { queued: uiText("排队中"), running: uiText("运行中"), done: uiText("已完成"), failed: uiText("失败") }[
+            r.state
+          ]
+        }
+      </Badge>
+      <Link className="underline underline-offset-4" href={`/chat?c=${r.conversation_id}`}>
+        {uiText("查看执行记录")}
+      </Link>
+      {r.error ? <p className="w-full break-words text-destructive">{r.error}</p> : null}
     </div>
   );
 }
@@ -221,6 +331,7 @@ export function FindingCaseReviewPanel({ taskId, onChange }: { taskId?: string; 
   const runs = reviewSnapshot?.taskId === taskId ? (reviewSnapshot?.runs ?? []) : [];
   const [resolving, setResolving] = React.useState<Set<string>>(() => new Set());
   const [error, setError] = React.useState("");
+  const [historyOpen, setHistoryOpen] = React.useState(false);
   React.useEffect(() => {
     let active = true;
     let timer: ReturnType<typeof setTimeout>;
@@ -263,6 +374,9 @@ export function FindingCaseReviewPanel({ taskId, onChange }: { taskId?: string; 
       setResolving((current) => new Set([...current].filter((id) => id !== s.id)));
     }
   }
+  const latestByTask = new Map<string, FindingCaseReviewRun>();
+  for (const run of runs) if (!latestByTask.has(run.task_id)) latestByTask.set(run.task_id, run);
+  const latestFailures = [...latestByTask.values()].filter((run) => run.state === "failed");
   return (
     <div className="flex flex-col gap-2">
       {error ? (
@@ -273,41 +387,50 @@ export function FindingCaseReviewPanel({ taskId, onChange }: { taskId?: string; 
           </AlertDescription>
         </Alert>
       ) : null}
+      {suggestions.length > 0 ? (
+        <p className="text-muted-foreground text-sm">
+          {uiText("待确认归并建议（{count}）· 确认前原始记录分别保留", { count: suggestions.length })}
+        </p>
+      ) : null}
       {suggestions.map((s) => (
-        <Alert key={s.id}>
-          <AlertDescription>
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="flex-1">
-                {uiText("疑似重复：#")}
-                {s.left_id} / #{s.right_id} · {s.title}。{s.reason}
-              </span>
-              <Button variant="outline" size="sm" disabled={resolving.has(s.id)} onClick={() => resolve(s, true)}>
-                {uiText("确认归并")}
-              </Button>
-              <Button variant="ghost" size="sm" disabled={resolving.has(s.id)} onClick={() => resolve(s, false)}>
-                {uiText("不是同一漏洞")}
-              </Button>
-            </div>
-          </AlertDescription>
-        </Alert>
+        <FindingMergeSuggestionCard key={s.id} suggestion={s} onResolve={resolve} />
       ))}
-      {runs.slice(0, 5).map((r) => (
-        <div key={r.conversation_id} className="flex flex-wrap items-center gap-2 text-muted-foreground text-xs">
-          <span>
-            {uiText("任务 #")}
-            {r.task_id} {uiText("整理：")}
-            {
-              { queued: uiText("排队中"), running: uiText("运行中"), done: uiText("已完成"), failed: uiText("失败") }[
-                r.state
-              ]
-            }
-          </span>
-          {r.error ? <span className="text-destructive">{r.error}</span> : null}
-          <Link className="underline" href={`/chat?c=${r.conversation_id}`}>
-            {uiText("查看执行记录")}
-          </Link>
+      {runs.some((r) => r.state === "queued" || r.state === "running") ? (
+        <div className="flex flex-col gap-2">
+          {runs
+            .filter((r) => r.state === "queued" || r.state === "running")
+            .map((r) => (
+              <FindingReviewRunRow key={r.conversation_id} run={r} />
+            ))}
         </div>
-      ))}
+      ) : null}
+      {!historyOpen
+        ? latestFailures.map((r) => (
+            <Alert key={r.conversation_id} variant="destructive">
+              <AlertDescription>
+                <FindingReviewRunRow run={r} />
+              </AlertDescription>
+            </Alert>
+          ))
+        : null}
+      {runs.some((r) => r.state === "done" || r.state === "failed") ? (
+        <Collapsible open={historyOpen} onOpenChange={setHistoryOpen}>
+          <CollapsibleTrigger asChild>
+            <Button variant="ghost" size="sm">
+              {uiText(historyOpen ? "收起整理历史（{count}）" : "查看整理历史（{count}）", {
+                count: runs.filter((r) => r.state === "done" || r.state === "failed").length,
+              })}
+            </Button>
+          </CollapsibleTrigger>
+          <CollapsibleContent className="flex flex-col gap-2 py-2">
+            {historyOpen
+              ? runs
+                  .filter((r) => r.state === "done" || r.state === "failed")
+                  .map((r) => <FindingReviewRunRow key={r.conversation_id} run={r} />)
+              : null}
+          </CollapsibleContent>
+        </Collapsible>
+      ) : null}
     </div>
   );
 }
@@ -320,6 +443,9 @@ export function FindingCaseList({
   readOnly = false,
   onTotal,
   refreshToken = 0,
+  presentation = "records",
+  renderRecords,
+  renderCaseRows,
 }: {
   query: Omit<FindingQuery, "page" | "pageSize">;
   selectedIds?: Set<string>;
@@ -328,6 +454,9 @@ export function FindingCaseList({
   readOnly?: boolean;
   onTotal?: (total: number) => void;
   refreshToken?: number;
+  presentation?: "records" | "task" | "asset";
+  renderRecords?: (items: Finding[], matchedIds?: number[]) => React.ReactNode;
+  renderCaseRows?: (rows: FindingCaseListRow[]) => React.ReactNode;
 }) {
   const { t: uiText } = useI18n();
   const [page, setPage] = React.useState(1);
@@ -336,9 +465,11 @@ export function FindingCaseList({
   const [open, setOpen] = React.useState<Set<string>>(() => new Set());
   const [refresh, setRefresh] = React.useState(0);
   const key = JSON.stringify(query);
-  const requestKey = JSON.stringify([key, page]);
+  const originalRows = Boolean(renderRecords ?? renderCaseRows);
+  const requestKey = JSON.stringify([key, page, originalRows]);
   const data = snapshot?.key === requestKey ? snapshot.value : null;
   const error = failure?.key === requestKey ? failure.message : "";
+  const cardRows = renderCaseRows ? [] : (data?.items ?? []);
   // biome-ignore lint/correctness/useExhaustiveDependencies: reset pagination when the filter fingerprint changes.
   React.useEffect(() => {
     setPage(1);
@@ -349,7 +480,7 @@ export function FindingCaseList({
     let timer: ReturnType<typeof setTimeout>;
     async function load() {
       try {
-        const v = await api.findingCases({ ...JSON.parse(key), page, pageSize: 20 });
+        const v = await api.findingCases({ ...JSON.parse(key), page, pageSize: 20 }, originalRows);
         if (active) {
           setSnapshot({ key: requestKey, value: v });
           setFailure(null);
@@ -365,7 +496,7 @@ export function FindingCaseList({
       active = false;
       clearTimeout(timer);
     };
-  }, [key, page, refresh, requestKey, refreshToken]);
+  }, [key, page, refresh, requestKey, refreshToken, originalRows]);
   React.useEffect(() => {
     onTotal?.(data?.matched_reports ?? 0);
   }, [data, onTotal]);
@@ -411,27 +542,34 @@ export function FindingCaseList({
           })}
         </p>
       ) : null}
-      {data?.items.map((row) => {
+      {data && renderCaseRows ? renderCaseRows(data.items) : null}
+      {cardRows.map((row) => {
         if (row.case) {
           const group = row.case;
           return (
             <Card key={`case:${group.id}`} className="gap-0 overflow-hidden py-0">
-              <CardHeader className="px-4 py-3">
+              <CardHeader className={cn("px-4 py-3", open.has(group.id) && "bg-muted/60")}>
                 <div className="flex min-w-0 flex-wrap items-center gap-3">
                   <Button
                     variant="ghost"
                     size="icon-sm"
                     aria-label={`${open.has(group.id) ? uiText("收起") : uiText("展开")}${group.title}`}
                     aria-expanded={open.has(group.id)}
+                    aria-controls={`finding-case-members-${group.id}`}
                     onClick={() => toggle(group.id)}
                   >
                     <ChevronRightIcon className={cn(open.has(group.id) && "rotate-90")} />
                   </Button>
-                  <FolderIcon className="size-4 shrink-0 text-muted-foreground" />
+                  {open.has(group.id) ? (
+                    <FolderOpenIcon className="size-5 shrink-0 text-primary" />
+                  ) : (
+                    <FolderIcon className="size-5 shrink-0 text-muted-foreground" />
+                  )}
                   <div className="flex min-w-0 flex-1 basis-2/3 flex-col gap-1 sm:basis-auto">
-                    <CardTitle className="truncate text-sm">
+                    <CardTitle className="line-clamp-2 break-words text-sm sm:truncate">
                       <Link
                         className="hover:underline"
+                        title={group.title}
                         href={`/function/findings/case?id=${group.id}${contextTask ? `&context_task=${contextTask}` : ""}`}
                       >
                         {group.title}
@@ -441,6 +579,39 @@ export function FindingCaseList({
                       {group.count} {uiText("条上报 ·")}{" "}
                       {group.report_version !== group.version ? uiText("统一报告待更新") : uiText("统一报告已生成")}
                     </CardDescription>
+                    <div className="flex min-w-0 flex-wrap gap-x-3 gap-y-1 text-muted-foreground text-xs">
+                      {presentation !== "task" && group.task_id ? (
+                        <Link
+                          className="max-w-full break-words hover:underline"
+                          href={`/function/tasks/detail?id=${group.task_id}`}
+                          title={row.task_description}
+                        >
+                          {uiText("所属任务 #")}
+                          {group.task_id}
+                          {row.task_description ? ` · ${row.task_description}` : ""}
+                        </Link>
+                      ) : null}
+                      {(row.assets ?? []).length ? (
+                        <span className="inline-flex min-w-0 flex-wrap gap-1">
+                          {uiText("资产：")}
+                          {row.assets?.map((asset) => (
+                            <code
+                              key={asset.id}
+                              className="max-w-48 truncate rounded bg-muted px-1"
+                              title={`${asset.type} · ${asset.label}`}
+                            >
+                              {asset.label}
+                            </code>
+                          ))}
+                          {(row.asset_count ?? 0) > 4 ? <span>+{(row.asset_count ?? 0) - 4}</span> : null}
+                        </span>
+                      ) : null}
+                      {row.last_found_at ? (
+                        <time dateTime={row.last_found_at}>
+                          {uiText("最近上报")} {new Date(row.last_found_at).toLocaleString()}
+                        </time>
+                      ) : null}
+                    </div>
                   </div>
                   <FindingSeverityCounts counts={group} />
                   <Badge variant="outline">
@@ -458,10 +629,19 @@ export function FindingCaseList({
                 </div>
               </CardHeader>
               {open.has(group.id) ? (
-                <CardContent className="border-t px-0">
+                <CardContent
+                  id={`finding-case-members-${group.id}`}
+                  role="region"
+                  aria-label={`${group.title}的原始子报告`}
+                  className="border-t bg-muted/20 px-4 py-4 sm:px-6"
+                >
+                  <p className="mb-3 text-muted-foreground text-xs">{uiText("原始子报告 · 各自等级和证据保留")}</p>
                   <FindingCaseMembers
+                    nested
+                    renderRecords={renderRecords ? (items) => renderRecords(items, row.matched_ids) : undefined}
                     caseId={group.id}
                     version={group.version}
+                    refreshToken={refreshToken}
                     matchedIds={row.matched_ids}
                     selectedIds={selectedIds}
                     onSelect={readOnly ? undefined : onSelect}
@@ -476,12 +656,16 @@ export function FindingCaseList({
           return (
             <Card key={`finding:${row.finding.finding_id ?? row.finding.id}`} className="gap-0 py-0">
               <CardContent className="px-0">
-                <FindingCaseMemberRow
-                  finding={row.finding}
-                  selected={selectedIds?.has(row.finding.finding_id ?? row.finding.id)}
-                  onSelect={readOnly ? undefined : onSelect}
-                  contextTask={contextTask}
-                />
+                {renderRecords ? (
+                  renderRecords([row.finding])
+                ) : (
+                  <FindingCaseMemberRow
+                    finding={row.finding}
+                    selected={selectedIds?.has(row.finding.finding_id ?? row.finding.id)}
+                    onSelect={readOnly ? undefined : onSelect}
+                    contextTask={contextTask}
+                  />
+                )}
               </CardContent>
             </Card>
           );

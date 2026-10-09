@@ -18,8 +18,10 @@ import type {
   AssetInterceptRule,
   AssetInterceptRuleInput,
   Audit,
+  BasicAuthSettings,
   BatchCategoryItem,
   BatchControlItem,
+  BlockedRecoveryResult,
   ChatAttachment,
   CommandRecord,
   Company,
@@ -85,7 +87,6 @@ import type {
   SSTask,
   Stats,
   Task,
-  BlockedRecoveryResult,
   TaskArchive,
   TaskArchivePage,
   TaskAssetMutation,
@@ -568,10 +569,15 @@ export const api = {
   findingAssetTree: (q: Omit<FindingQuery, "page" | "pageSize">) =>
     get<FindingAssetTree>(`/exploration/findings/asset-tree?${findingFilterParams(q).toString()}`),
 
-  findingCases: (q: FindingQuery) => {
+  basicAuthSettings: () => get<BasicAuthSettings>("/settings/basic-auth"),
+  setBasicAuthSettings: (patch: { enabled?: boolean; username?: string; password?: string }) =>
+    http<BasicAuthSettings>("/settings/basic-auth", { method: "PUT", body: JSON.stringify(patch) }),
+
+  findingCases: (q: FindingQuery, originalRows = false) => {
     const p = findingFilterParams(q);
     p.set("page", String(q.page));
     p.set("limit", String(q.pageSize));
+    if (originalRows) p.set("original_rows", "1");
     return get<FindingCasePage>(`/exploration/finding-cases?${p}`);
   },
   getFindingCase: (id: string, contextTask?: string) =>

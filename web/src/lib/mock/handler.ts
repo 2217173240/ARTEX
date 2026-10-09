@@ -998,6 +998,8 @@ function parseBody(body?: BodyInit | null): Record<string, unknown> {
   }
 }
 
+let mockBasicAuthSettings = { enabled: false, username: "", password_set: false };
+
 export async function mockHandle<T>(method: string, rawPath: string, body?: BodyInit | null): Promise<T> {
   advanceMockRetests();
   await delay();
@@ -1011,6 +1013,15 @@ export async function mockHandle<T>(method: string, rawPath: string, body?: Body
 
 function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Record<string, unknown>): unknown {
   const task = q.get("task") ?? undefined;
+  if (path === "/settings/basic-auth" && (m === "GET" || m === "PUT")) {
+    if (m === "PUT")
+      mockBasicAuthSettings = {
+        enabled: typeof b.enabled === "boolean" ? b.enabled : mockBasicAuthSettings.enabled,
+        username: typeof b.username === "string" ? b.username : mockBasicAuthSettings.username,
+        password_set: mockBasicAuthSettings.password_set || Boolean(b.password),
+      };
+    return { ...mockBasicAuthSettings };
+  }
 
   if (path === "/chat/mentions" && m === "GET") {
     const kind = q.get("kind") ?? "";
@@ -1163,7 +1174,12 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   // ── tasks ──
   if (path === "/tasks/rerun-blocked-all" && m === "POST") {
     // Demo task fixtures contain no blocked intents; running tasks report a no-op.
-    return { items: mockTasks.filter((task) => task.status === "running" && !task.paused).map((task) => ({ id: task.id, name: task.name ?? task.description, reopened: 0, queued: false })), reopened: 0 };
+    return {
+      items: mockTasks
+        .filter((task) => task.status === "running" && !task.paused)
+        .map((task) => ({ id: task.id, name: task.name ?? task.description, reopened: 0, queued: false })),
+      reopened: 0,
+    };
   }
   if (path === "/tasks" && m === "GET") {
     sortMockTasks();

@@ -48,6 +48,7 @@ import type {
   ActiveFindingRetest,
   Finding,
   FindingAssetNode,
+  FindingCaseListRow,
   FindingGroup,
   FindingStats,
   FindingStatus,
@@ -123,6 +124,7 @@ const EMPTY_GROUPS_STATE: FindingGroupsState = {
 
 // 分组视图里每个已展开任务组自带一份分页状态,彼此独立。
 interface GroupFindingsState {
+  caseRows?: FindingCaseListRow[];
   items: Finding[];
   total: number;
   page: number;
@@ -135,6 +137,8 @@ interface GroupFindingsState {
 
 // 平铺视图的页码单独放 state(而非塞进快照),筛选一变就能连带重置并触发重新加载。
 interface FlatFindingsState {
+  matchedReports?: number;
+  caseRows?: FindingCaseListRow[];
   items: Finding[];
   total: number;
   loaded: boolean;
@@ -293,11 +297,13 @@ export default function FindingsPage() {
 
   // setFindings 同时改写两个视图缓存里的同一条发现,切换视图不会看到过期状态。
   const setFindings = React.useCallback((update: (current: Finding[]) => Finding[]) => {
-    setFlat((current) => ({ ...current, items: update(current.items) }));
+    const updateRows = (rows?: FindingCaseListRow[]) =>
+      rows?.flatMap((row) => (row.finding ? update([row.finding]).map((finding) => ({ ...row, finding })) : [row]));
+    setFlat((current) => ({ ...current, items: update(current.items), caseRows: updateRows(current.caseRows) }));
     setGroupFindings((current) => {
       const next: Record<string, GroupFindingsState> = {};
       for (const [key, state] of Object.entries(current)) {
-        next[key] = { ...state, items: update(state.items) };
+        next[key] = { ...state, items: update(state.items), caseRows: updateRows(state.caseRows) };
       }
       return next;
     });
@@ -406,7 +412,11 @@ export default function FindingsPage() {
         error: null,
       }));
       try {
-        const result = await api.findingsPage({
+        const fetchPage =
+          view === "asset"
+            ? (q: Parameters<typeof api.findingsPage>[0]) => api.findingCases(q, true)
+            : api.findingsPage;
+        const result = await fetchPage({
           page: flatPage,
           pageSize: flatPageSize,
           severity,
@@ -419,7 +429,12 @@ export default function FindingsPage() {
         });
         if (request !== flatRequest.current || activeFlatQueryKey.current !== requestQueryKey) return;
         setFlat({
-          items: result.items,
+          matchedReports: "matched_reports" in result ? result.matched_reports : result.total,
+          caseRows: view === "asset" ? (result.items as FindingCaseListRow[]) : undefined,
+          items:
+            view === "asset"
+              ? (result.items as FindingCaseListRow[]).flatMap((row) => (row.finding ? [row.finding] : []))
+              : (result.items as Finding[]),
           total: result.total,
           loaded: true,
           loading: false,
@@ -438,7 +453,20 @@ export default function FindingsPage() {
         if (flatInFlight.current?.request === request) flatInFlight.current = null;
       }
     },
-    [activeAssetScope, flatQueryKey, flatPage, flatPageSize, severity, status, vulnclass, task, query, sort, uiText],
+    [
+      view,
+      activeAssetScope,
+      flatQueryKey,
+      flatPage,
+      flatPageSize,
+      severity,
+      status,
+      vulnclass,
+      task,
+      query,
+      sort,
+      uiText,
+    ],
   );
 
   // loadAssetTree 取整棵资产树。树不随选中节点变化(否则选一下就塌成一条链),
@@ -536,6 +564,7 @@ export default function FindingsPage() {
       setGroupFindings((current) => ({
         ...current,
         [key]: {
+          caseRows: current[key]?.queryKey === requestQueryKey ? current[key].caseRows : undefined,
           items: current[key]?.queryKey === requestQueryKey ? current[key].items : [],
           total: current[key]?.queryKey === requestQueryKey ? current[key].total : 0,
           page: groupPage,
@@ -547,21 +576,25 @@ export default function FindingsPage() {
         },
       }));
       try {
-        const result = await api.findingsPage({
-          page: groupPage,
-          pageSize: groupPageSize,
-          severity,
-          status,
-          vulnclass,
-          task: key,
-          query,
-          sort,
-        });
+        const result = await api.findingCases(
+          {
+            page: groupPage,
+            pageSize: groupPageSize,
+            severity,
+            status,
+            vulnclass,
+            task: key,
+            query,
+            sort,
+          },
+          true,
+        );
         if (groupRequests.current[key] !== request || activeFilterFingerprint.current !== requestFilter) return;
         setGroupFindings((current) => ({
           ...current,
           [key]: {
-            items: result.items,
+            caseRows: result.items,
+            items: result.items.flatMap((row) => (row.finding ? [row.finding] : [])),
             total: result.total,
             page: groupPage,
             pageSize: groupPageSize,
@@ -630,6 +663,8 @@ export default function FindingsPage() {
   mutationRefreshRef.current = { view, loadFlat, loadAssetTree, refreshGroups, loadGroup };
   const refreshAfterMutation = React.useCallback((finding: Finding, removed = false) => {
     const { view, loadFlat, loadAssetTree, refreshGroups, loadGroup } = mutationRefreshRef.current;
+    setCaseRefresh((value) => value + 1);
+    if (view === "cases") return;
     if (view === "asset") {
       // 资产视图不轮询,所以改完要顺带把树的计数也重新算一次。
       void loadFlat();
@@ -645,7 +680,8 @@ export default function FindingsPage() {
     const key = finding.task_id ?? UNASSIGNED_TASK;
     const state = groupFindingsRef.current[key];
     if (state) {
-      const nextTotal = Math.max(0, state.total - (removed ? 1 : 0));
+      const removedStandalone = removed && state.items.some((item) => isSameFinding(item, finding));
+      const nextTotal = Math.max(0, state.total - (removedStandalone ? 1 : 0));
       const lastPage = Math.max(1, Math.ceil(nextTotal / state.pageSize));
       const nextPage = state.loaded ? Math.min(state.page, lastPage) : state.page;
       void loadGroup(key, nextPage, state.pageSize);
@@ -1023,7 +1059,14 @@ export default function FindingsPage() {
   // 平铺与资产视图共用 flat 列表状态,分组视图的口径来自组接口的 finding_total。
   const groupedFindingTotal = groupList.queryKey === groupsQueryKey ? groupList.findingTotal : 0;
   const [caseTotal, setCaseTotal] = React.useState(0);
-  const filteredTotal = view === "cases" ? caseTotal : view === "grouped" ? groupedFindingTotal : flat.total;
+  const filteredTotal =
+    view === "cases"
+      ? caseTotal
+      : view === "grouped"
+        ? groupedFindingTotal
+        : view === "asset"
+          ? (flat.matchedReports ?? flat.total)
+          : flat.total;
   const assetPath = React.useMemo(
     () =>
       view === "asset" && assetTree.queryKey === filterFingerprint ? assetPathOf(assetTree.nodes, assetScope) : [],
@@ -1031,6 +1074,7 @@ export default function FindingsPage() {
   );
 
   const rowProps = {
+    refreshToken: caseRefresh,
     selectedIds,
     onToggleSelected: toggleSelected,
     onToggleSelectedPage: toggleSelectedPage,
@@ -1080,8 +1124,18 @@ export default function FindingsPage() {
             )}
             <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3 text-muted-foreground text-xs">
               <span role="status" aria-live="polite">
-                {uiText("当前筛选共")}{" "}
-                <strong className="font-medium text-foreground tabular-nums">{flat.total}</strong> {uiText("条发现")}
+                {view === "asset" ? (
+                  uiText("当前筛选：{cases} 个独立漏洞 · {reports} 条上报", {
+                    cases: flat.total,
+                    reports: flat.matchedReports ?? flat.total,
+                  })
+                ) : (
+                  <>
+                    {uiText("当前筛选共")}{" "}
+                    <strong className="font-medium text-foreground tabular-nums">{flat.total}</strong>{" "}
+                    {uiText("条发现")}
+                  </>
+                )}
               </span>
               {flat.items.length > 0 && (
                 <span className={view === "asset" ? undefined : "lg:hidden"}>
@@ -1089,7 +1143,12 @@ export default function FindingsPage() {
                 </span>
               )}
             </div>
-            <FindingsTable items={flat.items} selectAllLabel={uiText("选择当前页全部")} {...rowProps} />
+            <FindingsTable
+              caseRows={flat.caseRows}
+              items={flat.items}
+              selectAllLabel={uiText("选择当前页全部")}
+              {...rowProps}
+            />
             <TablePagination
               page={flatPage}
               pageSize={flatPageSize}
@@ -1397,6 +1456,7 @@ export default function FindingsPage() {
 
         {view === "cases" && (
           <FindingCaseList
+            renderCaseRows={(caseRows) => <FindingsTable items={[]} caseRows={caseRows} {...rowProps} />}
             onTotal={setCaseTotal}
             refreshToken={caseRefresh}
             query={{ severity, status, vulnclass, task, query, sort }}
@@ -1557,6 +1617,7 @@ export default function FindingsPage() {
                             </div>
                           )}
                           <FindingsTable
+                            caseRows={state.caseRows}
                             items={state.items}
                             selectAllLabel={uiText("选择本组当前页全部")}
                             {...rowProps}

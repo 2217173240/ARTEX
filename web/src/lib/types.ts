@@ -1642,6 +1642,11 @@ export interface FindingCase {
   created_at: string;
 }
 export interface FindingCaseListRow {
+  task_name?: string;
+  task_description?: string;
+  assets?: FindingAsset[];
+  asset_count?: number;
+  last_found_at?: string;
   case?: FindingCase | null;
   finding?: Finding;
   matched_ids: number[];
@@ -1685,4 +1690,10 @@ export interface FindingCaseReviewRun {
 export interface BlockedRecoveryResult {
   items: { id: string; name: string; reopened: number; queued: boolean; error?: string }[];
   reopened: number;
+}
+
+export interface BasicAuthSettings {
+  enabled: boolean;
+  username: string;
+  password_set: boolean;
 }

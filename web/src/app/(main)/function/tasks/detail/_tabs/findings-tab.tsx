@@ -203,7 +203,7 @@ function FindingsTabInner({ taskId }: { taskId: string }) {
 
   return (
     <div className="flex flex-col gap-4">
-      <FindingCaseList query={{ task: taskId, sort: "time" }} />
+      <FindingCaseList query={{ task: taskId, sort: "time" }} presentation="task" />
       {[
         ...new Set(
           items
@@ -217,7 +217,7 @@ function FindingsTabInner({ taskId }: { taskId: string }) {
             {uiText("继承任务 #")}
             {source} {uiText("· 只读")}
           </p>
-          <FindingCaseList query={{ task: source, sort: "time" }} contextTask={taskId} readOnly />
+          <FindingCaseList query={{ task: source, sort: "time" }} contextTask={taskId} presentation="task" readOnly />
         </div>
       ))}
       <details>
