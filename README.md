@@ -74,9 +74,25 @@ AI 自主渗透测试系统（Go 后端 + Next.js 前端）
 
 ## 安装
 
-本 fork 的源码、发布包和在线更新源均为 [2217173240/ARTEX](https://github.com/2217173240/ARTEX)，Docker 镜像为 `ghcr.io/2217173240/artex`。正式版本及对应下载文件见本仓库 [Releases](https://github.com/2217173240/ARTEX/releases)；Docker 和 ZIP 的安装方式如下。
+本 fork 的源码、发布包和在线更新源均为 [2217173240/ARTEX](https://github.com/2217173240/ARTEX)，Docker 镜像为 `ghcr.io/2217173240/artex`。正式版本及对应下载文件见本仓库 [Releases](https://github.com/2217173240/ARTEX/releases)。
 
 > 依赖数据库 **PostgreSQL**；探索需配置 **LLM**（`ANTHROPIC_API_KEY` 或 `OPENAI_API_KEY`，也可在 UI 里配）。
+
+### 原生安装包（本机使用）
+
+三个系统均提供 AMD64（Intel/AMD x64）和 ARM64（Apple Silicon、Windows ARM、Linux ARM）版本：
+
+| 系统 | 安装包 | 安装后启动 |
+| --- | --- | --- |
+| Windows | `.msi` | 开始菜单 → ARTEX；安装在当前用户目录 |
+| macOS | `.pkg` | 应用程序 → ARTEX |
+| Linux | `.deb` / `.rpm` | 应用菜单 → ARTEX，或 `artex launch` |
+
+首次启动在本地页面填写已有 PostgreSQL 的主机、端口、用户名、密码和数据库名，连接成功后打开 ARTEX。随后设置管理员账号，并在「LLM 配置」添加模型。启动器使用本机回环地址和空闲端口；再次启动打开已有实例。个人配置、日志、数据和可编辑 skills 放在用户目录，升级或卸载安装包会保留它们。
+
+MSI 和 PKG 目前未签名，未完成发布者签名与 Apple 公证。下载安装前请核对本仓库来源和 `SHA256SUMS`。安装包含 ARTEX 程序与 skills；外部工具按需安装，可用 `artex doctor` 检查，完整工具环境另见 Docker 方式。
+
+启动、停止、数据位置和安装版升级方式见[原生安装说明](docs/native-installers.md)。
 
 ### 方式一：一键安装脚本（推荐）
 
@@ -121,7 +137,7 @@ cp config.example.json config.json   # 填好 database 连接
 ./start.sh                           # → http://localhost:8787
 ```
 
-ZIP 是运行包，不包含源码安装、更新脚本；`install.sh` / `update.sh` 用于源码克隆目录。Linux、macOS 提供 AMD64 / ARM64，Windows 提供 AMD64；Release 附 `SHA256SUMS` 和容器清单的 `IMAGE_DIGEST`。
+ZIP 是运行包，不包含源码安装、更新脚本；`install.sh` / `update.sh` 用于源码克隆目录。三个系统均提供 AMD64 / ARM64，Linux 另提供 TAR.GZ；Release 附覆盖全部安装包和便携包的 `SHA256SUMS`，以及容器清单的 `IMAGE_DIGEST`。
 
 > 请用 `start.sh` / `start.bat` 启动，而不是直接跑 `./artex`。它是个守护脚本：程序退出后按退出码决定是否重新拉起，**页面上的[一键更新](#方式一页面一键更新推荐)靠它完成换装**。直接运行 `./artex` 时更新完就不会被拉起了。
 > 后台常驻：`nohup ./start.sh >artex.log 2>&1 &`。
@@ -224,6 +240,8 @@ CGO_ENABLED=0 go build -tags embedui -o artex ./cmd/artex
 `./artex doctor` 只读检查配置、目录、可选依赖、数据库连通性和 LLM 配置；不启动服务、不迁移数据库、不调用模型。可用 `./artex doctor -data ./data -json` 输出 JSON。依赖检查仅确认 PATH 中存在，不能代替实际运行验证。
 
 ## 配置
+
+原生安装版和 `artex launch` 使用用户目录的配置；`ARTEX_HOME` 可显式指定独立运行目录。普通便携/源码启动仍沿用现有配置位置。
 
 **数据库**（`config.json`，或用环境变量 `ARTEX_PG_DSN` 覆盖）：
 

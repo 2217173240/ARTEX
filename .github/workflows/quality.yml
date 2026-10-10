@@ -73,7 +73,7 @@ jobs:
         run: |
           set -euo pipefail
           # Linux amd64 is built above; these check the remaining release targets.
-          for target in linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+          for target in linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
             GOOS="${target%/*}" GOARCH="${target#*/}" \
               go build -o "$RUNNER_TEMP/artex-${target//\//-}" ./cmd/artex
           done
@@ -113,6 +113,15 @@ jobs:
           path: web/out
           retention-days: 1
           if-no-files-found: error
+
+  native:
+    needs: frontend
+    uses: ./.github/workflows/native-packages.yml
+    with:
+      frontend-artifact: ci-only-mock-ui
+      ref: ${{ github.sha }}
+      version: 0.0.1
+      artifact-prefix: ci-native
 
   image:
     needs: frontend
@@ -217,6 +226,7 @@ jobs:
         run: |
           python3 scripts/install_test.py
           python3 -m unittest discover -s scripts -p 'test_release*.py'
+          python3 -m unittest discover -s scripts -p 'test_native*.py'
       - name: Check publication inputs
         run: python3 scripts/check-publication-inputs.py
       - name: Install verified Gitleaks 8.30.1
@@ -243,7 +253,7 @@ jobs:
   quality:
     name: quality
     if: always()
-    needs: [backend, frontend, security, image]
+    needs: [backend, frontend, security, image, native]
     runs-on: ubuntu-latest
     steps:
       - name: Require all checks to succeed
@@ -251,6 +261,7 @@ jobs:
           BACKEND_RESULT: ${{ needs.backend.result }}
           FRONTEND_RESULT: ${{ needs.frontend.result }}
           SECURITY_RESULT: ${{ needs.security.result }}
+          NATIVE_RESULT: ${{ needs.native.result }}
           IMAGE_RESULT: ${{ needs.image.result }}
         run: |
           set -euo pipefail
@@ -258,3 +269,4 @@ jobs:
           test "$FRONTEND_RESULT" = success
           test "$SECURITY_RESULT" = success
           test "$IMAGE_RESULT" = success
+          test "$NATIVE_RESULT" = success

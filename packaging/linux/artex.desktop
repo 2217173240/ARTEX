@@ -1,0 +1,18 @@
+[Desktop Entry]
+Type=Application
+Name=ARTEX
+Comment=Open the ARTEX local agent workspace
+Exec=/usr/bin/artex launch
+Icon=artex
+Terminal=false
+Categories=Development;Network;
+StartupNotify=false
+Actions=Control;Stop;
+
+[Desktop Action Control]
+Name=ARTEX Control
+Exec=/usr/bin/artex launch control
+
+[Desktop Action Stop]
+Name=Stop ARTEX
+Exec=/usr/bin/artex launch stop

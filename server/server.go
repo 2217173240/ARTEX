@@ -971,7 +971,24 @@ func (s *Server) Handler() http.Handler {
 // --- handlers ---
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
+	// A random correlation value identifies the launcher's own child after a
+	// dynamically selected port is bound. It is separate from control credentials.
+	if token := os.Getenv("ARTEX_LAUNCH_TOKEN"); validLaunchIdentity(token) {
+		w.Header().Set("X-ARTEX-Launch-Token", token)
+	}
 	writeJSON(w, 200, map[string]any{"ok": true, "service": "artex", "version": BuildVersion})
+}
+
+func validLaunchIdentity(token string) bool {
+	if len(token) != 64 {
+		return false
+	}
+	for _, c := range token {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Server) stats(w http.ResponseWriter, r *http.Request) {

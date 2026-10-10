@@ -4085,5 +4085,9 @@
   "保存不会中断当前浏览器访问。可用无痕窗口检查验证弹窗；浏览器可能缓存凭据。关闭后保留账号密码，便于再次开启。": "Saving preserves access in this browser. Check the authentication prompt in a private window; browsers may cache credentials. Disabling retains the credentials for reuse.",
   "保存访问验证": "Save access authentication",
   "收起整理历史（{count}）": "Hide review history ({count})",
-  "查看整理历史（{count}）": "View review history ({count})"
+  "查看整理历史（{count}）": "View review history ({count})",
+  "检查新版本，并通过安装包或包管理器升级。": "Check for new versions and upgrade using the installer or package manager.",
+  "安装包": "Installer",
+  "获取安装包": "Get installer",
+  "此版本由安装包管理。停止 ARTEX 后，使用对应系统和架构的新安装包升级；回滚也通过安装包管理器完成。个人数据保留在用户目录。": "This installation is managed by its installer. Stop ARTEX, then upgrade using the new installer for your OS and architecture. Use the package manager for rollback. Personal data stays in your user directory."
 }

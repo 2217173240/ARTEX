@@ -29,6 +29,7 @@ jobs:
       tag: ${{ steps.preflight.outputs.tag }}
       commit: ${{ steps.preflight.outputs.commit }}
       image: ${{ steps.preflight.outputs.image }}
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
@@ -39,6 +40,10 @@ jobs:
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
           GITHUB_TOKEN: ${{ github.token }}
         run: python3 scripts/release-preflight.py
+      - id: version
+        env:
+          TAG: ${{ steps.preflight.outputs.tag }}
+        run: echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
 
   # ① 前端静态导出（一次），产物给交叉编译各平台复用
   frontend:
@@ -76,6 +81,7 @@ jobs:
           - { goos: darwin, goarch: amd64 }
           - { goos: darwin, goarch: arm64 }
           - { goos: windows, goarch: amd64 }
+          - { goos: windows, goarch: arm64 }
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
@@ -103,13 +109,21 @@ jobs:
           ARTEX_PACKAGE_DIR: dist
         run: |
           ./build.sh --target "${ARTEX_TARGET_OS}/${ARTEX_TARGET_ARCH}"
+      - name: Add portable Linux tarball from the portable ZIP
+        if: matrix.goos == 'linux'
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          ARCH: ${{ matrix.goarch }}
+        run: python3 scripts/package-portable-tar.py "dist/artex-${TAG#v}-linux-$ARCH.zip" "dist/artex-${TAG#v}-linux-$ARCH.tar.gz"
       - name: Smoke test Linux amd64 binary
         if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
         run: dist/artex-linux-amd64/artex -h
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: pkg-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: "dist/*.zip"
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
           if-no-files-found: error
       # Linux 生二进制单独上传，供 docker job 复用（免在镜像里重编前端+Go）
       - if: matrix.goos == 'linux'
@@ -119,9 +133,18 @@ jobs:
           path: dist/artex-linux-${{ matrix.goarch }}/artex
           if-no-files-found: error
 
+  native:
+    needs: [prepare, frontend]
+    uses: ./.github/workflows/native-packages.yml
+    with:
+      frontend-artifact: web-dist
+      ref: ${{ needs.prepare.outputs.commit }}
+      version: ${{ needs.prepare.outputs.version }}
+      artifact-prefix: pkg-native
+
   # ③ 汇总所有 zip → 创建 GitHub Release
   release-draft:
-    needs: [prepare, binaries]
+    needs: [prepare, binaries, native]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -130,22 +153,17 @@ jobs:
       GH_REPO: ${{ github.repository }}
       RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
     steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           pattern: pkg-*
           merge-multiple: true
           path: dist
-      - name: Generate checksums
-        working-directory: dist
-        run: |
-          set -euo pipefail
-          version="${RELEASE_TAG#v}"
-          test "$(find . -maxdepth 1 -name '*.zip' | wc -l)" -eq 5
-          for target in linux-amd64 linux-arm64 darwin-amd64 darwin-arm64 windows-amd64; do
-            test -s "artex-${version}-${target}.zip"
-          done
-          sha256sum *.zip > SHA256SUMS
-          sha256sum --check SHA256SUMS
+      - name: Require all 16 assets and generate complete checksums
+        run: python3 scripts/check-release-assets.py --version "${RELEASE_TAG#v}" --directory dist --write-checksums
       - name: Refuse to overwrite a published release
         run: |
           if gh release view "$RELEASE_TAG" --json isDraft > /tmp/artex-release.json 2>/tmp/artex-release.err; then
@@ -165,12 +183,18 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             dist/*.zip
+            dist/*.tar.gz
+            dist/*.msi
+            dist/*.pkg
+            dist/*.deb
+            dist/*.rpm
             dist/SHA256SUMS
           generate_release_notes: true
           body: |
             GHCR 镜像：`${{ needs.prepare.outputs.image }}:${{ needs.prepare.outputs.tag }}`，同时提供 `latest`。
             支持 Linux AMD64 / ARM64，Docker 会自动选择宿主机架构。
-            程序包提供 Linux、macOS 的 AMD64 / ARM64 及 Windows AMD64，并附 SHA256SUMS。
+            提供 Linux、macOS、Windows AMD64 / ARM64 便携 ZIP，以及 Linux TAR.GZ、DEB、RPM、Windows MSI、macOS PKG，并附 SHA256SUMS。
+            MSI 和 PKG 当前未签名；macOS 可能需要在系统设置中允许打开。首次启动连接已有 PostgreSQL 数据库，安装不会调用模型服务。
             部署和在线更新说明见本仓库 README。
   # ④ 在原生 AMD64 / ARM64 runner 上构建和测试，再推送架构镜像。
   docker:
@@ -279,6 +303,10 @@ jobs:
       RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
       STAGE: stage-${{ needs.prepare.outputs.commit }}-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           pattern: digest-*
@@ -305,12 +333,9 @@ jobs:
             ([.manifests[] | select(.platform.os == "linux" and .platform.architecture == "arm64" and .digest == $arm64)] | length) == 1' manifest.json
           # Recheck the draft immediately before any public version/latest mutation.
           gh release view "$RELEASE_TAG" --json isDraft,assets > release-assets.json
-          jq -e --arg version "${RELEASE_TAG#v}" '
-            .isDraft == true and
-            ([.assets[] | select(.size > 0) | .name] as $assets |
-              ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"] |
-              all(.[]; . as $target | $assets | index("artex-" + $version + "-" + $target + ".zip") != null)) and
-            any(.assets[]; .name == "SHA256SUMS" and .size > 0)' release-assets.json
+          python3 scripts/check-release-assets.py --version "${RELEASE_TAG#v}" --release-json release-assets.json
+          gh release download "$RELEASE_TAG" --dir verified-assets
+          python3 scripts/check-release-assets.py --version "${RELEASE_TAG#v}" --directory verified-assets
           docker buildx imagetools create --tag "$IMAGE:$RELEASE_TAG" --tag "$IMAGE:latest" "$IMAGE:$STAGE"
           docker buildx imagetools inspect "$IMAGE:$RELEASE_TAG" --format '{{json .Manifest}}' > image-manifest.json
           digest=$(jq -er '.digest | select(test("^sha256:[a-f0-9]{64}$"))' image-manifest.json)

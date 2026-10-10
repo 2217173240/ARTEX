@@ -1,0 +1,32 @@
+name: artex
+arch: "${ARTEX_PACKAGE_ARCH}"
+platform: linux
+version: "${ARTEX_PACKAGE_VERSION}"
+release: 1
+section: utils
+priority: optional
+maintainer: ARTEX maintainers <2217173240@users.noreply.github.com>
+description: ARTEX agent workspace with a local web interface
+homepage: https://github.com/2217173240/ARTEX
+license: AGPL-3.0-only
+contents:
+  - src: "${ARTEX_PACKAGE_BINARY}"
+    dst: /usr/lib/artex/artex
+    file_info:
+      mode: 0755
+  - src: /usr/lib/artex/artex
+    dst: /usr/bin/artex
+    type: symlink
+  - src: "${ARTEX_PACKAGE_SKILLS}"
+    dst: /usr/share/artex/skills
+    type: tree
+  - src: "${ARTEX_PACKAGE_ROOT}/LICENSE"
+    dst: /usr/share/doc/artex/LICENSE
+  - src: "${ARTEX_PACKAGE_ROOT}/CHANGELOG.md"
+    dst: /usr/share/doc/artex/CHANGELOG.md
+  - src: "${ARTEX_PACKAGE_ROOT}/config.example.json"
+    dst: /usr/share/doc/artex/config.example.json
+  - src: "${ARTEX_PACKAGE_ROOT}/packaging/linux/artex.desktop"
+    dst: /usr/share/applications/artex.desktop
+  - src: "${ARTEX_PACKAGE_ROOT}/web/public/logo.svg"
+    dst: /usr/share/icons/hicolor/scalable/apps/artex.svg
