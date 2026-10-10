@@ -50,6 +50,20 @@ try {
     & dotnet tool install wix --version 4.0.6 --tool-path $toolPath --configfile $nugetConfig --add-source $feed
     if ($LASTEXITCODE -ne 0) { throw 'WiX tool installation failed.' }
     function Escape-Xml([string]$value) { [System.Security.SecurityElement]::Escape($value) }
+    # RFC 4122 UUIDv5, using network-order namespace bytes rather than Guid.ToByteArray.
+    # Identities refer only to installed resources; versions and build paths never enter them.
+    function Get-ComponentGuid([string]$identity) {
+        $namespaceHex = 'ba40804a012c471fb739c6822dc712b9'
+        [byte[]]$namespaceBytes = for ($i = 0; $i -lt 32; $i += 2) { [Convert]::ToByte($namespaceHex.Substring($i, 2), 16) }
+        $canonical = $Architecture + '/' + $identity.Replace('\', '/').ToLowerInvariant()
+        [byte[]]$nameBytes = [Text.Encoding]::UTF8.GetBytes($canonical)
+        $sha1 = [Security.Cryptography.SHA1]::Create()
+        try { [byte[]]$hash = $sha1.ComputeHash([byte[]]($namespaceBytes + $nameBytes)) } finally { $sha1.Dispose() }
+        $hash[6] = ($hash[6] -band 0x0f) -bor 0x50
+        $hash[8] = ($hash[8] -band 0x3f) -bor 0x80
+        $hex = ([BitConverter]::ToString($hash, 0, 16)).Replace('-', '').ToLowerInvariant()
+        return $hex.Substring(0, 8) + '-' + $hex.Substring(8, 4) + '-' + $hex.Substring(12, 4) + '-' + $hex.Substring(16, 4) + '-' + $hex.Substring(20, 12)
+    }
     # One installation path and shortcut set means one upgrade family across architectures.
     $upgradeCode = 'E96F624E-6FB5-4F10-9DBD-168C3D34DC48'
     $xml = [Text.StringBuilder]::new()
@@ -79,18 +93,22 @@ try {
         $directoryId = Add-Directory $directory
         $id = 'Payload' + $counter++
         $components.Add($id)
-        [void]$xml.AppendLine("<DirectoryRef Id=`"$directoryId`"><Component Id=`"$id`" Guid=`"*`"><File Id=`"File$id`" Source=`"$(Escape-Xml $file.FullName)`" KeyPath=`"no`" />")
+        $componentGuid = Get-ComponentGuid ('file/' + $relative)
+        [void]$xml.AppendLine("<DirectoryRef Id=`"$directoryId`"><Component Id=`"$id`" Guid=`"$componentGuid`"><File Id=`"File$id`" Source=`"$(Escape-Xml $file.FullName)`" KeyPath=`"no`" />")
         [void]$xml.AppendLine("<RegistryValue Root=`"HKCU`" Key=`"Software\ARTEX\Installer\$Architecture`" Name=`"$(Escape-Xml $relative)`" Type=`"integer`" Value=`"1`" KeyPath=`"yes`" /></Component></DirectoryRef>")
     }
     foreach ($entry in $directories.GetEnumerator()) {
         $id = 'Cleanup' + $entry.Value
         $components.Add($id)
-        [void]$xml.AppendLine("<DirectoryRef Id=`"$($entry.Value)`"><Component Id=`"$id`" Guid=`"*`"><RemoveFolder Id=`"Remove$($entry.Value)`" On=`"uninstall`" /><RegistryValue Root=`"HKCU`" Key=`"Software\ARTEX\Installer\$Architecture`" Name=`"$id`" Type=`"integer`" Value=`"1`" KeyPath=`"yes`" /></Component></DirectoryRef>")
+        $componentGuid = Get-ComponentGuid ('cleanup/' + $entry.Key)
+        [void]$xml.AppendLine("<DirectoryRef Id=`"$($entry.Value)`"><Component Id=`"$id`" Guid=`"$componentGuid`"><RemoveFolder Id=`"Remove$($entry.Value)`" On=`"uninstall`" /><RegistryValue Root=`"HKCU`" Key=`"Software\ARTEX\Installer\$Architecture`" Name=`"$(Escape-Xml ('cleanup/' + $entry.Key))`" Type=`"integer`" Value=`"1`" KeyPath=`"yes`" /></Component></DirectoryRef>")
     }
-    [void]$xml.AppendLine('<StandardDirectory Id="ProgramMenuFolder"><Directory Id="ARTEXMenuFolder" Name="ARTEX"><Component Id="StartShortcut" Guid="*"><Shortcut Id="ARTEXStart" Name="ARTEX" Description="Open ARTEX in your browser" Target="[SystemFolder]wscript.exe" Arguments="&quot;[INSTALLFOLDER]launch.vbs&quot;" WorkingDirectory="INSTALLFOLDER" /><RemoveFolder Id="RemoveARTEXMenu" On="uninstall" />')
+    $startGuid = Get-ComponentGuid 'shortcut/start-menu'
+    $desktopGuid = Get-ComponentGuid 'shortcut/desktop'
+    [void]$xml.AppendLine(('<StandardDirectory Id="ProgramMenuFolder"><Directory Id="ARTEXMenuFolder" Name="ARTEX"><Component Id="StartShortcut" Guid="{0}"><Shortcut Id="ARTEXStart" Name="ARTEX" Description="Open ARTEX in your browser" Target="[SystemFolder]wscript.exe" Arguments="&quot;[INSTALLFOLDER]launch.vbs&quot;" WorkingDirectory="INSTALLFOLDER" /><RemoveFolder Id="RemoveARTEXMenu" On="uninstall" />' -f $startGuid))
     [void]$xml.AppendLine('<Shortcut Id="ARTEXControl" Name="ARTEX Control" Description="Open the ARTEX local control page" Target="[SystemFolder]wscript.exe" Arguments="&quot;[INSTALLFOLDER]launch.vbs&quot; control" WorkingDirectory="INSTALLFOLDER" /><Shortcut Id="ARTEXStop" Name="Stop ARTEX" Description="Stop the ARTEX local application" Target="[SystemFolder]wscript.exe" Arguments="&quot;[INSTALLFOLDER]launch.vbs&quot; stop" WorkingDirectory="INSTALLFOLDER" />')
     [void]$xml.AppendLine("<RegistryValue Root=`"HKCU`" Key=`"Software\ARTEX\Installer\$Architecture`" Name=`"StartShortcut`" Type=`"integer`" Value=`"1`" KeyPath=`"yes`" /></Component></Directory></StandardDirectory>")
-    [void]$xml.AppendLine('<StandardDirectory Id="DesktopFolder"><Component Id="DesktopShortcut" Guid="*" Condition="DESKTOP_SHORTCUT = 1"><Shortcut Id="ARTEXDesktop" Name="ARTEX" Description="Open ARTEX in your browser" Target="[SystemFolder]wscript.exe" Arguments="&quot;[INSTALLFOLDER]launch.vbs&quot;" WorkingDirectory="INSTALLFOLDER" />')
+    [void]$xml.AppendLine(('<StandardDirectory Id="DesktopFolder"><Component Id="DesktopShortcut" Guid="{0}" Condition="DESKTOP_SHORTCUT = 1"><Shortcut Id="ARTEXDesktop" Name="ARTEX" Description="Open ARTEX in your browser" Target="[SystemFolder]wscript.exe" Arguments="&quot;[INSTALLFOLDER]launch.vbs&quot;" WorkingDirectory="INSTALLFOLDER" />' -f $desktopGuid))
     [void]$xml.AppendLine("<RegistryValue Root=`"HKCU`" Key=`"Software\ARTEX\Installer\$Architecture`" Name=`"DesktopShortcut`" Type=`"integer`" Value=`"1`" KeyPath=`"yes`" /></Component></StandardDirectory>")
     [void]$xml.AppendLine('<Feature Id="MainFeature" Title="ARTEX" Level="1"><ComponentRef Id="StartShortcut" /><ComponentRef Id="DesktopShortcut" />')
     foreach ($id in $components) { [void]$xml.AppendLine("<ComponentRef Id=`"$id`" />") }
