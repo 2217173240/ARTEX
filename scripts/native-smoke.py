@@ -11,6 +11,28 @@ import urllib.error
 import urllib.request
 
 
+def expect_forbidden(opener, url, headers):
+    """Require an HTTP 403, retrying only a reset before a response arrives."""
+    boundary = '/'.join(headers)
+    for attempt in range(1, 4):
+        request = urllib.request.Request(url, headers=headers, data=b'dsn=invalid', method='POST')
+        try:
+            with opener.open(request, timeout=5):
+                raise AssertionError(f'{boundary} boundary accepted')
+        except urllib.error.HTTPError as error:
+            with error:
+                if error.code != 403:
+                    raise AssertionError(f'{boundary} boundary returned HTTP {error.code}, expected 403')
+            return
+        except (ConnectionResetError, urllib.error.URLError) as error:
+            reason = error.reason if isinstance(error, urllib.error.URLError) else error
+            if not isinstance(reason, ConnectionResetError):
+                raise
+            if attempt == 3:
+                raise RuntimeError(f'{boundary} boundary received no HTTP response after 3 connection resets') from error
+            time.sleep(.1)
+
+
 def smoke(binary):
     binary = str(Path(binary).resolve())
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -40,12 +62,7 @@ def smoke(binary):
             with opener.open(url, timeout=5) as response:
                 assert b'PostgreSQL' in response.read()
             for headers in [{'Host': 'attacker.invalid'}, {'Origin': 'https://attacker.invalid'}]:
-                request = urllib.request.Request(url, headers=headers, data=b'dsn=invalid', method='POST')
-                try:
-                    opener.open(request, timeout=5)
-                    raise AssertionError('Host/Origin boundary accepted')
-                except urllib.error.HTTPError as error:
-                    assert error.code == 403, error.code
+                expect_forbidden(opener, url, headers)
         finally:
             run('stop')
         deadline = time.monotonic() + 10
