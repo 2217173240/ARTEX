@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/Autumn-27/artex/distribution"
 )
 
 // Database is the PostgreSQL connection config. Either set DSN directly, or set
@@ -30,7 +32,8 @@ type Config struct {
 	SkillDir string   `json:"skill_dir"`
 }
 
-// BaseDir is the directory that anchors all runtime artifacts (config.json and
+// BaseDir honors ARTEX_HOME, then the managed install's per-user data directory.
+// Portable builds use the executable directory for runtime artifacts (config.json and
 // the data/ store). It is the directory the running binary lives in, so a
 // distributed executable keeps its files next to itself on any OS (Windows,
 // Linux, …) regardless of the working directory it is launched from.
@@ -41,6 +44,14 @@ type Config struct {
 // current working directory so dev artifacts (data/, transcripts) and config
 // resolve against the project dir, not the throwaway binary's location.
 func BaseDir() string {
+	if home := strings.TrimSpace(os.Getenv("ARTEX_HOME")); home != "" {
+		return home
+	}
+	if distribution.Managed() {
+		if home, err := distribution.UserHome(); err == nil {
+			return home
+		}
+	}
 	exe, err := os.Executable()
 	if err != nil {
 		return "."
@@ -73,15 +84,19 @@ func isGoRunDir(dir string) bool {
 
 // Path returns the config file path. Resolution order:
 //  1. env ARTEX_CONFIG (explicit override)
-//  2. ./config.json in the current working directory (running from the project
+//  2. ARTEX_HOME/config.json, or the managed install's per-user config
+//  3. ./config.json in the current working directory (portable/source build,
 //     dir — robust no matter where `go run` placed the temp/cached binary)
-//  3. config.json next to the executable (a distributed binary keeps it beside)
+//  4. config.json next to the portable executable
 //
 // The first existing file wins. If none exist, the CWD path is returned so the
 // "not found" message points at the project dir the user most likely expected.
 func Path() string {
 	if v := strings.TrimSpace(os.Getenv("ARTEX_CONFIG")); v != "" {
 		return v
+	}
+	if distribution.Managed() || strings.TrimSpace(os.Getenv("ARTEX_HOME")) != "" {
+		return filepath.Join(BaseDir(), "config.json")
 	}
 	var candidates []string
 	if cwd, err := os.Getwd(); err == nil {

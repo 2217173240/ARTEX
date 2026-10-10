@@ -1,0 +1,145 @@
+name: native-packages
+on:
+  workflow_call:
+    inputs:
+      frontend-artifact:
+        required: true
+        type: string
+      version:
+        required: true
+        type: string
+      artifact-prefix:
+        required: true
+        type: string
+permissions:
+  contents: read
+cache-mode: read
+jobs:
+  native:
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: linux, arch: amd64, runner: ubuntu-24.04, channel: deb }
+          - { os: linux, arch: arm64, runner: ubuntu-24.04-arm, channel: deb }
+          - { os: darwin, arch: amd64, runner: macos-15-intel, channel: pkg }
+          - { os: darwin, arch: arm64, runner: macos-15, channel: pkg }
+          - { os: windows, arch: amd64, runner: windows-2022, channel: msi }
+          - { os: windows, arch: arm64, runner: windows-11-arm, channel: msi }
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version-file: go.mod
+          # Executed trigger-commit code must never restore or save dependency/build caches.
+          cache: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: ${{ inputs.frontend-artifact }}
+          path: server/webui/dist
+      - name: Build native-channel executable
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+          VERSION: ${{ inputs.version }}
+          CHANNEL: ${{ matrix.channel }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          suffix=""; if [ "$GOOS" = windows ]; then suffix=.exe; fi
+          go build -tags embedui -trimpath -ldflags "-s -w -X main.version=$VERSION -X github.com/Autumn-27/artex/distribution.BuildChannel=$CHANNEL" -o "dist/artex$suffix" ./cmd/artex
+          python=python3; if [ "$GOOS" = windows ]; then python=python; fi
+          "$python" scripts/native-smoke.py "dist/artex$suffix"
+      - name: Package and test DEB and RPM install lifecycle
+        if: matrix.os == 'linux'
+        env:
+          VERSION: ${{ inputs.version }}
+          ARCH: ${{ matrix.arch }}
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          for format in deb rpm; do
+            go build -tags embedui -trimpath -ldflags "-s -w -X main.version=$VERSION -X github.com/Autumn-27/artex/distribution.BuildChannel=$format" -o dist/artex ./cmd/artex
+            bash scripts/package-linux.sh --binary dist/artex --version "$VERSION" --arch "$ARCH" --format "$format" --outdir dist
+            bash scripts/package-linux.sh --binary dist/artex --version 0.0.0 --arch "$ARCH" --format "$format" --outdir previous
+            python3 packaging/linux/verify-package.py "dist/artex-$VERSION-linux-$ARCH.$format" "$ARCH"
+            image=ubuntu:24.04; if [ "$format" = rpm ]; then image=fedora:43; fi
+            docker run --rm -v "$PWD:/workspace:ro" -w /workspace "$image" bash packaging/linux/smoke-container.sh "$format" "/workspace/previous/artex-0.0.0-linux-$ARCH.$format" "/workspace/dist/artex-$VERSION-linux-$ARCH.$format"
+            # Exercise the installed entry point in a separate disposable container.
+            docker run --rm -e FORMAT="$format" -e PACKAGE="/workspace/dist/artex-$VERSION-linux-$ARCH.$format" -v "$PWD:/workspace:ro" -w /workspace "$image" bash -ec '
+              if [ "$FORMAT" = deb ]; then
+                apt-get update -qq; apt-get install -y --no-install-recommends python3 ca-certificates
+                dpkg -i "$PACKAGE"
+              else
+                dnf install -y python3
+                rpm -Uvh "$PACKAGE"
+              fi
+              python3 scripts/native-smoke.py /usr/bin/artex
+            '
+          done
+      - name: Package and validate unsigned PKG installation
+        if: matrix.os == 'darwin'
+        env:
+          VERSION: ${{ inputs.version }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          bash scripts/package-macos.sh --binary dist/artex --version "$VERSION" --arch "$ARCH" --outdir dist
+          package="dist/artex-$VERSION-darwin-$ARCH.pkg"
+          pkgutil --expand-full "$package" "$RUNNER_TEMP/pkg-expanded"
+          grep -q 'io.github.2217173240.artex' "$RUNNER_TEMP/pkg-expanded/Distribution"
+          test ! -e /Applications/ARTEX.app
+          bash scripts/package-macos.sh --binary dist/artex --version 0.0.0 --arch "$ARCH" --outdir previous
+          sentinel="$HOME/Library/Application Support/ARTEX/native-ci-preserve"
+          mkdir -p "$(dirname "$sentinel")"
+          echo preserve > "$sentinel"
+          sudo installer -pkg "previous/artex-0.0.0-darwin-$ARCH.pkg" -target /
+          sudo installer -pkg "$package" -target /
+          expected=x86_64; if [ "$ARCH" = arm64 ]; then expected=arm64; fi
+          test "$(lipo -archs /Applications/ARTEX.app/Contents/MacOS/artex)" = "$expected"
+          test -f /Applications/ARTEX.app/Contents/Resources/skills/api-recon/SKILL.md
+          python3 scripts/native-smoke.py /Applications/ARTEX.app/Contents/MacOS/artex
+          sudo rm -rf /Applications/ARTEX.app
+          sudo pkgutil --forget io.github.2217173240.artex
+          grep -Fx preserve "$sentinel"
+          rm "$sentinel"
+      - name: Package and validate unsigned MSI install, upgrade and uninstall
+        if: matrix.os == 'windows'
+        shell: pwsh
+        env:
+          VERSION: ${{ inputs.version }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          ./scripts/package-windows.ps1 -Binary dist/artex.exe -Version $env:VERSION -Architecture $env:ARCH -OutputDirectory dist
+          ./scripts/package-windows.ps1 -Binary dist/artex.exe -Version 0.0.0 -Architecture $env:ARCH -OutputDirectory previous
+          if ($env:ARCH -eq 'arm64') {
+            # ARM Windows supports x64, so exercise migration between both packages.
+            $env:CGO_ENABLED = '0'
+            $env:GOOS = 'windows'
+            $env:GOARCH = 'amd64'
+            go build -tags embedui -trimpath -ldflags "-s -w -X main.version=$env:VERSION -X github.com/Autumn-27/artex/distribution.BuildChannel=msi" -o cross/artex.exe ./cmd/artex
+            if ($LASTEXITCODE -ne 0) { throw 'Cross-architecture executable build failed.' }
+            ./scripts/package-windows.ps1 -Binary cross/artex.exe -Version 0.0.0 -Architecture amd64 -OutputDirectory cross
+            ./scripts/package-windows.ps1 -Binary cross/artex.exe -Version $env:VERSION -Architecture amd64 -OutputDirectory cross
+            ./packaging/windows/validate-msi.ps1 -Msi "dist/artex-$env:VERSION-windows-arm64.msi" -Architecture arm64 -PreviousMsi 'cross/artex-0.0.0-windows-amd64.msi' -PreviousMsiArchitecture amd64 -SameVersionMsi "cross/artex-$env:VERSION-windows-amd64.msi"
+          } else {
+            ./packaging/windows/validate-msi.ps1 -Msi "dist/artex-$env:VERSION-windows-$env:ARCH.msi" -Architecture $env:ARCH -PreviousMsi "previous/artex-0.0.0-windows-$env:ARCH.msi"
+          }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ inputs.artifact-prefix }}-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            dist/*.deb
+            dist/*.rpm
+            dist/*.pkg
+            dist/*.msi
+          if-no-files-found: error

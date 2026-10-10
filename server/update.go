@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Autumn-27/artex/distribution"
 	"github.com/Autumn-27/artex/selfupdate"
 )
 
@@ -210,19 +211,26 @@ func (h *updateHub) subscribe() (<-chan updateProgress, func()) {
 func (s *Server) updateCheck(w http.ResponseWriter, r *http.Request) {
 	current := BuildVersion
 	mode := "binary"
-	if selfupdate.InDocker() {
+	if distribution.Managed() {
+		mode = "managed"
+	} else if selfupdate.InDocker() {
 		mode = "docker"
 	}
 	boot := bootUpdateState()
 	out := map[string]any{
-		"current":     current,
-		"mode":        mode,
-		"os":          runtime.GOOS,
-		"arch":        runtime.GOARCH,
-		"has_backup":  selfupdate.HasBackup(),
-		"repo":        selfupdate.Repo,
-		"boot_notice": boot.Detail,
-		"rolled_back": boot.RolledBack,
+		"distribution_channel": distribution.Channel(),
+		"current":              current,
+		"mode":                 mode,
+		"os":                   runtime.GOOS,
+		"arch":                 runtime.GOARCH,
+		"has_backup":           selfupdate.HasBackup(),
+		"repo":                 selfupdate.Repo,
+		"boot_notice":          boot.Detail,
+		"rolled_back":          boot.RolledBack,
+	}
+
+	if distribution.Managed() {
+		out["upgrade_instructions"] = selfupdate.UpgradeInstructions()
 	}
 
 	// 顶栏提示走缓存（默认）；用户点"检查更新"时带 force=1 强制回源。
@@ -238,7 +246,10 @@ func (s *Server) updateCheck(w http.ResponseWriter, r *http.Request) {
 	latest := rel.TagName
 	out["latest"] = latest
 	out["notes"] = rel.Body
-	out["html_url"] = rel.HTMLURL
+	out["html_url"] = selfupdate.ReleaseURL(latest)
+	if distribution.Managed() {
+		out["release_url"] = selfupdate.ReleaseURL(latest)
+	}
 	if !rel.PublishedAt.IsZero() {
 		out["published_at"] = rel.PublishedAt.Format(time.RFC3339)
 	}
@@ -268,6 +279,10 @@ func (s *Server) updateCheck(w http.ResponseWriter, r *http.Request) {
 // 立刻返回 202，实际工作在后台 goroutine 上跑：整包下载可能要几分钟，
 // 挂在请求上会被反代超时掐断。进度走 /api/update/stream。
 func (s *Server) updateApply(w http.ResponseWriter, r *http.Request) {
+	if distribution.Managed() {
+		writeErr(w, http.StatusConflict, selfupdate.ErrManagedInstallation.Error())
+		return
+	}
 	current := BuildVersion
 
 	// 走缓存：确保装上的就是用户在界面上看到并确认的那个版本。
@@ -313,6 +328,10 @@ func (s *Server) updateApply(w http.ResponseWriter, r *http.Request) {
 
 // updateRollback 主动退回上一版本（换装前备份的 artex.old）。
 func (s *Server) updateRollback(w http.ResponseWriter, r *http.Request) {
+	if distribution.Managed() {
+		writeErr(w, http.StatusConflict, selfupdate.ErrManagedInstallation.Error())
+		return
+	}
 	if _, running := updHub.snapshot(); running {
 		writeErr(w, 409, "更新正在进行中，无法回滚")
 		return

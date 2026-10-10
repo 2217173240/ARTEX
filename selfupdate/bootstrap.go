@@ -12,6 +12,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/Autumn-27/artex/distribution"
 )
 
 // smokeEnv 让被冒烟测试拉起的子进程直接跳过 Bootstrap。
@@ -48,6 +50,9 @@ type State struct {
 //	② 只剩标记文件          → 说明刚换装完，累计一次尝试；连续失败够多次则回滚
 //	③ 什么都没有            → 正常启动
 func Bootstrap() (Action, State) {
+	if distribution.Managed() {
+		return Continue, State{}
+	}
 	if os.Getenv(smokeEnv) != "" {
 		return Continue, State{}
 	}
@@ -74,6 +79,9 @@ func Bootstrap() (Action, State) {
 // 下载损坏、架构选错、动态链接缺失这类问题。一旦放行一个跑不起来的二进制，
 // 守护脚本会不知疲倦地反复拉起它，而 Go 代码根本没机会运行，自动回滚也就无从谈起。
 func applyStaged(p Paths) (Action, State) {
+	if distribution.Managed() {
+		return Continue, State{}
+	}
 	m, _ := readMarker(p.Marker)
 
 	if err := verifyStaged(p); err != nil {
@@ -108,6 +116,9 @@ func applyStaged(p Paths) (Action, State) {
 // （配置不兼容、端口被占、DB 迁移炸了）这类故障；"根本无法 exec" 由换装前的
 // 冒烟测试挡住，两者合起来才是完整的。
 func confirmOrRollback(p Paths, m marker) (Action, State) {
+	if distribution.Managed() {
+		return Continue, State{}
+	}
 	m.Attempts++
 	if m.Attempts > maxAttempts {
 		if err := rollback(p); err != nil {
@@ -135,6 +146,9 @@ func confirmOrRollback(p Paths, m marker) (Action, State) {
 // 由 main 在 HTTP 监听起来之后延迟调用：活过这段时间才算数，否则标记留在原地，
 // 下次启动继续累计尝试次数，直到触发回滚。
 func Settle() {
+	if distribution.Managed() {
+		return
+	}
 	p, err := ResolvePaths()
 	if err != nil {
 		return
@@ -202,6 +216,9 @@ func smokeTest(bin string) error {
 // Unix 和 Windows 都允许 rename 一个正在运行的可执行文件（Windows 禁止的是删除和
 // 覆盖，rename 不在其列），所以这里不需要分平台，也不需要先停掉自己。
 func swap(p Paths) error {
+	if distribution.Managed() {
+		return ErrManagedInstallation
+	}
 	// Windows 的 rename 不会覆盖已存在的目标，上一轮升级留下的 .old 必须先清掉。
 	if err := os.Remove(p.Old); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("清理旧备份 %s: %w", p.Old, err)
@@ -222,6 +239,9 @@ func swap(p Paths) error {
 
 // rollback 把 swap 备份的旧版本换回来。
 func rollback(p Paths) error {
+	if distribution.Managed() {
+		return ErrManagedInstallation
+	}
 	if _, err := os.Stat(p.Old); err != nil {
 		return fmt.Errorf("没有可回滚的备份 %s: %w", p.Old, err)
 	}
@@ -240,6 +260,9 @@ func rollback(p Paths) error {
 // Rollback 是 /api/update/rollback 的实现：主动退回上一版本。
 // 只做换装，重启同样交给守护脚本（调用方随后以 ExitRestart 退出）。
 func Rollback() error {
+	if distribution.Managed() {
+		return ErrManagedInstallation
+	}
 	p, err := ResolvePaths()
 	if err != nil {
 		return err
@@ -270,6 +293,9 @@ func Rollback() error {
 
 // HasBackup 报告是否存在可回滚的上一版本，供前端决定要不要显示回滚按钮。
 func HasBackup() bool {
+	if distribution.Managed() {
+		return false
+	}
 	p, err := ResolvePaths()
 	if err != nil {
 		return false

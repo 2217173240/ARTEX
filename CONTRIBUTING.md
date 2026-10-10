@@ -64,9 +64,9 @@ npm audit --audit-level=high
 
 修改采集脚本依赖时，在 `skills/api-recon/scripts` 中执行 `npm ci --ignore-scripts` 和 `npm audit --audit-level=high`。运行时需要系统 Chromium；Puppeteer Core 不下载浏览器。CI 对该依赖树执行同样的安装和审计。
 
-本 fork 使用 `ghcr.io/2217173240/artex` 和本仓库的 GitHub Releases，正式版本及资产以本仓库 Releases 为准。发布流程将正式标签固定到实际 commit，确认它已合入默认分支，并要求该 commit 的 `quality` 成功；所有构建使用这一 commit，发布任务仅能读取缓存。维护者可通过 `workflow_dispatch` 输入同一个已存在标签重试未完成的发布，已公开 Release 不会被覆盖。
+本 fork 使用 `ghcr.io/2217173240/artex` 和本仓库的 GitHub Releases，正式版本及资产以本仓库 Releases 为准。发布流程将正式标签固定到实际 commit，确认它已合入默认分支，并要求该 commit 的 `quality` 成功；所有构建使用这一 commit，发布任务仅能读取缓存。维护者可在同一个已存在标签上手动重试未完成的发布，例如 `gh workflow run release.yml --ref v0.3.18 -f tag=v0.3.18`；工作流触发 commit 必须等于预检验证的标签 commit，已公开 Release 不会被覆盖。
 
-流水线先创建含五个平台 ZIP 和 `SHA256SUMS` 的草稿，再分别在原生 Linux AMD64 / ARM64 runner 上构建并测试镜像启动、版本和内嵌页面，将实际测试的镜像 digest 汇总为双架构清单。检查草稿资产及清单后写入版本与 `latest` 标签、附加 `IMAGE_DIGEST`，最后公开 Release。GHCR 使用仓库 `GITHUB_TOKEN`，无需 Docker Hub 凭据；首次创建的 GHCR 包默认私有，维护者还需在包设置中改为公开，并验证两个平台的匿名拉取。工具链升级应更新 Dockerfile 的版本，并通过镜像检查。
+流水线先在原生 runner 和隔离容器中验证安装包的安装、升级、移除和启动，再创建包含六个便携 ZIP、两个 Linux TAR.GZ、八个原生安装包（共 16 个资产）及 `SHA256SUMS` 的草稿。随后分别在原生 Linux AMD64 / ARM64 runner 上构建并测试镜像启动、版本和内嵌页面，将实际测试的镜像 digest 汇总为双架构清单。再次检查草稿资产、完整校验和及清单后写入版本与 `latest` 标签、附加 `IMAGE_DIGEST`，最后公开 Release。GHCR 使用仓库 `GITHUB_TOKEN`，无需 Docker Hub 凭据；首次创建的 GHCR 包默认私有，维护者还需在包设置中改为公开，并验证两个平台的匿名拉取。工具链升级应更新 Dockerfile 的版本，并通过镜像检查。
 
 安装或发布脚本修改可运行 `python3 -m unittest discover -s scripts -p '*test*.py'`，并检查相关 shell 脚本语法。ZIP 仅含运行文件，源码安装和更新脚本在源码仓库中使用。
 
@@ -83,3 +83,7 @@ PR 描述写清问题、最终行为、测试及限制。引用历史 issue、PR
 中文 / English 界面使用声明式 React locale，默认 `zh-CN`；只翻译应用拥有的界面文本，保留用户内容与原始证据。翻译字典沿用 hongvincent 的 PR193（`1368a9422de0e083f31e543b31e231730f1ba675`）并补充运行时键；约定及审计命令见 [i18n README](web/src/lib/i18n/README.md)。漏洞归并引入 RuoJi6（ji ruo）的源提交 `24d4726`，以带来源记录的 cherry-pick 落为 `121716a`，后续适配保留原报告和不可变证据。
 
 本轮还以带 `-x` 的 cherry-pick 引入 ji ruo 的 `7db7b71`（本 fork 为 `94c67dd`）；分组界面适配借鉴 `d36812b`、`ada09f6`、`012030b`、`aca6e9a`，额外访问认证借鉴 `04c8c54`、`ead58f0`，发布流程借鉴 Ruo 的实现并使用本 fork 的仓库和镜像命名空间。历史整理保留原报告只读，逐条记录根因判断，仅在当前统一报告和检查完整后完成；常规 Reporter 仍保留正常报告工具。
+
+## 原生发布包
+
+原生包与便携包使用不同的编译渠道，安装版不得直接替换系统安装文件。`.github/workflows/native-packages.yml` 在六种原生 runner 中验证包元数据、安装/升级/卸载与启动；所有个人目录使用隔离 fixture。打包只收集已跟踪的 skills 和明确的静态资源，不能包含本地配置、数据或生成依赖。维护发布流程时保留准确提交 quality、主分支 ancestry、完整包集合与镜像摘要验证。使用现有发布工作流创建新版本，勿修改已公开版本的包。

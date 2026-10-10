@@ -1,7 +1,5 @@
 "use client";
 
-import { useI18n } from "@/lib/i18n";
-
 import * as React from "react";
 
 import {
@@ -19,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { api, sseUrl } from "@/lib/api";
+import { useI18n } from "@/lib/i18n";
 import type { UpdateCheck, UpdateProgress } from "@/lib/types";
 
 /** 等待新版本上线的最长时间。一次升级要经过三次进程启动（暂存 → 换装 → 新版），
@@ -140,7 +139,7 @@ export function UpdateCard() {
   );
 
   const doUpdate = () => {
-    if (!info) return;
+    if (!info || info.mode === "managed") return;
     const from = info.current;
     const ok = window.confirm(
       `确定更新到 ${info.latest}？\n\n` +
@@ -164,7 +163,7 @@ export function UpdateCard() {
   };
 
   const doRollback = () => {
-    if (!info) return;
+    if (!info || info.mode === "managed") return;
     if (
       !window.confirm(
         uiText(
@@ -187,6 +186,9 @@ export function UpdateCard() {
       });
   };
 
+  const managed = info?.mode === "managed";
+  let installationLabel = info?.mode === "docker" ? "Docker" : uiText("独立程序");
+  if (managed) installationLabel = info?.distribution_channel?.toUpperCase() ?? uiText("安装包");
   const phase = progress?.phase;
   const showProgress = busy || restarting;
   // 只有下载阶段拿得到真实百分比（按 Content-Length 算）。校验/解压/等待重启都是
@@ -203,7 +205,9 @@ export function UpdateCard() {
           {uiText("版本与更新")}
         </CardTitle>
         <CardDescription>
-          {uiText("从 GitHub 检查并安装新版本。更新会重启程序，正在运行的任务会被中断。")}
+          {managed
+            ? uiText("检查新版本，并通过安装包或包管理器升级。")
+            : uiText("从 GitHub 检查并安装新版本。更新会重启程序，正在运行的任务会被中断。")}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -217,7 +221,7 @@ export function UpdateCard() {
               <Badge variant="outline" className="font-mono">
                 {info.os}/{info.arch}
               </Badge>
-              <Badge variant="outline">{info.mode === "docker" ? "Docker" : uiText("独立程序")}</Badge>
+              <Badge variant="outline">{installationLabel}</Badge>
             </>
           )}
           {info?.latest && (
@@ -240,6 +244,20 @@ export function UpdateCard() {
           )}
         </div>
 
+        {managed && (
+          <p className="text-xs text-muted-foreground">
+            {uiText(
+              "此版本由安装包管理。停止 ARTEX 后，使用对应系统和架构的新安装包升级；回滚也通过安装包管理器完成。个人数据保留在用户目录。",
+            )}
+            {info.distribution_channel === "deb" && (
+              <span className="block font-mono">sudo apt install ./&lt;package&gt;.deb</span>
+            )}
+            {info.distribution_channel === "rpm" && (
+              <span className="block font-mono">sudo dnf install ./&lt;package&gt;.rpm</span>
+            )}
+          </p>
+        )}
+
         {info?.boot_notice && (
           <p className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-400">
             <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0" />
@@ -259,7 +277,7 @@ export function UpdateCard() {
 
         {info && !info.comparable && info.reason && <p className="text-xs text-muted-foreground">{info.reason}</p>}
 
-        {info?.has_update && info.asset_available === false && (
+        {!managed && info?.has_update && info.asset_available === false && (
           <p className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 p-2 text-xs text-destructive">
             <TriangleAlertIcon className="mt-0.5 size-3.5 shrink-0" />
             {info.latest} {uiText("没有提供")} {info.os}/{info.arch} {uiText("的发布包（缺少")} {info.asset}
@@ -267,7 +285,7 @@ export function UpdateCard() {
           </p>
         )}
 
-        {info?.has_update && info.asset_available !== false && (
+        {!managed && info?.has_update && info.asset_available !== false && (
           <p className="text-xs text-muted-foreground">
             {uiText("将下载")} <span className="font-mono">{info.asset}</span>
             {info.size ? `（${humanSize(info.size)}）` : ""}
@@ -305,15 +323,26 @@ export function UpdateCard() {
             <RefreshCwIcon className={checking ? "size-4 animate-spin" : "size-4"} />
             {uiText("检查更新")}
           </Button>
-          <Button
-            size="sm"
-            onClick={doUpdate}
-            disabled={busy || restarting || !info?.has_update || info?.asset_available === false}
-          >
-            <DownloadIcon className="size-4" />
-            {info?.has_update ? uiText("更新到 {v0}", { v0: info.latest }) : uiText("立即更新")}
-          </Button>
-          {info?.has_backup && (
+          {managed ? (
+            info?.release_url && (
+              <Button size="sm" asChild>
+                <a href={info.release_url} target="_blank" rel="noreferrer">
+                  <ExternalLinkIcon className="size-4" />
+                  {uiText("获取安装包")}
+                </a>
+              </Button>
+            )
+          ) : (
+            <Button
+              size="sm"
+              onClick={doUpdate}
+              disabled={busy || restarting || !info?.has_update || info?.asset_available === false}
+            >
+              <DownloadIcon className="size-4" />
+              {info?.has_update ? uiText("更新到 {v0}", { v0: info.latest }) : uiText("立即更新")}
+            </Button>
+          )}
+          {!managed && info?.has_backup && (
             <Button variant="ghost" size="sm" onClick={doRollback} disabled={busy || restarting}>
               <RotateCcwIcon className="size-4" />
               {uiText("回滚到上一版本")}
@@ -321,12 +350,14 @@ export function UpdateCard() {
           )}
         </div>
 
-        <p className="text-xs text-muted-foreground">
-          {uiText("一键更新依赖守护脚本重启程序。请通过")} <span className="font-mono">start.sh</span>
-          {uiText("（Windows 为")}
-          <span className="font-mono"> start.bat</span>
-          {uiText("）启动 ARTEX；直接运行 artex 本体时，程序退出后不会被自动拉起。")}
-        </p>
+        {!managed && (
+          <p className="text-xs text-muted-foreground">
+            {uiText("一键更新依赖守护脚本重启程序。请通过")} <span className="font-mono">start.sh</span>
+            {uiText("（Windows 为")}
+            <span className="font-mono"> start.bat</span>
+            {uiText("）启动 ARTEX；直接运行 artex 本体时，程序退出后不会被自动拉起。")}
+          </p>
+        )}
       </CardContent>
     </Card>
   );

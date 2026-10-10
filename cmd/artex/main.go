@@ -7,6 +7,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/config"
+	"github.com/Autumn-27/artex/distribution"
 	"github.com/Autumn-27/artex/selfupdate"
 	"github.com/Autumn-27/artex/server"
 )
@@ -51,8 +53,14 @@ func main() {
 }
 
 func run() int {
+	if len(os.Args) > 1 && os.Args[1] == "launch" {
+		return runLauncher(os.Args[2:], os.Stdout, os.Stderr)
+	}
 	if len(os.Args) > 1 && os.Args[1] == "doctor" {
 		return runDoctor(os.Args[2:], os.Stdout)
+	}
+	if len(os.Args) == 1 && distribution.Managed() {
+		return runLauncher(nil, os.Stdout, os.Stderr)
 	}
 	var (
 		addr    = flag.String("addr", ":8787", "HTTP listen address")
@@ -97,6 +105,9 @@ func run() int {
 	defer stop()
 	ctx, shutdown := shutdownContext(sigCtx)
 	defer shutdown(agent.AbortShutdown)
+	if os.Getenv("ARTEX_LAUNCH_PARENT") == "1" {
+		go watchLaunchParent(ctx, shutdown, os.Stdin)
+	}
 
 	mgr, err := server.NewManager(*dataDir, *proxy)
 	if err != nil {
@@ -145,6 +156,15 @@ func run() int {
 	defer cancel()
 	_ = httpSrv.Shutdown(shutdownCtx)
 	return code
+}
+
+// The launcher holds the pipe's only write end. A supervisor crash closes it,
+// so its backend stops instead of becoming an unowned background process.
+func watchLaunchParent(ctx context.Context, shutdown context.CancelCauseFunc, parent io.Reader) {
+	_, _ = io.Copy(io.Discard, parent)
+	if ctx.Err() == nil {
+		shutdown(agent.AbortShutdown)
+	}
 }
 
 // shutdownContext deliberately does not derive from signalCtx. If it did, the

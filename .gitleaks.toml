@@ -54,3 +54,10 @@ regexes = [
   "(?m)^\\\tcfg := map\\[string\\]any\\{\"webhook\": \"https://example\\.com/hook\", \"secret\": \"SECtest123456\"\\}$",
   "(?m)^\\\tconst secret = \"https://oapi\\.dingtalk\\.com/robot/send\\?access_token=abcdef123456\"$",
 ]
+
+[[rules.allowlists]]
+description = "Runtime-generated child token concatenated with a constant parent flag; no literal credential"
+condition = "AND"
+regexTarget = "line"
+paths = ["(^|/)cmd/artex/launcher\\.go$"]
+regexes = ['(?m)^\t\t\t\tcmd\.Env = append\(launcherEnv\(home, os\.Environ\(\)\), "ARTEX_LAUNCH_TOKEN="\+childToken, "ARTEX_LAUNCH_PARENT=1"\)$']

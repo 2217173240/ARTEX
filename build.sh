@@ -8,6 +8,7 @@
 #   ARTEX_TARGET_OS=linux             One target OS in single-target mode.
 #   ARTEX_TARGET_ARCH=amd64           One target arch in single-target mode.
 #   ARTEX_TARGETS=linux/amd64,...     Comma-separated targets for multi-target mode.
+#   ARTEX_INSTALL_CHANNEL=portable    Installer channel: portable, msi, pkg, deb, rpm.
 #   ARTEX_BUILD_VERSION=v0.3.3        Version embedded in the binary and archive name.
 #   ARTEX_OUTPUT=/path/to/artex       Explicit binary path in single-target mode.
 #   ARTEX_OUTPUT_DIR=dist             Directory for default binary paths.
@@ -46,7 +47,7 @@ usage() {
 EOF
 }
 
-RELEASE_TARGETS_DEFAULT="linux/amd64,linux/arm64,darwin/amd64,darwin/arm64,windows/amd64"
+RELEASE_TARGETS_DEFAULT="linux/amd64,linux/arm64,darwin/amd64,darwin/arm64,windows/amd64,windows/arm64"
 ARTEX_RELEASE="${ARTEX_RELEASE:-0}"
 ARTEX_COMPRESS="${ARTEX_COMPRESS:-off}"
 ARTEX_PACKAGE="${ARTEX_PACKAGE:-0}"
@@ -99,6 +100,8 @@ if [ -z "${ARTEX_BUILD_VERSION:-}" ]; then
 fi
 # Release tags are commonly passed as v0.3.3; keep the binary version consistent.
 ARTEX_BUILD_VERSION="${ARTEX_BUILD_VERSION#v}"
+ARTEX_INSTALL_CHANNEL="${ARTEX_INSTALL_CHANNEL:-portable}"
+case "$ARTEX_INSTALL_CHANNEL" in portable|msi|pkg|deb|rpm) ;; *) die "未知安装渠道：$ARTEX_INSTALL_CHANNEL" ;; esac
 ARTEX_OUTPUT_DIR="${ARTEX_OUTPUT_DIR:-dist}"
 ARTEX_PACKAGE_DIR="${ARTEX_PACKAGE_DIR:-$ARTEX_OUTPUT_DIR}"
 ARTEX_UPX_ARGS="${ARTEX_UPX_ARGS:---best --lzma}"
@@ -220,7 +223,7 @@ build_target() {
   go build \
     -tags embedui \
     -trimpath \
-    -ldflags "-s -w -buildid= -X main.version=${ARTEX_BUILD_VERSION}" \
+    -ldflags "-s -w -buildid= -X main.version=${ARTEX_BUILD_VERSION} -X github.com/Autumn-27/artex/distribution.BuildChannel=${ARTEX_INSTALL_CHANNEL}" \
     -o "$output" \
     ./cmd/artex
 
