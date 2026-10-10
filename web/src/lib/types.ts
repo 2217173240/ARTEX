@@ -21,6 +21,7 @@ export interface Task {
   completed_unix?: number; // completed_at as unix seconds (0/undef if unfinished)
   last_activity_unix?: number; // unix seconds of the last activity (0/undef if none)
   paused?: boolean;
+  pause_origin?: "" | "manual" | "schedule";
   queued?: boolean;
   active?: boolean;
   in_flight?: number;
@@ -490,6 +491,9 @@ export interface FindingAsset {
 }
 
 export interface Finding {
+  reviewed_by?: string;
+  reviewed_at?: string;
+  reviewed_status?: FindingStatus;
   case_id?: string;
   traffic_count?: number;
   evidence_version?: number;

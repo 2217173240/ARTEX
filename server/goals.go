@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
@@ -133,6 +134,15 @@ func (s *Server) admitTaskLocked(t *Task, mode string, requirePaused, requireRun
 	}
 	defer s.engine.decInflight(t.ID)
 	lifecycle := t.lifecycleSnapshot()
+	if !requirePaused {
+		allowed, err := s.scheduleAdmissionAllowed(t.ID, time.Now())
+		if err != nil {
+			return false, err
+		}
+		if !allowed {
+			return false, fmt.Errorf("task is outside its calendar window")
+		}
+	}
 	if requireRunning && s.resolvedTaskStatus(t) != "running" {
 		return false, fmt.Errorf("task is no longer running")
 	}
@@ -158,11 +168,14 @@ func (s *Server) admitTaskLocked(t *Task, mode string, requirePaused, requireRun
 	// planner/workers are still live. Still compare-and-commit the persisted
 	// status: a concurrent terminal transition must win instead of being silently
 	// reported as a successful follow-up admission.
-	if !wasTerminal && !wasPaused && !wasQueued && s.engine.Started(t.ID) && (!enabled || ready) {
-		if err := s.m.ApplyTaskAdmission(t.ID, lifecycle.Status, lifecycle.Status, false, "resume", false); err != nil {
+	_, bootstrapping := s.engine.bootstrapping.Load(t.ID)
+	if !wasTerminal && !wasPaused && !wasQueued && (s.engine.Started(t.ID) || bootstrapping) && (!enabled || ready) {
+		if err := s.m.ApplyTaskAdmission(t.ID, lifecycle.Status, lifecycle.Status, false, "resume", false, lifecycle); err != nil {
 			return false, err
 		}
-		s.startAdmittedTask(t, "resume")
+		if !bootstrapping || s.engine.Started(t.ID) {
+			s.startAdmittedTask(t, "resume")
+		}
 		return false, nil
 	}
 
@@ -193,7 +206,7 @@ func (s *Server) admitTaskLocked(t *Task, mode string, requirePaused, requireRun
 	if wasTerminal {
 		status = "running"
 	}
-	if err := s.m.ApplyTaskAdmission(t.ID, lifecycle.Status, status, shouldQueue, mode, wasQueued); err != nil {
+	if err := s.m.ApplyTaskAdmission(t.ID, lifecycle.Status, status, shouldQueue, mode, wasQueued, lifecycle); err != nil {
 		if !requireRunning && !engineWasPaused && !wasPaused && !wasQueued {
 			s.engine.Resume(t)
 		}
@@ -233,8 +246,23 @@ func (s *Server) hasReadyQueuedTask(excludeID string) bool {
 }
 
 func (s *Server) startAdmittedTask(t *Task, mode string) {
+	if _, busy := s.engine.bootstrapping.Load(t.ID); busy {
+		// Run installs Started before its final synchronous graph check. A
+		// pause/resume may arrive while that bootstrap still owns this gate.
+		// Its loops already exist, so a valid resume must clear their barrier.
+		if s.engine.Started(t.ID) {
+			s.engine.Resume(t)
+			s.engine.startDeadlineCoordinator(s.ctx, t)
+			t.Notify()
+		}
+		return
+	}
 	if mode == "bootstrap" {
+		if _, loaded := s.engine.bootstrapping.LoadOrStore(t.ID, true); loaded {
+			return
+		}
 		if !s.engine.beginTaskOperation(t.ID) {
+			s.engine.bootstrapping.Delete(t.ID)
 			return
 		}
 		// A first-run task may have kept the Engine pause barrier while waiting
@@ -244,9 +272,30 @@ func (s *Server) startAdmittedTask(t *Task, mode string) {
 		if s.engine.IsPaused(t.ID) {
 			s.engine.Resume(t)
 		}
+		bootstrapCtx := s.engine.execContextFor(s.ctx, t.ID)
 		go func() {
 			defer s.engine.decInflight(t.ID)
 			s.startTaskEngine(t)
+			s.concMu.Lock()
+			defer s.concMu.Unlock()
+			s.engine.bootstrapping.Delete(t.ID)
+			// Completed/canceled server startup needs no recovery. This also
+			// keeps the canceled-context bootstrap helper usable without a
+			// Manager, as its existing unit-test contract requires.
+			if bootstrapCtx.Err() == nil || s.ctx.Err() != nil {
+				return
+			}
+			current, exists := s.m.Task(t.ID)
+			life := t.lifecycleSnapshot()
+			// If pause/resume happened before canceled decomposition drained,
+			// hand off to a fresh bootstrap only after the old one has stopped.
+			// A successful Run already owns its persistent execution loops.
+			if bootstrapCtx.Err() != nil && s.ctx.Err() == nil && exists && current == t && !life.Paused && !life.Queued && !isTerminalStatus(life.Status) && !s.engine.IsDeleting(t.ID) && !s.engine.Started(t.ID) {
+				allowed, err := s.scheduleAdmissionAllowed(t.ID, time.Now())
+				if err == nil && allowed {
+					s.startAdmittedTask(t, s.resumeAdmissionMode(t))
+				}
+			}
 		}()
 		return
 	}
@@ -261,6 +310,7 @@ func (s *Server) startAdmittedTask(t *Task, mode string) {
 func (s *Server) reconcileConcurrency() {
 	s.concMu.Lock()
 	defer s.concMu.Unlock()
+	s.reconcileCalendarLocked(time.Now())
 	enabled, limit := s.m.ConcurrencyLimit()
 
 	// A task whose provider chain becomes unavailable cannot do useful work and
@@ -334,6 +384,15 @@ func (s *Server) reconcileConcurrency() {
 		if lifecycle.Paused || (enabled && !s.engine.ReadyFor(task)) {
 			continue
 		}
+		allowed, err := s.scheduleAdmissionAllowed(task.ID, time.Now())
+		if err != nil {
+			log.Printf("[calendar] queue admission: %v", err)
+			continue
+		}
+		if !allowed {
+			_ = s.pauseTaskLocked(task, "schedule", agent.Causef("paused_by_schedule", "任务在日历窗口外暂停", "任务将在启用的日历窗口内自动继续"))
+			continue
+		}
 		mode := lifecycle.QueueMode
 		if mode != "bootstrap" && mode != "resume" {
 			mode = s.resumeAdmissionMode(task)
@@ -344,7 +403,7 @@ func (s *Server) reconcileConcurrency() {
 		if !s.engine.beginTaskOperation(task.ID) {
 			continue
 		}
-		if err := s.m.ApplyTaskAdmission(task.ID, lifecycle.Status, lifecycle.Status, false, mode, false); err != nil {
+		if err := s.m.ApplyTaskAdmission(task.ID, lifecycle.Status, lifecycle.Status, false, mode, false, lifecycle); err != nil {
 			s.engine.decInflight(task.ID)
 			continue
 		}
@@ -394,6 +453,9 @@ func (s *Server) createGoals(ctx context.Context, t *Task, emit func(db.Activity
 	goalRuntime := s.agentsForTask(t).runtime
 	decomposed := agent.DecomposeGoalsWithProvider(ctx, goalRuntime, s.m.dir, t.Goal, t.Description, as, t.Store, taskID, goalRuntime.nonStreaming(), goalRuntime.maxTokens(), emit)
 	s.engine.EndLLMCall(t.ID)
+	if ctx.Err() != nil {
+		return nil
+	}
 	for _, g := range decomposed {
 		if strings.TrimSpace(g.Text) != "" {
 			specs = append(specs, goalSpec{Text: g.Text, VulnClass: g.VulnClass})

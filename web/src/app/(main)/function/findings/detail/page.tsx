@@ -9,6 +9,7 @@ import { ArrowLeftIcon, ArrowUpRightIcon, ShieldAlertIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { CopyButton } from "@/components/copy-button";
+import { FindingLastReview, FindingNotesPanel } from "@/components/finding-notes-panel";
 import { FindingRetestPanel } from "@/components/finding-retest-panel";
 import { FindingTrafficPanel } from "@/components/finding-traffic-panel";
 import { Markdown } from "@/components/markdown";
@@ -115,7 +116,7 @@ function FindingDetailInner() {
       const prev = finding.status;
       setFinding({ ...finding, status: next });
       try {
-        const updated = await api.setFindingStatus(id, next);
+        const updated = await api.setFindingStatus(id, next, contextTaskId || undefined);
         setFinding(updated);
         toast.success(uiText("处理状态已改为「{v0}」", { v0: uiText(statusMeta("finding", next).label) }));
       } catch (e) {
@@ -123,7 +124,7 @@ function FindingDetailInner() {
         toast.error(uiText("更新失败：") + (e as Error).message);
       }
     },
-    [finding, id, uiText],
+    [finding, id, contextTaskId, uiText],
   );
 
   if (!finding) {
@@ -240,6 +241,7 @@ function FindingDetailInner() {
                 readOnly={finding.inherited}
                 onChanged={load}
               />
+              <FindingNotesPanel findingId={id} contextTask={contextTaskId || undefined} readOnly={finding.inherited} />
               {/* 证据下方：详细报告(Markdown 渲染) */}
               <Card>
                 <CardHeader className="flex-row items-center justify-between">
@@ -317,6 +319,12 @@ function FindingDetailInner() {
                     </Select>
                   )}
                 </FieldRow>
+
+                {finding.reviewed_at ? (
+                  <div className="py-2.5">
+                    <FindingLastReview finding={finding} />
+                  </div>
+                ) : null}
 
                 {/* 漏洞类型 */}
                 <FieldRow label={uiText("漏洞类型")}>

@@ -53,6 +53,11 @@ func (c *terminalAdmissionConn) ExecContext(_ context.Context, q string, a []dri
 	return driver.RowsAffected(1), nil
 }
 func (c *terminalAdmissionConn) QueryContext(_ context.Context, q string, _ []driver.NamedValue) (driver.Rows, error) {
+	// These terminal-lifecycle fixtures have no calendar memberships. Support
+	// only the scheduler's exact list query; unknown reads still fail loudly.
+	if strings.HasPrefix(q, "SELECT id,name,enabled,type,timezone,run_date,end_date,weekdays,start_time,end_time,created_at,updated_at,manual_until,") && strings.HasSuffix(q, " FROM task_schedules ORDER BY id") {
+		return &terminalAdmissionRows{values: make([]driver.Value, 14), done: true}, nil
+	}
 	if strings.Contains(q, "kind='intent' AND state='open'") && strings.HasPrefix(q, "SELECT id, kind, payload") {
 		if c.d.arrived != nil {
 			c.d.once.Do(func() { close(c.d.arrived); <-c.d.release })

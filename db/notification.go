@@ -555,3 +555,15 @@ func (d *DB) NotificationStatsSnapshot(ctx context.Context) (*NotificationStats,
 	}
 	return &s, nil
 }
+
+// SetFindingManualStatusTx records the last explicitly changed human triage
+// state. Automatic retests call SetFindingStatusTx and preserve this historical
+// snapshot. Same-status replay does not manufacture another review.
+func SetFindingManualStatusTx(ctx context.Context, tx *sql.Tx, id int64, status, actor string) (from string, found, changed, notified bool, err error) {
+	from, found, changed, notified, err = SetFindingStatusTx(ctx, tx, id, status)
+	if err != nil || !changed {
+		return
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE findings SET reviewed_by=$2, reviewed_at=now(), reviewed_status=$3 WHERE id=$1`, id, actor, status)
+	return
+}

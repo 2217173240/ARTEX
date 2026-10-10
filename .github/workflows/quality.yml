@@ -33,6 +33,8 @@ jobs:
     env:
       ARTEX_CONFIG: /dev/null
       ARTEX_REVIEW_LIVE_CONFIG: ""
+      ARTEX_NOTES_TEST_ADMIN_DSN: "postgres://artex_ci:fixture_only@127.0.0.1:5432/postgres?sslmode=disable"
+      ARTEX_CALENDAR_TEST_ADMIN_DSN: "postgres://artex_ci:fixture_only@127.0.0.1:5432/postgres?sslmode=disable"
       OPENAI_API_KEY: ""
       ANTHROPIC_API_KEY: ""
       ARTEX_LLM_PROVIDER: ""

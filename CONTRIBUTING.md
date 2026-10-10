@@ -50,6 +50,8 @@ docker stop artex-contrib-pg
 
 检查每个包的结果；脚本遇到失败后停止，修复后用新的 fixture 重跑。若中途退出，可手动执行 `docker stop artex-contrib-pg` 清理本段命令创建的容器。`TestLiveContextReview` 是显式连接私有模型配置的测试，不属于常规贡献验证。
 
+新增备注与日历 API 集成测试使用 `ARTEX_NOTES_TEST_ADMIN_DSN` 和 `ARTEX_CALENDAR_TEST_ADMIN_DSN` 指向本段隔离 PostgreSQL 的 `postgres` 数据库，测试自行创建并移除临时数据库；需要 fixture 角色具有创建数据库权限。CI 已配置这些变量。缺少变量时会明确跳过，不能视为已验证。不要指向用户数据库。
+
 前端检查与 CI 相同：
 
 ```bash
@@ -87,3 +89,5 @@ PR 描述写清问题、最终行为、测试及限制。引用历史 issue、PR
 ## 原生发布包
 
 原生包与便携包使用不同的编译渠道，安装版不得直接替换系统安装文件。`.github/workflows/native-packages.yml` 在六种原生 runner 中验证包元数据、安装/升级/卸载与启动；所有个人目录使用隔离 fixture。打包只收集已跟踪的 skills 和明确的静态资源，不能包含本地配置、数据或生成依赖。维护发布流程时保留准确提交 quality、主分支 ancestry、完整包集合与镜像摘要验证。使用现有发布工作流创建新版本，勿修改已公开版本的包。
+
+本轮同源功能改写及未采纳差异见 [fork 集成说明](docs/fork-integrations.md)，注明实际来源 commit，不将 fork 提交等同于未认证的原始 PR。

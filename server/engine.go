@@ -103,12 +103,13 @@ type Engine struct {
 
 	bc *Broadcaster // live activity pub/sub (SSE)
 
-	started  sync.Map // taskID -> bool, so Run is idempotent per task
-	lastAct  sync.Map // taskID -> int64 unix, last planner/worker activity (heartbeat)
-	llmCalls sync.Map // taskID -> *int64, actual planner/worker/main-agent LLM calls
-	paused   sync.Map // taskID -> bool, user-paused (planner + workers idle but loops alive)
-	deleting sync.Map // taskID -> bool, delete barrier (no new task-owned writes)
-	dropCnt  sync.Map // taskID -> *int64, running count of dropped (unpersistable) activity records
+	started       sync.Map // taskID -> bool, so Run is idempotent per task
+	bootstrapping sync.Map // taskID -> bool; goal decomposition admission before Run
+	lastAct       sync.Map // taskID -> int64 unix, last planner/worker activity (heartbeat)
+	llmCalls      sync.Map // taskID -> *int64, actual planner/worker/main-agent LLM calls
+	paused        sync.Map // taskID -> bool, user-paused (planner + workers idle but loops alive)
+	deleting      sync.Map // taskID -> bool, delete barrier (no new task-owned writes)
+	dropCnt       sync.Map // taskID -> *int64, running count of dropped (unpersistable) activity records
 
 	// deleteMu makes installing the delete barrier atomic with registering a new
 	// task operation. Once BeginDelete returns, every admitted writer is reflected
@@ -287,6 +288,7 @@ func (e *Engine) StopTask(taskID string) {
 	e.runtimeMu.Unlock()
 
 	e.started.Delete(taskID)
+	e.bootstrapping.Delete(taskID)
 	e.lastAct.Delete(taskID)
 	e.llmCalls.Delete(taskID)
 	e.paused.Delete(taskID)
@@ -1270,7 +1272,7 @@ func taskExecutionPaused(cause error) bool {
 		return false
 	}
 	switch abort.Code {
-	case "paused_by_user", "paused_by_orchestrator", "paused_on_reload", "paused_race_guard",
+	case "paused_by_user", "paused_by_orchestrator", "paused_by_schedule", "paused_on_reload", "paused_race_guard",
 		"queued_for_admission", "llm_unavailable_queued", "task_deleted":
 		return true
 	default:

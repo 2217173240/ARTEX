@@ -233,8 +233,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 			log.Printf("[retester] seed: %v", err)
 		}
 		go s.evidenceStore().RunGC(s.ctx)
-		s.seedPythonInterpreter()     // 自定义脚本工具:开机检测 python 解释器入库(仅空时)
-		go newScheduler(s).Run(s.ctx) // P3 触发器调度(定时/finding/目标事件),仅自定义 agent
+		s.seedPythonInterpreter() // 自定义脚本工具:开机检测 python 解释器入库(仅空时)
 		// 漏洞 IM 推送投递引擎。与 Scheduler 并列但独立：推送的实时性要求(3s)
 		// 与触发器的业务节奏不同，且两者失败互不牵连——推送卡住不该影响 agent 触发。
 		go newNotifier(s).Run(s.ctx)
@@ -260,7 +259,10 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		log.Printf("[engine] no LLM provider configured — engine idle until set via /api/llm or env")
 	}
 	s.restoreTaskRuntimes()
-	go s.reconcileConcurrency()
+	s.reconcileConcurrency()
+	if m.pg != nil {
+		go newScheduler(s).Run(s.ctx)
+	}
 	s.startTaskArchiveWorker()
 	s.wireInterceptReviewer() // LLM 兜底审批:未命中拦截规则的命令交给模型判定
 	return s
@@ -272,7 +274,11 @@ func (s *Server) restoreTaskRuntimes() {
 	m := s.m
 	// reload tasks persisted on disk so the task list survives a restart, and
 	// restore persisted paused state (so a task paused before restart stays paused).
-	for _, t := range m.LoadExisting() {
+	restored := m.LoadExisting()
+	s.concMu.Lock()
+	s.applySchedulesBeforeRestore(time.Now())
+	s.concMu.Unlock()
+	for _, t := range restored {
 		lifecycle := t.lifecycleSnapshot()
 		// clear stale 'running' intents from a prior crash/restart (no live worker
 		// owns them) so they re-claim instead of spinning forever in the UI.
@@ -657,6 +663,15 @@ func (s *Server) chatAgentRef() *agent.ChatAgent {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	s.registerSideRoutes(mux)
+	s.registerFindingNotes(mux)
+	mux.HandleFunc("GET /api/schedules", s.listSchedules)
+	mux.HandleFunc("POST /api/schedules", s.createSchedule)
+	mux.HandleFunc("GET /api/schedules/{id}", s.getSchedule)
+	mux.HandleFunc("PATCH /api/schedules/{id}", s.updateSchedule)
+	mux.HandleFunc("DELETE /api/schedules/{id}", s.deleteSchedule)
+	mux.HandleFunc("POST /api/schedules/{id}/pause", s.pauseSchedule)
+	mux.HandleFunc("POST /api/schedules/{id}/resume", s.resumeSchedule)
+	mux.HandleFunc("POST /api/schedules/{id}/run-now", s.runScheduleNow)
 
 	// Auth routes — exempt from JWT check (handled in requireAuth)
 	mux.HandleFunc("GET /api/auth/status", s.authStatus)
@@ -2329,82 +2344,38 @@ func (s *Server) findingLineage(w http.ResponseWriter, r *http.Request) {
 // mirrored onto the originating exploration node so the per-task view stays in
 // sync. Returns the updated finding DTO.
 func (s *Server) patchFinding(w http.ResponseWriter, r *http.Request) {
-	id := int64(atoiDefault(r.PathValue("id"), 0))
-	if id <= 0 {
-		writeErr(w, 400, "bad finding id")
+	id, contextTask, ok := findingManualIDs(w, r)
+	if !ok {
 		return
 	}
-	var body struct {
+	var body db.FindingManualPatch
+	// Keep JSON field names explicit so validation precedes every mutation.
+	var input struct {
 		Status    *string `json:"status"`
 		Severity  *string `json:"severity"`
 		Name      *string `json:"name"`
 		VulnClass *string `json:"vulnclass"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		writeErr(w, 400, "bad json: "+err.Error())
 		return
 	}
+	body = db.FindingManualPatch{Status: input.Status, Severity: input.Severity, Name: input.Name, VulnClass: input.VulnClass}
 	if body.Status == nil && body.Severity == nil && body.Name == nil && body.VulnClass == nil {
 		writeErr(w, 400, "nothing to update: provide status/severity/name/vulnclass")
 		return
 	}
-	if body.Status != nil {
-		if !db.ValidFindingStatus(*body.Status) {
-			writeErr(w, 400, "bad status: "+*body.Status)
-			return
-		}
-		// 走带通知的版本：状态更新与「状态变更推送事件」在同一事务里落库，
-		// 避免出现状态已改而推送事件丢失的窗口。事件登记失败不影响状态更新，
-		// 所以只记日志、不向调用方报错。
-		from, found, notified, err := s.m.pg.SetFindingStatusWithNotify(r.Context(), id, *body.Status)
-		if err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
-		if !found {
-			writeErr(w, 404, "finding not found")
-			return
-		}
-		if !notified && from != *body.Status {
-			log.Printf("[notify] 状态变更事件未登记 finding=%d %s→%s（状态已更新）", id, from, *body.Status)
-		}
+	if body.Status != nil && !db.ValidFindingStatus(*body.Status) {
+		writeErr(w, 400, "bad status: "+*body.Status)
+		return
 	}
-	if body.Severity != nil {
-		if !db.ValidSeverity(*body.Severity) {
-			writeErr(w, 400, "bad severity: "+*body.Severity)
-			return
-		}
-		n, err := s.m.pg.SetFindingSeverity(id, *body.Severity)
-		if err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
-		if n == 0 {
-			writeErr(w, 404, "finding not found")
-			return
-		}
+	if body.Severity != nil && !db.ValidSeverity(*body.Severity) {
+		writeErr(w, 400, "bad severity: "+*body.Severity)
+		return
 	}
-	if body.Name != nil {
-		n, err := s.m.pg.SetFindingName(id, strings.TrimSpace(*body.Name))
-		if err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
-		if n == 0 {
-			writeErr(w, 404, "finding not found")
-			return
-		}
-	}
-	if body.VulnClass != nil {
-		n, err := s.m.pg.SetFindingVulnClass(id, strings.TrimSpace(*body.VulnClass))
-		if err != nil {
-			writeErr(w, 500, err.Error())
-			return
-		}
-		if n == 0 {
-			writeErr(w, 404, "finding not found")
-			return
-		}
+	if err := s.m.pg.PatchFindingManual(r.Context(), id, contextTask, findingManualActor, body); err != nil {
+		findingManualError(w, err)
+		return
 	}
 	f, err := s.m.pg.GetFinding(id)
 	if err != nil {

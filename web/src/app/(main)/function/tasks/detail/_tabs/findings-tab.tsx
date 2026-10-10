@@ -8,6 +8,7 @@ import { ArrowDownIcon, ArrowUpIcon, ArrowUpRightIcon, ChevronRightIcon } from "
 import { toast } from "sonner";
 
 import { FindingCaseList } from "@/components/finding-case-list";
+import { FindingLastReview } from "@/components/finding-notes-panel";
 import { StatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
@@ -76,6 +77,7 @@ function Row({
               )}
             </div>
             <span className="truncate text-muted-foreground text-xs">{f.summary}</span>
+            <FindingLastReview finding={f} />
           </div>
         </button>
         <Badge variant="outline">
@@ -183,14 +185,33 @@ function FindingsTabInner({ taskId }: { taskId: string }) {
       const prev = f.status;
       setFindings((cur) => cur.map((x) => (x.id === f.id ? { ...x, status: next } : x)));
       try {
-        await api.setFindingStatus(f.finding_id, next);
+        const updated = await api.setFindingStatus(f.finding_id, next, taskId);
+        requestVersion.current++;
+        // Task rows use exploration node IDs; PATCH returns a standalone finding DTO.
+        // Refresh editable metadata without replacing this row's identity or provenance.
+        setFindings((cur) =>
+          cur.map((x) =>
+            x.id === f.id
+              ? {
+                  ...x,
+                  name: updated.name,
+                  vulnclass: updated.vulnclass,
+                  severity: updated.severity,
+                  status: updated.status,
+                  reviewed_by: updated.reviewed_by,
+                  reviewed_at: updated.reviewed_at,
+                  reviewed_status: updated.reviewed_status,
+                }
+              : x,
+          ),
+        );
         toast.success(uiText("已标记为「{v0}」", { v0: uiText(statusMeta("finding", next).label) }));
       } catch (e) {
         setFindings((cur) => cur.map((x) => (x.id === f.id ? { ...x, status: prev } : x)));
         toast.error(uiText("更新失败：") + (e as Error).message);
       }
     },
-    [uiText],
+    [taskId, uiText],
   );
 
   const items = findings

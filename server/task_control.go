@@ -102,37 +102,12 @@ func (s *Server) applyTaskControlWithCause(t *Task, action string, pauseCause er
 	case "pause":
 		s.concMu.Lock()
 		defer s.concMu.Unlock()
-		current, exists := s.m.Task(t.ID)
-		if !exists || current != t || s.engine.IsDeleting(t.ID) {
-			return out, fmt.Errorf("任务正在删除，无法控制")
-		}
-		if !s.engine.beginTaskOperation(t.ID) {
-			return out, fmt.Errorf("任务正在删除，无法控制")
-		}
-		defer s.engine.decInflight(t.ID)
-		lifecycle := t.lifecycleSnapshot()
-		if isTerminalStatus(lifecycle.Status) {
-			return out, fmt.Errorf("终态任务不能执行暂停")
-		}
-		if lifecycle.Paused {
-			return out, fmt.Errorf("任务已经暂停")
-		}
-		wasQueued := lifecycle.Queued
-		wasEnginePaused := s.engine.IsPaused(t.ID)
 		if pauseCause == nil {
 			pauseCause = agent.AbortPausedByUser
 		}
-		s.engine.Pause(t.ID, pauseCause)
-		if err := s.m.ApplyTaskPause(t.ID); err != nil {
-			if !wasEnginePaused && !wasQueued {
-				s.engine.Resume(t)
-			}
+		if err := s.pauseTaskLocked(t, "manual", pauseCause); err != nil {
 			return out, err
 		}
-		// Main Agent is independently cancellable. Only cancel its current turn
-		// after the persistent pause commits, so a failed control request is fully
-		// compensated and does not lose an otherwise valid conversation turn.
-		s.cancelTaskChat(t.ID, agent.AbortChatPausedWithTask)
 		out.Paused, out.Status = true, "paused"
 		go s.reconcileConcurrency()
 	case "resume":

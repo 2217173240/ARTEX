@@ -238,6 +238,15 @@ function pageHarness(view = "asset", { deferAssetTree = false, storage = new Map
       )?.value,
     caseRows: () => find("FindingsTable").caseRows,
     rows: () => Array.from(find("FindingsTable").items, (finding) => finding.finding_id),
+    findingRows: () => find("FindingsTable").items,
+    async changeStatus(id, status) {
+      const table = find("FindingsTable");
+      table.onStatusChange(
+        table.items.find((finding) => finding.finding_id === id),
+        status,
+      );
+      await flush();
+    },
     selected: () => [...find("FindingsTable").selectedIds],
     async bulkStatus(status) {
       find("Select", (props) => props.value === "").onValueChange(status);
@@ -964,4 +973,92 @@ test("raw reports stay flat while asset and task table feeds request folders wit
   assert.equal(task.requests[0].originalRows, true);
   await task.resolve(0, [folder], 1);
   assert.equal(task.caseRows()[0].case.id, "42");
+});
+
+test("single status mutation applies returned manual review metadata before a refresh completes", async () => {
+  const page = pageHarness("flat");
+  await page.flush();
+  await page.resolve(0, [finding("1")], 1);
+  await page.changeStatus("1", "confirmed");
+  page.statusUpdates[0].resolve({
+    status: "confirmed",
+    reviewed_by: "ARTEX (shared admin)",
+    reviewed_at: "2026-10-10T01:00:00Z",
+    reviewed_status: "confirmed",
+  });
+  await page.flush();
+  const row = page.findingRows()[0];
+  assert.equal(row.reviewed_by, "ARTEX (shared admin)");
+  assert.equal(row.reviewed_status, "confirmed");
+  assert.equal(row.reviewed_at, "2026-10-10T01:00:00Z");
+});
+
+test("bulk status mutation applies each returned review snapshot immediately", async () => {
+  const page = pageHarness("flat");
+  await page.flush();
+  await page.resolve(0, [finding("1"), finding("2")], 2);
+  await page.selectFinding("1");
+  await page.selectFinding("2");
+  await page.bulkStatus("confirmed");
+  page.statusUpdates[0].resolve({
+    status: "confirmed",
+    reviewed_by: "ARTEX (shared admin)",
+    reviewed_at: "2026-10-10T01:00:00Z",
+    reviewed_status: "confirmed",
+  });
+  await page.flush();
+  assert.equal(page.findingRows()[0].reviewed_status, "confirmed");
+  assert.equal(page.findingRows()[0].reviewed_at, "2026-10-10T01:00:00Z");
+  assert.equal(page.findingRows()[1].reviewed_status, undefined);
+  page.statusUpdates[1].resolve({
+    status: "confirmed",
+    reviewed_by: "ARTEX (shared admin)",
+    reviewed_at: "2026-10-10T02:00:00Z",
+    reviewed_status: "confirmed",
+  });
+  await page.flush();
+  assert.equal(page.findingRows()[1].reviewed_at, "2026-10-10T02:00:00Z");
+});
+
+test("a stale poll cannot erase a single status response's manual review snapshot", async () => {
+  const page = pageHarness("flat");
+  await page.flush();
+  await page.resolve(0, [finding("1")], 1);
+  await page.poll();
+  await page.changeStatus("1", "confirmed");
+  page.statusUpdates[0].resolve({
+    status: "confirmed",
+    reviewed_by: "ARTEX (shared admin)",
+    reviewed_at: "2026-10-10T01:00:00Z",
+    reviewed_status: "confirmed",
+  });
+  await page.flush();
+  await page.resolve(1, [finding("1")], 1);
+  assert.equal(page.findingRows()[0].reviewed_status, "confirmed");
+});
+
+test("a stale poll cannot erase early bulk status results while later records are pending", async () => {
+  const page = pageHarness("flat");
+  await page.flush();
+  await page.resolve(0, [finding("1"), finding("2")], 2);
+  await page.poll();
+  await page.selectFinding("1");
+  await page.selectFinding("2");
+  await page.bulkStatus("confirmed");
+  page.statusUpdates[0].resolve({
+    status: "confirmed",
+    reviewed_by: "ARTEX (shared admin)",
+    reviewed_at: "2026-10-10T01:00:00Z",
+    reviewed_status: "confirmed",
+  });
+  await page.flush();
+  await page.resolve(1, [finding("1"), finding("2")], 2);
+  assert.equal(page.findingRows()[0].reviewed_status, "confirmed");
+  page.statusUpdates[1].resolve({
+    status: "confirmed",
+    reviewed_by: "ARTEX (shared admin)",
+    reviewed_at: "2026-10-10T02:00:00Z",
+    reviewed_status: "confirmed",
+  });
+  await page.flush();
 });

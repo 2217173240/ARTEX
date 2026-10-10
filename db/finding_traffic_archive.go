@@ -75,11 +75,60 @@ func normalizeArchivedFindingVersions(raw json.RawMessage) (json.RawMessage, err
 		return nil, err
 	}
 	for _, row := range rows {
+		if row == nil {
+			return nil, errors.New("archived finding row must be an object")
+		}
 		for _, key := range []string{"evidence_version", "report_evidence_version"} {
 			if row[key] == nil {
 				row[key] = 0
 			}
 		}
+		for _, key := range []string{"reviewed_by", "reviewed_status"} {
+			if row[key] == nil {
+				row[key] = ""
+			}
+		}
 	}
 	return json.Marshal(rows)
+}
+
+// Notes are private task history. Preserve their IDs and metadata, and require
+// each link to name a finding from this package before inserting any notes.
+func restoreFindingNotesTx(tx *sql.Tx, snapshot *TaskArchiveSnapshot) error {
+	findings, err := decodeArchiveRows(snapshot.Tables["findings"])
+	if err != nil {
+		return err
+	}
+	allowed := make(map[int64]bool, len(findings))
+	for _, row := range findings {
+		id, ok := jsonInt64(row["id"])
+		taskID, owned := jsonInt64(row["task_id"])
+		if !ok || id <= 0 || !owned || taskID != snapshot.TaskID {
+			return errors.New("archived finding task mismatch")
+		}
+		allowed[id] = true
+	}
+	rows, err := decodeArchiveRows(snapshot.Tables["finding_notes"])
+	if err != nil {
+		return err
+	}
+	seen := make(map[int64]bool, len(rows))
+	for _, row := range rows {
+		id, ok := jsonInt64(row["id"])
+		findingID, validFinding := jsonInt64(row["finding_id"])
+		if !ok || id <= 0 || seen[id] {
+			return errors.New("invalid or duplicate archived note ID")
+		}
+		if !validFinding || !allowed[findingID] {
+			return errors.New("note references finding outside archived task")
+		}
+		seen[id] = true
+	}
+	if err := insertArchiveRows(tx, "finding_notes", snapshot.Tables["finding_notes"]); err != nil {
+		return err
+	}
+	if len(rows) > 0 {
+		_, err = tx.Exec(`SELECT setval(pg_get_serial_sequence('finding_notes','id'), GREATEST((SELECT COALESCE(max(id),1) FROM finding_notes), (SELECT last_value FROM finding_notes_id_seq)))`)
+	}
+	return err
 }
