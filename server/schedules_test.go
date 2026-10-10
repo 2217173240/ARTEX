@@ -671,12 +671,27 @@ func TestCalendarCanceledBootstrapResumesPersistedGoals(t *testing.T) {
 		t.Fatal(w.Body.String())
 	}
 	release()
-	deadline := time.Now().Add(3 * time.Second)
-	for !s.engine.Started(task.ID) && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	if !s.engine.Started(task.ID) {
-		t.Fatal("persisted goals were decomposed again instead of resuming engine")
+	// Started is installed inside Engine.Run before its synchronous graph query
+	// returns. Observe admission under concMu so this waits for the subsequent
+	// Resume as well, rather than asserting against that intermediate marker.
+	timer := time.NewTimer(3 * time.Second)
+	defer timer.Stop()
+	poll := time.NewTicker(time.Millisecond)
+	defer poll.Stop()
+	admitted := false
+	for !admitted {
+		if s.concMu.TryLock() {
+			admitted = s.engine.Started(task.ID) && !s.engine.IsPaused(task.ID)
+			s.concMu.Unlock()
+		}
+		if admitted {
+			break
+		}
+		select {
+		case <-timer.C:
+			t.Fatal("persisted-goal admission did not complete")
+		case <-poll.C:
+		}
 	}
 	if s.engine.IsPaused(task.ID) || calls.Load() != 2 {
 		t.Fatalf("persisted-goal resume: paused=%v providerCalls=%d", s.engine.IsPaused(task.ID), calls.Load())
