@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"net"
 	"net/http"
 	"net/url"
@@ -416,7 +415,8 @@ func launcherServe(home string, stdout, stderr io.Writer) int {
 				}
 				cmd := exec.Command(exe, "-addr", addr, "-proxy", proxy, "-data", filepath.Join(home, "data"))
 				childToken := launcherToken()
-				cmd.Env = append(launcherEnv(home, os.Environ()), "ARTEX_LAUNCH_TOKEN="+childToken, "ARTEX_LAUNCH_PARENT=1")
+				cmd.Env = append(launcherEnv(home, os.Environ()), "ARTEX_LAUNCH_TOKEN="+childToken)
+				cmd.Env = append(cmd.Env, "ARTEX_LAUNCH_PARENT=1")
 				parentRead, parentWrite, pipeErr := os.Pipe()
 				if pipeErr != nil {
 					log.Close()
@@ -589,59 +589,6 @@ func launcherWriteConfig(path, dsn string) error {
 	}
 	return os.Link(f.Name(), path)
 }
-func launcherSeedSkills(src, dst string) error {
-	if _, e := os.Stat(src); os.IsNotExist(e) {
-		return nil
-	}
-	return filepath.WalkDir(src, func(path string, d fs.DirEntry, e error) error {
-		if e != nil {
-			return e
-		}
-		if d.Type()&os.ModeSymlink != 0 {
-			return nil
-		}
-		rel, e := filepath.Rel(src, path)
-		if e != nil {
-			return e
-		}
-		target := filepath.Join(dst, rel)
-		if d.IsDir() {
-			if st, e := os.Lstat(target); e == nil && st.Mode()&os.ModeSymlink != 0 {
-				return filepath.SkipDir
-			}
-			return os.MkdirAll(target, 0700)
-		}
-		if !d.Type().IsRegular() {
-			return nil
-		}
-		in, e := os.Open(path)
-		if e != nil {
-			return e
-		}
-		defer in.Close()
-		out, e := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-		if os.IsExist(e) {
-			return nil
-		}
-		if e != nil {
-			return e
-		}
-		_, e = io.Copy(out, in)
-		if e == nil {
-			if stat, err := in.Stat(); err != nil {
-				e = err
-			} else {
-				e = out.Chmod(0600 | stat.Mode()&0100)
-			}
-		}
-		ce := out.Close()
-		if e != nil {
-			return e
-		}
-		return ce
-	})
-}
-
 func launcherSourceSkills(exe string) string {
 	candidates := []string{filepath.Join(filepath.Dir(exe), "skills"), filepath.Join(filepath.Dir(exe), "..", "Resources", "skills")}
 	if runtime.GOOS == "linux" {

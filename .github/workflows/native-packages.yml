@@ -122,7 +122,19 @@ jobs:
         run: |
           ./scripts/package-windows.ps1 -Binary dist/artex.exe -Version $env:VERSION -Architecture $env:ARCH -OutputDirectory dist
           ./scripts/package-windows.ps1 -Binary dist/artex.exe -Version 0.0.0 -Architecture $env:ARCH -OutputDirectory previous
-          ./packaging/windows/validate-msi.ps1 -Msi "dist/artex-$env:VERSION-windows-$env:ARCH.msi" -Architecture $env:ARCH -PreviousMsi "previous/artex-0.0.0-windows-$env:ARCH.msi"
+          if ($env:ARCH -eq 'arm64') {
+            # ARM Windows supports x64, so exercise migration between both packages.
+            $env:CGO_ENABLED = '0'
+            $env:GOOS = 'windows'
+            $env:GOARCH = 'amd64'
+            go build -tags embedui -trimpath -ldflags "-s -w -X main.version=$env:VERSION -X github.com/Autumn-27/artex/distribution.BuildChannel=msi" -o cross/artex.exe ./cmd/artex
+            if ($LASTEXITCODE -ne 0) { throw 'Cross-architecture executable build failed.' }
+            ./scripts/package-windows.ps1 -Binary cross/artex.exe -Version 0.0.0 -Architecture amd64 -OutputDirectory cross
+            ./scripts/package-windows.ps1 -Binary cross/artex.exe -Version $env:VERSION -Architecture amd64 -OutputDirectory cross
+            ./packaging/windows/validate-msi.ps1 -Msi "dist/artex-$env:VERSION-windows-arm64.msi" -Architecture arm64 -PreviousMsi 'cross/artex-0.0.0-windows-amd64.msi' -PreviousMsiArchitecture amd64 -SameVersionMsi "cross/artex-$env:VERSION-windows-amd64.msi"
+          } else {
+            ./packaging/windows/validate-msi.ps1 -Msi "dist/artex-$env:VERSION-windows-$env:ARCH.msi" -Architecture $env:ARCH -PreviousMsi "previous/artex-0.0.0-windows-$env:ARCH.msi"
+          }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: ${{ inputs.artifact-prefix }}-${{ matrix.os }}-${{ matrix.arch }}

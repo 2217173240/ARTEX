@@ -50,11 +50,12 @@ try {
     & dotnet tool install wix --version 4.0.6 --tool-path $toolPath --configfile $nugetConfig --add-source $feed
     if ($LASTEXITCODE -ne 0) { throw 'WiX tool installation failed.' }
     function Escape-Xml([string]$value) { [System.Security.SecurityElement]::Escape($value) }
-    $upgradeCode = if ($Architecture -eq 'amd64') { 'E96F624E-6FB5-4F10-9DBD-168C3D34DC48' } else { 'B8F78FAD-E689-4167-9A3D-3F7259613933' }
+    # One installation path and shortcut set means one upgrade family across architectures.
+    $upgradeCode = 'E96F624E-6FB5-4F10-9DBD-168C3D34DC48'
     $xml = [Text.StringBuilder]::new()
     [void]$xml.AppendLine('<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">')
     [void]$xml.AppendLine("<Package Name=`"ARTEX`" Manufacturer=`"ARTEX`" Version=`"$Version`" Language=`"1033`" UpgradeCode=`"$upgradeCode`" Scope=`"perUser`" InstallerVersion=`"500`">")
-    [void]$xml.AppendLine('<MajorUpgrade DowngradeErrorMessage="A newer ARTEX version is already installed." Schedule="afterInstallInitialize" />')
+    [void]$xml.AppendLine('<MajorUpgrade AllowSameVersionUpgrades="yes" DowngradeErrorMessage="A newer ARTEX version is already installed." Schedule="afterInstallInitialize" />')
     [void]$xml.AppendLine('<MediaTemplate EmbedCab="yes" /><Property Id="DESKTOP_SHORTCUT" Value="0" />')
     [void]$xml.AppendLine('<StandardDirectory Id="LocalAppDataFolder"><Directory Id="ProgramsFolder" Name="Programs"><Directory Id="INSTALLFOLDER" Name="ARTEX">')
     $directories = @{ '' = 'INSTALLFOLDER' }

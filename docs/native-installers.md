@@ -43,7 +43,7 @@ Windows 也可在 PowerShell 执行：
 | macOS | `~/Library/Application Support/ARTEX` |
 | Linux | `$XDG_DATA_HOME/artex`，未设置时为 `~/.local/share/artex` |
 
-目录保存 `config.json`、运行数据、日志和可编辑 skills；已有文件及用户修改会保留。`ARTEX_HOME` 可指定独立目录，`ARTEX_CONFIG` 可明确指定已有配置。安装包仅维护程序和随附资源，卸载不删除个人目录或 PostgreSQL 数据。
+目录保存 `config.json`、运行数据、日志和可编辑 skills。启动器记录已安装 skill 文件的内容哈希及权限：升级时，只更新或移除仍与上次随附版本一致的文件；用户编辑、新增的文件和符号链接保持不变，主动删除的文件也不会恢复。新随附文件仅在目标不存在时安装，未记录在清单中的旧文件也会保留。`ARTEX_HOME` 可指定独立目录，`ARTEX_CONFIG` 可明确指定已有配置。安装包仅维护程序和随附资源，卸载不删除个人目录或 PostgreSQL 数据。
 
 安装版的「检查更新」提供本仓库的安装包入口。先停止 ARTEX，再运行同系统/架构的新安装器，或用 apt/dnf 安装新包。安装版不直接替换系统安装文件；便携 ZIP/TAR.GZ 的更新仍由现有守护启动脚本和二进制更新器处理。
 

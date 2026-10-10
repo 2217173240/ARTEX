@@ -12,7 +12,9 @@ Upgrading or uninstalling the application preserves this data.
 To stop the local app explicitly, run in PowerShell:
   & "$env:LOCALAPPDATA\Programs\ARTEX\artex.exe" launch stop
 
-Install a newer MSI to upgrade. Older versions are blocked. To create an
+Install a newer MSI to upgrade. Older versions are blocked.
+On Windows ARM64, switching between the x64 and ARM64 packages of the same
+version replaces the installed package; ARTEX has one installation per user. To create an
 optional desktop shortcut, pass DESKTOP_SHORTCUT=1 to msiexec during install.
 Uninstall through Windows Settings > Apps, or msiexec /x <installer.msi>.
 
