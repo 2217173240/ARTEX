@@ -18,6 +18,7 @@ import {
 
 import { CopyButton } from "@/components/copy-button";
 import { FindingCaseMembers, FindingSeverityCounts } from "@/components/finding-case-list";
+import { FindingLastReview } from "@/components/finding-notes-panel";
 import { Markdown } from "@/components/markdown";
 import { StatusBadge } from "@/components/status-badge";
 import {
@@ -343,6 +344,7 @@ export function FindingsTable({
                   ) : (
                     <StatusBadge domain="finding" value={f.status} dot />
                   )}
+                  <FindingLastReview finding={f} />
                 </TableCell>
                 <TableCell>
                   {f.task_id ? (

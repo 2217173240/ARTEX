@@ -38,6 +38,7 @@ type Task struct {
 	CreatedAt    int64  `json:"created_at"`
 	CompletedAt  int64  `json:"completed_at,omitempty"` // 进入终态的 unix 秒;0=未完成
 	Paused       bool   `json:"paused"`
+	PauseOrigin  string `json:"pause_origin,omitempty"`
 	Queued       bool   `json:"queued"` // 因并发上限被挂起、等待空位自动启动;true=尚未开跑
 	// QueuedAt is an internal Unix-nanosecond ordering key. It is deliberately
 	// finer than CreatedAt so several tasks enqueued in the same second retain
@@ -82,6 +83,7 @@ type taskLifecycleState struct {
 	PinnedAt      int64
 	Status        string
 	Paused        bool
+	PauseOrigin   string
 	Queued        bool
 	QueuedAt      int64
 	QueueMode     string
@@ -109,6 +111,7 @@ func (t *Task) lifecycleSnapshotLocked() taskLifecycleState {
 		PinnedAt:      t.PinnedAt,
 		Status:        t.Status,
 		Paused:        t.Paused,
+		PauseOrigin:   t.PauseOrigin,
 		Queued:        t.Queued,
 		QueuedAt:      t.QueuedAt,
 		QueueMode:     t.QueueMode,
@@ -133,6 +136,7 @@ func (t *Task) updateLifecycle(update func(*taskLifecycleState)) {
 	t.PinnedAt = state.PinnedAt
 	t.Status = state.Status
 	t.Paused = state.Paused
+	t.PauseOrigin = state.PauseOrigin
 	t.Queued = state.Queued
 	t.QueuedAt = state.QueuedAt
 	t.QueueMode = state.QueueMode
@@ -834,7 +838,7 @@ func taskFromPG(pt *pgdb.Task, store *pgdb.ExplorationStore, ic *intercept.Inter
 		Name:       pt.Name,
 		CategoryID: cloneInt64Ptr(pt.CategoryID), CategoryName: pt.CategoryName,
 		PinnedAt:    unixOrZero(pt.PinnedAt),
-		Description: pt.Description, Goal: pt.Goal, CreatedAt: pt.CreatedAt.Unix(), Paused: pt.Paused, Queued: pt.Queued,
+		Description: pt.Description, Goal: pt.Goal, CreatedAt: pt.CreatedAt.Unix(), Paused: pt.Paused, PauseOrigin: pt.PauseOrigin, Queued: pt.Queued,
 		QueuedAt: unixNanoOrZero(pt.QueuedAt), QueueMode: pt.QueueMode,
 		CompletedAt: unixOrZero(pt.CompletedAt), Status: pt.Status, ParentRef: pt.ParentRef,
 		LLMProfileID:  pt.LLMProfileID,
@@ -1132,6 +1136,10 @@ func (m *Manager) SetTaskPaused(id string, paused bool) error {
 	if t := m.tasks[id]; t != nil {
 		t.updateLifecycle(func(state *taskLifecycleState) {
 			state.Paused = paused
+			state.PauseOrigin = ""
+			if paused {
+				state.PauseOrigin = "manual"
+			}
 		})
 	}
 	m.mu.Unlock()
@@ -1146,7 +1154,7 @@ func (m *Manager) SetTaskPaused(id string, paused bool) error {
 // preservePosition applies only when the row is already queued. A repeated
 // admission keeps its FIFO timestamp; a task that was explicitly paused and is
 // now re-queued receives a fresh tail position.
-func (m *Manager) ApplyTaskAdmission(id, expectedStatus, status string, queued bool, mode string, preservePosition bool) error {
+func (m *Manager) ApplyTaskAdmission(id, expectedStatus, status string, queued bool, mode string, preservePosition bool, expectedPause ...taskLifecycleState) error {
 	m.taskStateMu.Lock()
 	defer m.taskStateMu.Unlock()
 	n, err := strconv.ParseInt(id, 10, 64)
@@ -1161,6 +1169,12 @@ func (m *Manager) ApplyTaskAdmission(id, expectedStatus, status string, queued b
 		mode = ""
 	}
 
+	expected := taskLifecycleState{}
+	if len(expectedPause) > 0 {
+		expected = expectedPause[0]
+	} else if task, ok := m.Task(id); ok {
+		expected = task.lifecycleSnapshot()
+	}
 	var queuedAt, completedAt, firstRunAt, deadlineAt sql.NullTime
 	var committedMode string
 	err = m.pg.QueryRow(`UPDATE tasks
@@ -1170,6 +1184,7 @@ func (m *Manager) ApplyTaskAdmission(id, expectedStatus, status string, queued b
 	        ELSE NULL
 	    END,
 	    paused=false,
+	    pause_origin='',
 	    queued=$3,
 	    queued_at=CASE
 	        WHEN NOT $3 THEN NULL
@@ -1189,8 +1204,9 @@ func (m *Manager) ApplyTaskAdmission(id, expectedStatus, status string, queued b
 	        WHEN $6='timeout' AND $2 NOT IN ('done','failed','timeout') THEN NULL
 	        ELSE deadline_at
 	    END
-	WHERE id=$1 AND deleted_at IS NULL AND status=$6
-	RETURNING queued_at, queue_mode, completed_at, first_run_at, deadline_at`, n, status, queued, mode, preservePosition, expectedStatus).
+	WHERE id=$1 AND deleted_at IS NULL AND archived_at IS NULL AND status=$6 AND paused=$7 AND pause_origin=$8
+ AND NOT EXISTS (SELECT 1 FROM task_archives a WHERE a.task_id=tasks.id AND a.state IN ('archive_queued','archiving'))
+	RETURNING queued_at, queue_mode, completed_at, first_run_at, deadline_at`, n, status, queued, mode, preservePosition, expectedStatus, expected.Paused, expected.PauseOrigin).
 		Scan(&queuedAt, &committedMode, &completedAt, &firstRunAt, &deadlineAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("task %s lifecycle changed before admission (expected status %q)", id, expectedStatus)
@@ -1204,6 +1220,7 @@ func (m *Manager) ApplyTaskAdmission(id, expectedStatus, status string, queued b
 		t.updateLifecycle(func(state *taskLifecycleState) {
 			state.Status = status
 			state.Paused = false
+			state.PauseOrigin = ""
 			state.Queued = queued
 			state.QueueMode = committedMode
 			state.QueuedAt = 0
@@ -1233,6 +1250,10 @@ func (m *Manager) ApplyTaskAdmission(id, expectedStatus, status string, queued b
 // bootstrap task still performs goal decomposition, but the next enqueue receives
 // a new queued_at timestamp and therefore moves to the FIFO tail.
 func (m *Manager) ApplyTaskPause(id string) error {
+	return m.ApplyTaskPauseOrigin(id, "manual")
+}
+
+func (m *Manager) ApplyTaskPauseOrigin(id, origin string) error {
 	m.taskStateMu.Lock()
 	defer m.taskStateMu.Unlock()
 	n, err := strconv.ParseInt(id, 10, 64)
@@ -1241,10 +1262,11 @@ func (m *Manager) ApplyTaskPause(id string) error {
 	}
 	var mode string
 	err = m.pg.QueryRow(`UPDATE tasks
-		SET paused=true, queued=false, queued_at=NULL
-		WHERE id=$1 AND deleted_at IS NULL AND paused=false
-		  AND status NOT IN ('done','failed','timeout')
-		RETURNING COALESCE(queue_mode,'')`, n).Scan(&mode)
+		SET paused=true, pause_origin=$2, queued=false, queued_at=NULL
+		WHERE id=$1 AND deleted_at IS NULL AND (paused=false OR ($2='manual' AND pause_origin='schedule'))
+		  AND status NOT IN ('done','failed','timeout') AND archived_at IS NULL
+ AND NOT EXISTS (SELECT 1 FROM task_archives a WHERE a.task_id=tasks.id AND a.state IN ('archive_queued','archiving'))
+		RETURNING COALESCE(queue_mode,'')`, n, origin).Scan(&mode)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("task %s is unavailable for pause", id)
 	}
@@ -1255,6 +1277,7 @@ func (m *Manager) ApplyTaskPause(id string) error {
 	if t := m.tasks[id]; t != nil {
 		t.updateLifecycle(func(state *taskLifecycleState) {
 			state.Paused = true
+			state.PauseOrigin = origin
 			state.Queued = false
 			state.QueuedAt = 0
 			state.QueueMode = mode

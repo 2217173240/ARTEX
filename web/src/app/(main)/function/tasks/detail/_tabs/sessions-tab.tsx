@@ -1,7 +1,5 @@
 "use client";
 
-import { useI18n } from "@/lib/i18n";
-
 import * as React from "react";
 
 import {
@@ -54,7 +52,9 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { useSideQuestions } from "@/hooks/use-side-questions";
 import { api, sseUrl } from "@/lib/api";
 import { shouldSubmitOnKey, useChatSendMode } from "@/lib/chat-send-mode";
+import { useI18n } from "@/lib/i18n";
 import { MOCK } from "@/lib/mock/enabled";
+import { readActivityHistoryGap, startActivityFallback } from "@/lib/session-activity-fallback";
 import { isBtwCommand } from "@/lib/side-questions";
 import { taskAssetSourceLabel, taskAssetTypeLabel } from "@/lib/task-assets";
 import type {
@@ -530,6 +530,8 @@ export function SessionsTab({ taskId }: { taskId: string }) {
   const [listOpen, setListOpen] = React.useState(false);
   // Per-session lazily-loaded caches, keyed by session_key (main | plan | intent:<id>).
   const [store, setStore] = React.useState<SessionStore>({});
+  const storeRef = React.useRef(store);
+  storeRef.current = store;
   // Worker sessions derived from exploration intents (paged past the old 300 cap).
   const [intents, setIntents] = React.useState<TaskNode[]>([]);
   const [intentAssets, setIntentAssets] = React.useState<IntentAsset[]>([]);
@@ -672,7 +674,11 @@ export function SessionsTab({ taskId }: { taskId: string }) {
 
   // ── store helpers ──────────────────────────────────────────────────────────────
   const patchStore = React.useCallback((key: string, fn: (s: SessionState) => SessionState) => {
-    setStore((prev) => ({ ...prev, [key]: fn(prev[key] ?? emptyState()) }));
+    setStore((prev) => {
+      const current = prev[key] ?? emptyState();
+      const next = fn(current);
+      return next === current ? prev : { ...prev, [key]: next };
+    });
   }, []);
 
   // Load a session's LATEST page (before=0) on first open. Keyed + request-token
@@ -1323,6 +1329,77 @@ export function SessionsTab({ taskId }: { taskId: string }) {
       patchStore(activeKey, (s) => ({ ...s, unread: 0 }));
     }
   }, [activeKey]);
+
+  // Invalidate during render too: a pending poll must not publish between a
+  // selection/task/recovery render and the old effect's cleanup.
+  const fallbackEnabled = !MOCK && !sseLive && !!activeState?.loaded && !active.inherited;
+  const fallbackScopeRef = React.useRef({ taskId, activeKey, enabled: fallbackEnabled });
+  if (
+    fallbackScopeRef.current.taskId !== taskId ||
+    fallbackScopeRef.current.activeKey !== activeKey ||
+    fallbackScopeRef.current.enabled !== fallbackEnabled
+  ) {
+    fallbackScopeRef.current = { taskId, activeKey, enabled: fallbackEnabled };
+  }
+  const fallbackScope = fallbackScopeRef.current;
+  React.useEffect(() => {
+    if (!fallbackScope.enabled) return;
+    const latestSeq = () => storeRef.current[activeKey]?.items.at(-1)?.seq ?? 0;
+    // System audit has no session-history endpoint. Scan the forward task feed,
+    // retaining its cursor even when a page contains no relevant system events.
+    let systemCursor = latestSeq();
+    return startActivityFallback({
+      isCurrent: () => fallbackScopeRef.current === fallbackScope,
+      read: async (isCurrent) => {
+        if (activeKey !== "system") {
+          return readActivityHistoryGap(
+            (before) => api.activityHistory(taskId, activeKey, before, PAGE),
+            latestSeq(),
+            isCurrent,
+          );
+        }
+        let cursor = systemCursor;
+        let items: Activity[] = [];
+        while (isCurrent()) {
+          const page = await api.activity(taskId, { since: cursor, limit: SYSTEM_SCAN_PAGE });
+          if (!isCurrent()) return undefined;
+          items = mergeBySeq(
+            items,
+            page.items.filter((item) => sessionKeyOf(item) === "system"),
+          );
+          if (page.items.length && page.cursor <= cursor) throw new Error("Activity cursor did not advance");
+          cursor = Math.max(cursor, page.cursor);
+          if (page.items.length < SYSTEM_SCAN_PAGE) {
+            systemCursor = cursor;
+            return items;
+          }
+        }
+        return undefined;
+      },
+      merge: (incoming) => {
+        patchStore(activeKey, (s) => {
+          if (fallbackScopeRef.current !== fallbackScope) return s;
+          const seen = new Set(s.items.map((item) => item.seq));
+          const fresh = incoming.filter((item) => !seen.has(item.seq));
+          if (!fresh.length) return s;
+          let items = mergeBySeq(s.items, fresh);
+          let hasMore = s.hasMore;
+          if (atBottomRef.current && items.length > MAX_KEEP) {
+            items = items.slice(-MAX_KEEP);
+            hasMore = true;
+          }
+          return {
+            ...s,
+            items,
+            hasMore,
+            earliestSeq: items[0]?.seq ?? s.earliestSeq,
+            lastTs: items.at(-1)?.ts ?? s.lastTs,
+            unread: 0,
+          };
+        });
+      },
+    });
+  }, [taskId, activeKey, fallbackScope, patchStore]);
 
   const focusKey = approvalFocus.state?.source?.session;
   const loadFocusPage = React.useCallback(

@@ -590,6 +590,7 @@ func (d *DB) snapshotTaskArchive(taskID int64, llmRecords io.Writer) (*TaskArchi
 		{"task_llm_profiles", `SELECT * FROM task_llm_profiles WHERE task_id=$1 ORDER BY position`, []any{taskID}},
 		{"task_scope", `SELECT * FROM task_scope WHERE task_id=$1 ORDER BY id`, []any{taskID}},
 		{"findings", `SELECT * FROM findings WHERE task_id=$1 ORDER BY id`, []any{taskID}},
+		{"finding_notes", `SELECT n.* FROM finding_notes n JOIN findings f ON f.id=n.finding_id WHERE f.task_id=$1 ORDER BY n.id`, []any{taskID}},
 		{"finding_cases", `SELECT * FROM finding_cases WHERE task_id=$1 ORDER BY id`, []any{taskID}},
 		{"finding_case_members", `SELECT m.* FROM finding_case_members m JOIN finding_cases c ON c.id=m.case_id WHERE c.task_id=$1 ORDER BY m.finding_id`, []any{taskID}},
 		{"finding_case_events", `SELECT e.* FROM finding_case_events e JOIN finding_cases c ON c.id=e.case_id WHERE c.task_id=$1 ORDER BY e.id`, []any{taskID}},

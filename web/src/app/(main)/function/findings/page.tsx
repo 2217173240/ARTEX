@@ -695,8 +695,22 @@ export default function FindingsPage() {
     const failures: string[] = [];
     for (const id of [...selectedIds]) {
       try {
-        if (nextStatus) await api.setFindingStatus(id, nextStatus);
-        else await api.deleteFinding(id);
+        if (nextStatus) {
+          const updated = await api.setFindingStatus(id, nextStatus);
+          flatRequest.current++;
+          flatInFlight.current = null;
+          for (const [key, state] of Object.entries(groupFindingsRef.current)) {
+            if (state.items.some((finding) => (finding.finding_id ?? finding.id) === id)) {
+              groupRequests.current[key] = (groupRequests.current[key] ?? 0) + 1;
+              delete groupInFlight.current[key];
+            }
+          }
+          setFindings((current) =>
+            current.map((finding) =>
+              (finding.finding_id ?? finding.id) === id ? { ...finding, ...updated } : finding,
+            ),
+          );
+        } else await api.deleteFinding(id);
         succeeded.add(id);
       } catch (error) {
         failures.push(`#${id}: ${(error as Error).message}`);
@@ -704,13 +718,9 @@ export default function FindingsPage() {
     }
     setSelectedIds((current) => new Set([...current].filter((id) => !succeeded.has(id))));
     setBulkFailures(failures);
-    setFindings((current) =>
-      nextStatus
-        ? current.map((finding) =>
-            succeeded.has(finding.finding_id ?? finding.id) ? { ...finding, status: nextStatus } : finding,
-          )
-        : current.filter((finding) => !succeeded.has(finding.finding_id ?? finding.id)),
-    );
+    if (!nextStatus) {
+      setFindings((current) => current.filter((finding) => !succeeded.has(finding.finding_id ?? finding.id)));
+    }
     const refresh = mutationRefreshRef.current;
     if (refresh.view === "asset") {
       void refresh.loadAssetTree();
@@ -871,7 +881,13 @@ export default function FindingsPage() {
       const prev = f.status;
       setFindings((cur) => cur.map((x) => (isSameFinding(x, f) ? { ...x, status: next } : x)));
       try {
-        await api.setFindingStatus(f.finding_id, next);
+        const updated = await api.setFindingStatus(f.finding_id, next);
+        flatRequest.current++;
+        flatInFlight.current = null;
+        const groupKey = f.task_id ?? UNASSIGNED_TASK;
+        groupRequests.current[groupKey] = (groupRequests.current[groupKey] ?? 0) + 1;
+        delete groupInFlight.current[groupKey];
+        setFindings((cur) => cur.map((x) => (isSameFinding(x, f) ? { ...x, ...updated } : x)));
         toast.success(uiText("已标记为「{v0}」", { v0: uiText(statusMeta("finding", next).label) }));
         // refresh stat cards (pending count) and drop the row if it no longer matches the status filter
         api

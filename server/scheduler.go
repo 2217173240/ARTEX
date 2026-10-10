@@ -43,6 +43,7 @@ func (sc *Scheduler) Run(ctx context.Context) {
 		return
 	}
 	sc.init()
+	sc.s.reconcileConcurrency()
 	t := time.NewTicker(sc.tick)
 	defer t.Stop()
 	for {

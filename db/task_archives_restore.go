@@ -134,7 +134,7 @@ AND NOT EXISTS (
 		return err
 	}
 	if _, err := tx.Exec(`UPDATE tasks SET
- name='',category_id=NULL,description='',goal='',paused=true,queued=false,queued_at=NULL,queue_mode='',
+ name='',category_id=NULL,description='',goal='',paused=true,pause_origin='manual',queued=false,queued_at=NULL,queue_mode='',
  llm_profile_id=NULL,active_llm_profile_id=NULL,llm_chain_revision=llm_chain_revision+1,
  company_id=NULL,parent_ref=NULL,timeout_seconds=0,coverage_enabled=true,pinned_at=NULL,
  first_run_at=NULL,deadline_at=NULL,archived_at=now(),deleted_at=now()
@@ -287,6 +287,9 @@ WHERE archive.id=$1 FOR UPDATE OF archive,task`, archiveID).Scan(&taskID, &expID
 			return nil, fmt.Errorf("restore %s: %w", table, err)
 		}
 	}
+	if err := restoreFindingNotesTx(tx, snapshot); err != nil {
+		return nil, fmt.Errorf("restore finding notes: %w", err)
+	}
 	if err := restoreFindingCasesTx(tx, snapshot); err != nil {
 		return nil, fmt.Errorf("restore finding cases: %w", err)
 	}
@@ -329,13 +332,20 @@ WHERE current.id=$1 AND archived.id=$1`, expID, string(firstArchiveRow(raw)))
 }
 
 func restoreTaskStub(tx *sql.Tx, row map[string]any, taskID, remaining int64) error {
+	// Supported historical packages predate pause origin. Restore a paused task
+	// as a manual pause so a retained calendar binding cannot start it.
+	if row["pause_origin"] == nil {
+		row["pause_origin"] = ""
+	}
 	raw, err := json.Marshal(row)
 	if err != nil {
 		return err
 	}
 	_, err = tx.Exec(`UPDATE tasks current SET
  name=archived.name,category_id=archived.category_id,description=archived.description,goal=archived.goal,
- status=archived.status,paused=archived.paused,queued=false,queued_at=NULL,queue_mode='',
+ status=archived.status,paused=archived.paused,
+ pause_origin=CASE WHEN archived.paused THEN 'manual' ELSE '' END,
+ queued=false,queued_at=NULL,queue_mode='',
  llm_profile_id=archived.llm_profile_id,active_llm_profile_id=archived.active_llm_profile_id,
  llm_chain_revision=archived.llm_chain_revision,company_id=archived.company_id,parent_ref=archived.parent_ref,
  timeout_seconds=archived.timeout_seconds,plan_heartbeat_seconds=archived.plan_heartbeat_seconds,
@@ -414,7 +424,7 @@ func insertArchiveRows(tx *sql.Tx, table string, raw json.RawMessage) error {
 	}
 	allowed := map[string]bool{
 		"exploration_nodes": true, "exploration_edges": true, "exploration_anchors": true,
-		"task_constraints": true, "activity": true, "task_asset_links": true, "findings": true,
+		"task_constraints": true, "activity": true, "task_asset_links": true, "findings": true, "finding_notes": true,
 		"llm_records": true, "llm_usage": true, "skill_usage": true, "tool_usage": true,
 		"side_question_sessions": true, "side_question_requests": true,
 	}

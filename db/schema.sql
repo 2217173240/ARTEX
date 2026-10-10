@@ -1475,3 +1475,50 @@ ALTER TABLE finding_case_review_runs ADD COLUMN IF NOT EXISTS finding_ids JSONB 
 ALTER TABLE finding_case_review_runs ADD COLUMN IF NOT EXISTS reviewed_ids JSONB NOT NULL DEFAULT '[]';
 ALTER TABLE finding_case_review_runs ADD COLUMN IF NOT EXISTS conclusion JSONB NOT NULL DEFAULT '{}';
 CREATE INDEX IF NOT EXISTS idx_finding_case_reviews_active_task ON finding_case_review_runs(task_id) WHERE state IN ('queued','running');
+
+-- Calendar windows use persisted pause ownership; old pauses belong to the user.
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS pause_origin TEXT NOT NULL DEFAULT '';
+UPDATE tasks SET pause_origin='manual' WHERE paused AND pause_origin='';
+CREATE TABLE IF NOT EXISTS task_schedules (
+ id BIGSERIAL PRIMARY KEY,
+ name TEXT NOT NULL,
+ enabled BOOLEAN NOT NULL DEFAULT true,
+ type TEXT NOT NULL CHECK (type IN ('once','weekly')),
+ timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai',
+ run_date TEXT NOT NULL DEFAULT '',
+ end_date TEXT NOT NULL DEFAULT '',
+ weekdays JSONB NOT NULL DEFAULT '[]',
+ start_time TEXT NOT NULL,
+ end_time TEXT NOT NULL,
+ created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+ updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS task_schedule_tasks (
+ schedule_id BIGINT NOT NULL REFERENCES task_schedules(id) ON DELETE CASCADE,
+ task_id BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+ PRIMARY KEY(schedule_id,task_id)
+);
+CREATE TABLE IF NOT EXISTS task_schedule_runs (
+ id BIGSERIAL PRIMARY KEY,
+ schedule_id BIGINT NOT NULL REFERENCES task_schedules(id) ON DELETE CASCADE,
+ task_id BIGINT NOT NULL,
+ action TEXT NOT NULL,
+ status TEXT NOT NULL,
+ error TEXT NOT NULL DEFAULT '',
+ created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS task_schedule_runs_recent ON task_schedule_runs(schedule_id,id DESC);
+
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS reviewed_by TEXT NOT NULL DEFAULT '';
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ;
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS reviewed_status TEXT NOT NULL DEFAULT '';
+CREATE TABLE IF NOT EXISTS finding_notes (
+ id BIGSERIAL PRIMARY KEY,
+ finding_id BIGINT NOT NULL REFERENCES findings(id) ON DELETE CASCADE,
+ author TEXT NOT NULL,
+ body TEXT NOT NULL CHECK (char_length(btrim(body)) BETWEEN 1 AND 8000),
+ created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_finding_notes_finding_id ON finding_notes(finding_id, id DESC);
+
+ALTER TABLE task_schedules ADD COLUMN IF NOT EXISTS manual_until TIMESTAMPTZ;

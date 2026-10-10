@@ -48,6 +48,7 @@ type TaskDTO struct {
 	CompletedUnix      int64              `json:"completed_unix"`     // completed_at as unix seconds (0 if unfinished)
 	LastActivity       int64              `json:"last_activity_unix"` // unix seconds of the last activity (0 if none)
 	Paused             bool               `json:"paused"`
+	PauseOrigin        string             `json:"pause_origin,omitempty"`
 	Queued             bool               `json:"queued"`
 	Tokens             TokenTotalDTO      `json:"tokens"` // whole-task token consumption
 	GoalsTotal         int                `json:"goals_total"`
@@ -127,6 +128,7 @@ func taskDTO(t *Task, status string) TaskDTO {
 		CompletedAt:        completedRFC(lifecycle.CompletedAt),
 		CompletedUnix:      lifecycle.CompletedAt,
 		Paused:             lifecycle.Paused,
+		PauseOrigin:        lifecycle.PauseOrigin,
 		Queued:             lifecycle.Queued,
 		LLMProfileID:       llmState.ProfileID,
 		LLMProfileIDs:      profileIDs,
@@ -314,15 +316,18 @@ type FindingDTO struct {
 	ReportStale           bool                       `json:"report_stale"`
 	TrafficBindings       []db.FindingTrafficBinding `json:"traffic_bindings,omitempty"`
 
-	ID        string `json:"id"`
-	FindingID string `json:"finding_id,omitempty"` // standalone findings-table id — the handle for status updates
-	VulnClass string `json:"vulnclass"`
-	Name      string `json:"name,omitempty"` // 漏洞名称;为空时前端回退展示 vulnclass
-	Severity  string `json:"severity"`       // critical | high | medium | low
-	Status    string `json:"status"`         // pending | in_progress | confirmed | resolved | fixed | false_positive | ignored | duplicate | risk_accepted
-	Summary   string `json:"summary"`
-	Evidence  string `json:"evidence"`
-	Report    string `json:"report,omitempty"` // 详细报告(Markdown);仅详情接口返回,列表为空
+	ID             string `json:"id"`
+	FindingID      string `json:"finding_id,omitempty"` // standalone findings-table id — the handle for status updates
+	VulnClass      string `json:"vulnclass"`
+	Name           string `json:"name,omitempty"` // 漏洞名称;为空时前端回退展示 vulnclass
+	Severity       string `json:"severity"`       // critical | high | medium | low
+	ReviewedBy     string `json:"reviewed_by,omitempty"`
+	ReviewedAt     string `json:"reviewed_at,omitempty"`
+	ReviewedStatus string `json:"reviewed_status,omitempty"`
+	Status         string `json:"status"` // pending | in_progress | confirmed | resolved | fixed | false_positive | ignored | duplicate | risk_accepted
+	Summary        string `json:"summary"`
+	Evidence       string `json:"evidence"`
+	Report         string `json:"report,omitempty"` // 详细报告(Markdown);仅详情接口返回,列表为空
 
 	IntentID        string            `json:"intent_id,omitempty"`
 	ParamID         string            `json:"param_id,omitempty"`
@@ -421,6 +426,11 @@ func findingDTOsForOwner(taskID, description string, in []*db.Node, meta map[int
 		if m, ok := meta[n.ID]; ok {
 			d.FindingID = i64s(m.ID)
 			d.Status = m.Status
+			d.ReviewedBy = m.ReviewedBy
+			d.ReviewedStatus = m.ReviewedStatus
+			if m.ReviewedAt != nil {
+				d.ReviewedAt = rfc3339(*m.ReviewedAt)
+			}
 			d.TrafficCount = m.TrafficCount
 			d.Assets = findingAssetDTOs(m.AssetIDs, assets)
 		}
@@ -453,16 +463,22 @@ func findingFromDB(f *db.DBFinding, assets map[int64]*db.Asset) FindingDTO {
 		FindingID:    i64s(f.ID),
 		TrafficCount: f.TrafficCount, EvidenceVersion: f.EvidenceVersion, ReportEvidenceVersion: f.ReportEvidenceVersion,
 		ReportStale: f.Report != "" && f.EvidenceVersion != f.ReportEvidenceVersion, TrafficBindings: f.TrafficBindings,
-		VulnClass: f.VulnClass,
-		Name:      f.Name,
-		Severity:  f.Severity,
-		Status:    status,
-		Summary:   f.Summary,
-		Evidence:  f.Evidence,
-		Report:    f.Report,
-		TS:        rfc3339(f.CreatedAt),
+		VulnClass:      f.VulnClass,
+		Name:           f.Name,
+		Severity:       f.Severity,
+		Status:         status,
+		ReviewedBy:     f.ReviewedBy,
+		ReviewedStatus: f.ReviewedStatus,
+		Summary:        f.Summary,
+		Evidence:       f.Evidence,
+		Report:         f.Report,
+		TS:             rfc3339(f.CreatedAt),
+	}
+	if f.ReviewedAt != nil {
+		d.ReviewedAt = rfc3339(*f.ReviewedAt)
 	}
 	if f.ExportCaseID > 0 {
+		d.ReviewedBy, d.ReviewedAt, d.ReviewedStatus = "", "", ""
 		d.ID = "case:" + i64s(f.ExportCaseID)
 		d.FindingID = ""
 		d.CaseID = i64s(f.ExportCaseID)
