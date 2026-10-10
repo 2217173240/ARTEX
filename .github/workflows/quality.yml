@@ -119,7 +119,6 @@ jobs:
     uses: ./.github/workflows/native-packages.yml
     with:
       frontend-artifact: ci-only-mock-ui
-      ref: ${{ github.sha }}
       version: 0.0.1
       artifact-prefix: ci-native
 

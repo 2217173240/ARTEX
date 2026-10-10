@@ -16,22 +16,23 @@ $db = $installer.OpenDatabase($Msi, 0)
 $template = $db.SummaryInformation(0).Property(7)
 $expected = if ($Architecture -eq 'amd64') { 'x64' } else { 'Arm64' }
 if ($template.Split(';')[0] -cne $expected) { throw "Wrong MSI architecture: $template; expected $expected" }
-function Read-Property([string]$name, $database = $db) {
+function Read-Property([string]$name, [Parameter(Mandatory)]$database) {
     $view = $database.OpenView("SELECT ``Value`` FROM ``Property`` WHERE ``Property`` = '$name'")
-    $view.Execute()
+    # COM Execute may return a status; helpers emit only their requested scalar.
+    [void]$view.Execute()
     $record = $view.Fetch()
     if ($null -eq $record) { return '' }
-    return $record.StringData(1)
+    return [string]$record.StringData(1)
 }
-if ((Read-Property 'ALLUSERS') -ne '') { throw 'Installer must be per-user.' }
-if ((Read-Property 'UpgradeCode') -ne '{E96F624E-6FB5-4F10-9DBD-168C3D34DC48}') { throw 'Installer upgrade family differs across architectures.' }
+if ((Read-Property 'ALLUSERS' $db) -ne '') { throw 'Installer must be per-user.' }
+if ((Read-Property 'UpgradeCode' $db) -ne '{E96F624E-6FB5-4F10-9DBD-168C3D34DC48}') { throw 'Installer upgrade family differs across architectures.' }
 $upgradeView = $db.OpenView('SELECT `Attributes` FROM `Upgrade` WHERE `ActionProperty` = ''WIX_UPGRADE_DETECTED''')
-$upgradeView.Execute()
+[void]$upgradeView.Execute()
 $upgradeRecord = $upgradeView.Fetch()
 if ($null -eq $upgradeRecord -or ($upgradeRecord.IntegerData(1) -band 512) -eq 0) { throw 'Same-version upgrades must include the maximum version.' }
 if ($MetadataOnly) { Write-Output "Verified $template per-user MSI metadata."; return }
 if (-not $PreviousMsiArchitecture) { $PreviousMsiArchitecture = $Architecture }
-$productCode = Read-Property 'ProductCode'
+$productCode = Read-Property 'ProductCode' $db
 $previousCode = ''
 $sameVersionCode = ''
 $sameVersionArchitecture = if ($Architecture -eq 'amd64') { 'arm64' } else { 'amd64' }
@@ -39,19 +40,21 @@ function Read-Package([string]$path, [string]$arch) {
     $database = $installer.OpenDatabase($path, 0)
     $wantedTemplate = if ($arch -eq 'amd64') { 'x64' } else { 'Arm64' }
     if ($database.SummaryInformation(0).Property(7).Split(';')[0] -cne $wantedTemplate) { throw 'Auxiliary MSI architecture mismatch.' }
-    if ((Read-Property 'UpgradeCode' $database) -ne (Read-Property 'UpgradeCode')) { throw 'Auxiliary MSI is from a different upgrade family.' }
-    return $database
+    $auxiliaryFamily = Read-Property 'UpgradeCode' $database
+    $mainFamily = Read-Property 'UpgradeCode' $db
+    if ($auxiliaryFamily -ne $mainFamily) { throw "Auxiliary MSI upgrade family '$auxiliaryFamily' differs from target '$mainFamily'." }
+    return ,$database
 }
 if ($PreviousMsi) {
     $PreviousMsi = (Resolve-Path $PreviousMsi).Path
     $previousDb = Read-Package $PreviousMsi $PreviousMsiArchitecture
-    if ([version](Read-Property 'ProductVersion' $previousDb) -ge [version](Read-Property 'ProductVersion')) { throw 'Previous MSI must have an older version.' }
+    if ([version](Read-Property 'ProductVersion' $previousDb) -ge [version](Read-Property 'ProductVersion' $db)) { throw 'Previous MSI must have an older version.' }
     $previousCode = Read-Property 'ProductCode' $previousDb
 }
 if ($SameVersionMsi) {
     $SameVersionMsi = (Resolve-Path $SameVersionMsi).Path
     $sameVersionDb = Read-Package $SameVersionMsi $sameVersionArchitecture
-    if ((Read-Property 'ProductVersion' $sameVersionDb) -ne (Read-Property 'ProductVersion')) { throw 'Cross-architecture MSI versions must match.' }
+    if ((Read-Property 'ProductVersion' $sameVersionDb) -ne (Read-Property 'ProductVersion' $db)) { throw 'Cross-architecture MSI versions must match.' }
     $sameVersionCode = Read-Property 'ProductCode' $sameVersionDb
     if ($sameVersionCode -eq $productCode) { throw 'Different architectures require different product codes.' }
 }
