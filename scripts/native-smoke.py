@@ -21,12 +21,12 @@ def smoke(binary):
                 env.pop(key)
         Path(env['ARTEX_CONFIG']).write_text('{}')
         def run(*args):
-            return subprocess.run([binary, 'launch', *args], env=env, text=True, capture_output=True, timeout=45, check=True)
+            return subprocess.run([binary, 'launch', *args], env=env, text=True, encoding='utf-8', capture_output=True, timeout=45, check=True)
         try:
             run('--no-browser')
             deadline = time.monotonic() + 30
             while True:
-                result = subprocess.run([binary, 'launch', 'status'], env=env, text=True, capture_output=True, timeout=10)
+                result = subprocess.run([binary, 'launch', 'status'], env=env, text=True, encoding='utf-8', capture_output=True, timeout=10)
                 if result.returncode == 0:
                     status = json.loads(result.stdout)
                     break
