@@ -160,7 +160,7 @@ jobs:
           context = root / "image-context"
           canaries = []
           for prefix in ("", "skills/ci-private-fixtures/"):
-              for name in (".env", "config.json", "jwt.key", "data/private", "sessions/private", ".cache/private"):
+              for name in (".env", "config.json", "jwt.key", "setup.token", ".auth-private-fixture", "data/private", "sessions/private", ".cache/private"):
                   path = context / (prefix + name)
                   path.parent.mkdir(parents=True, exist_ok=True)
                   value = "ARTEX_CI_CANARY_" + secrets.token_hex(24)

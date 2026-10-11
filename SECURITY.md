@@ -20,6 +20,12 @@ ARTEX 的单管理员可以配置 MCP、模型接口和自定义 HTTP 工具，�
 
 浏览器会话使用服务端签发的 HttpOnly、SameSite=Lax cookie，HTTPS 部署还设置 Secure；前端不持久化 JWT，也不将其放入 SSE URL。旧版浏览器会话升级后需要重新登录一次。命令行客户端继续使用 Bearer 认证。反向代理应保留外部 Host 并覆盖 `X-Forwarded-Proto`；Next 本机代理的转发 Host 只在后端确认连接来自 loopback 时采用。开发环境保留同一 localhost/私有 IP 上的前端 3000 或 5173 → 后端 8787 连接。
 
+首次设置管理员密码需要本机初始化令牌。启动日志只提供 `setup.token` 的位置，令牌与 `jwt.key` 默认保存在共享工作区外的实例目录；POSIX 文件权限为 0600，Windows 继承用户实例目录的 ACL。公开状态接口不返回令牌，已设置密码后拒绝初始化重放；数据库故障仍拒绝操作，首次写入仍由数据库唯一约束控制。已有密钥和冲突文件不会被自动覆盖。
+
+管理员会话签名绑定当前密码哈希；修改或外部重置密码后，旧 cookie/Bearer 在下一次请求失效。本次改密的浏览器获得新 cookie。升级前的会话需重新登录；已建立的 SSE 连接不会由本次变更主动断开。会话校验读取当前数据库凭据，数据库不可用时返回 503。实现参考 [OWASP 认证指引](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html)。
+
+工作区浏览、读写、下载及工作区/聊天附件上传通过持有的 [Go os.Root](https://pkg.go.dev/os#Root) 访问文件，拒绝越出工作区的符号链接；聊天附件使用排他创建，避免同名并发覆盖。这约束这些文件 API，不隔离 Agent 执行的进程、挂载或设备文件。
+
 可选 HTTP Basic Auth 默认关闭，在管理员系统设置中启用；密码以 bcrypt 哈希保存在数据库中。通过验证后使用独立的 12 小时 HttpOnly、SameSite=Strict cookie，HTTPS 下设 Secure；管理员 cookie 和配置写入的 CSRF 检查继续生效。健康检查和 API 预检保持公开。Next 开发代理仅向同源地址或明确的 loopback HTTP 后端发送访问验证凭据，不跟随重定向。
 
 发布更新源固定为 `2217173240/ARTEX`，下载使用 HTTPS 和 Release 校验和。容器镜像为 `ghcr.io/2217173240/artex`；Release 的 `IMAGE_DIGEST` 可用于固定镜像清单。源码安装脚本安全引用输入、编码连接串并限制新配置权限；已有配置保持原样，手动编辑时仍需正确引用 `.env` 值和编码 DSN。

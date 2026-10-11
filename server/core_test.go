@@ -22,11 +22,11 @@ func TestCoreTaskLifecyclePG(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
-	defer m.Close()
+	t.Cleanup(func() { _ = m.Close() })
 	td := t.TempDir()
 	s := New(context.Background(), m, td, td, td)
 	h := s.Handler()
-	tok, err := signJWT(s.jwtKey)
+	tok, err := signAdminJWTForTest(t, s)
 	if err != nil {
 		t.Fatalf("sign jwt: %v", err)
 	}

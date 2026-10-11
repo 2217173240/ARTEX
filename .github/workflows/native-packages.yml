@@ -59,6 +59,20 @@ jobs:
           go build -tags embedui -trimpath -ldflags "-s -w -X main.version=$VERSION -X github.com/Autumn-27/artex/distribution.BuildChannel=$CHANNEL" -o "dist/artex$suffix" ./cmd/artex
           python=python3; if [ "$GOOS" = windows ]; then python=python; fi
           "$python" scripts/native-smoke.py "dist/artex$suffix"
+      - name: Native credential and file-boundary regressions
+        env:
+          CGO_ENABLED: "0"
+          ARTEX_CONFIG: ""
+          ARTEX_PG_DSN: ""
+          ARTEX_REVIEW_LIVE_CONFIG: ""
+          OPENAI_API_KEY: ""
+          ANTHROPIC_API_KEY: ""
+          ARTEX_LLM_PROVIDER: ""
+          ARTEX_LLM_BASE_URL: ""
+          ARTEX_LLM_MODEL: ""
+          ARTEX_LLM_PROXY: ""
+        run: |
+          go test -count=1 ./server -run '^Test(SetupTokenFile|JWTKeyConcurrentCreation|PrepareAuthSetup|AuthInitRequiresOwnership|AdminSessionsRequire|WorkspaceRejectsEscapingSymlinks|WorkspaceNormalFlowsAndRelativeSymlinks|WorkspaceReadSizeAndBinaryLimits|ChatUploadConcurrentNamesDoNotClobber)'
       - name: Package and test DEB and RPM install lifecycle
         if: matrix.os == 'linux'
         env:

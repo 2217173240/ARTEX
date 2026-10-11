@@ -34,6 +34,7 @@ function removeLegacyToken() {
 }
 export const auth = {
   generation: sessionGeneration,
+  credentialsChanged: advanceSession,
   getCurrentUser: () => user,
   async loadSession(): Promise<CurrentUser | null> {
     removeLegacyToken();

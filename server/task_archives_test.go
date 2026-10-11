@@ -16,7 +16,7 @@ func TestTaskArchiveAPIQueueListAndLimits(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) - skipping", err)
 	}
-	defer m.Close()
+	t.Cleanup(func() { _ = m.Close() })
 	task, err := m.CreateTask("archive api", "verify 202", nil, 0, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -37,7 +37,7 @@ func TestTaskArchiveAPIQueueListAndLimits(t *testing.T) {
 	dataDir := t.TempDir()
 	s := New(ctx, m, dataDir, dataDir, dataDir)
 	s.archiveWG.Wait()
-	token, err := signJWT(s.jwtKey)
+	token, err := signAdminJWTForTest(t, s)
 	if err != nil {
 		t.Fatal(err)
 	}

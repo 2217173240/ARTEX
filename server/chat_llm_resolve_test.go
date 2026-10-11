@@ -16,7 +16,14 @@ func TestChatUnavailableReasonDistinguishesStates(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
-	defer m.Close()
+	// Register the pool close first: fixture profile cleanups run before it.
+	// A deferred close ran before t.Cleanup and leaked an active mock profile
+	// into later tests, which then attempted goal decomposition with that model.
+	t.Cleanup(func() {
+		if err := m.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	td := t.TempDir()
 	s := New(context.Background(), m, td, td, td)
 
@@ -39,8 +46,12 @@ func TestChatUnavailableReasonDistinguishesStates(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		_, _ = m.pg.Exec(`UPDATE llm_profiles SET is_default=false WHERE id=$1`, id)
-		_ = m.pg.DeleteProfile(id)
+		if _, err := m.pg.Exec(`UPDATE llm_profiles SET is_default=false WHERE id=$1`, id); err != nil {
+			t.Error(err)
+		}
+		if err := m.pg.DeleteProfile(id); err != nil {
+			t.Error(err)
+		}
 	})
 
 	// Profile exists but is not activated.
@@ -66,7 +77,11 @@ func TestResolveChatAgentHonoursConversationProfile(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
-	defer m.Close()
+	t.Cleanup(func() {
+		if err := m.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	td := t.TempDir()
 	s := New(context.Background(), m, td, td, td)
 
@@ -81,7 +96,11 @@ func TestResolveChatAgentHonoursConversationProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = m.pg.DeleteProfile(id) })
+	t.Cleanup(func() {
+		if err := m.pg.DeleteProfile(id); err != nil {
+			t.Error(err)
+		}
+	})
 
 	// A conversation that pinned this profile resolves a chat agent despite the
 	// nil global fallback; without the fix the send precheck rejected it outright.

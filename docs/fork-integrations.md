@@ -1,6 +1,16 @@
 # 同源功能集成
 
-本轮对比以本 fork 的 `62b30f715c46676f5081162222d1dc62ed3dfa91` 为基线。采用下列具体提交的功能或思路，按当前 Go / Next.js、共享管理员认证和任务生命周期重新实现；不是整体合入各 fork，也不是对缺失原始 PR 的身份认证。
+2026-10-11 的安全与可靠性增量以 `9b531c1850e789d4175bb7490be4e9208e50b0a3` 为基线：
+
+| 来源 | 采用方式 |
+| --- | --- |
+| [jiwoochris PR #20 · 6f8e1b2](https://github.com/jiwoochris/artex-ko/pull/20)，合并作者 Jiwoo Chris Jung / jiwoochris | 借鉴首次设密所有权和改密撤销会话；使用独立 HMAC 域与当前数据库密码哈希，每次请求验证，保留现有 503、数据库原子初始化、限流、CSRF 和共享管理员。没有复制来源早期忽略数据库错误及仅用进程锁的实现。 |
+| [sharenjun · be2de18](https://github.com/sharenjun/ARTEX-main/commit/be2de18d5a5f759bbce7f3c4b08d484cf7d142c4)，作者 sharenjun | 重写工作区和聊天附件文件访问为持有的 `os.Root`，保留原 API；本轮完全没有文本/工具产出的正常完成改为模型错误，保留工具后静默完成和取消/预算语义。 |
+| [sharenjun · 032f81b](https://github.com/sharenjun/ARTEX-main/commit/032f81b861e308491b772674e49e2b3a51143536)，作者 sharenjun | 使用现有 yaml.v3 的节点树更新技能元数据，保留未知值及正文；MCP 更新清除旧 `mcp` 别名，无法安全处理的合并继承或别名关系返回错误并保留文件。 |
+
+上述来源均为 AGPL-3.0，保留原作者归属；本 fork 根据当前架构适配，没有整体覆盖来源文件。当前管理员会话升级需重新登录；首次设密操作见 README，运行与文件访问边界见 SECURITY.md。
+
+2026-10-10 的功能集成以本 fork 的 `62b30f715c46676f5081162222d1dc62ed3dfa91` 为基线。采用下列具体提交的功能或思路，按当前 Go / Next.js、共享管理员认证和任务生命周期重新实现；不是整体合入各 fork，也不是对缺失原始 PR 的身份认证。
 
 | 来源 | 有价值的差异 | 本 fork 的实现 |
 | --- | --- | --- |

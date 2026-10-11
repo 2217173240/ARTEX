@@ -11,12 +11,11 @@ import (
 )
 
 func TestBrowserSessionCookieAndLogout(t *testing.T) {
-	key := []byte("01234567890123456789012345678901")
-	token, err := signJWT(key)
+	s, _ := newAuthMemoryServer(t)
+	token, err := signAdminJWTForTest(t, s)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &Server{jwtKey: key}
 	for _, scheme := range []string{"http", "https"} {
 		r := httptest.NewRequest("GET", scheme+"://example.test/api/auth/session", nil)
 		w := httptest.NewRecorder()
@@ -48,9 +47,11 @@ func TestBrowserSessionCookieAndLogout(t *testing.T) {
 }
 
 func TestBearerAndCookieAuthenticationWithCSRF(t *testing.T) {
-	key := []byte("01234567890123456789012345678901")
-	token, _ := signJWT(key)
-	s := &Server{jwtKey: key}
+	s, _ := newAuthMemoryServer(t)
+	token, err := signAdminJWTForTest(t, s)
+	if err != nil {
+		t.Fatal(err)
+	}
 	h := s.requireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) }))
 	for _, tc := range []struct {
 		name, origin, bearer string
@@ -159,7 +160,7 @@ func TestAuthLoginAndSetupIssueBrowserCookie(t *testing.T) {
 		}
 	}()
 	key := []byte("01234567890123456789012345678901")
-	s := &Server{m: &Manager{pg: pg}, jwtKey: key}
+	s := &Server{m: &Manager{pg: pg}, jwtKey: key, setupToken: deriveSetupToken(key)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/auth/init", s.authInit)
 	mux.HandleFunc("POST /api/auth/login", s.authLogin)
@@ -168,7 +169,7 @@ func TestAuthLoginAndSetupIssueBrowserCookie(t *testing.T) {
 	mux.HandleFunc("GET /api/private", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) })
 	h := s.requireAuth(mux)
 	for _, path := range []string{"init", "login"} {
-		r := httptest.NewRequest("POST", "https://example.test/api/auth/"+path, strings.NewReader(`{"username":"ARTEX","password":"test-password"}`))
+		r := httptest.NewRequest("POST", "https://example.test/api/auth/"+path, strings.NewReader(`{"username":"ARTEX","password":"test-password","setup_token":"`+s.setupToken+`"}`))
 		r.Header.Set("Origin", "https://example.test")
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, r)
@@ -178,7 +179,8 @@ func TestAuthLoginAndSetupIssueBrowserCookie(t *testing.T) {
 		var result struct {
 			Token string `json:"token"`
 		}
-		if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil || !verifyJWT(result.Token, key) {
+		hash, _, hashErr := pg.GetSetting(authPassKey)
+		if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil || hashErr != nil || !s.verifyAdminJWT(result.Token, hash) {
 			t.Fatalf("CLI JSON token invalid: %v", err)
 		}
 		cookies := w.Result().Cookies()

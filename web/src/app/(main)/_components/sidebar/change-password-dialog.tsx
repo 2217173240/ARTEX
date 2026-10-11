@@ -70,7 +70,7 @@ export function ChangePasswordDialog({
             <DialogTitle>{uiText("修改密码")}</DialogTitle>
             <DialogDescription>
               {uiText("用户名固定为")} <b>ARTEX</b>
-              {uiText("。需先输入当前密码验证；修改后已签发的登录 token 仍有效直至过期。")}
+              {uiText("。需先输入当前密码验证；当前浏览器保持登录，其他已签发会话在下次请求时失效。")}
             </DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-3 py-4">

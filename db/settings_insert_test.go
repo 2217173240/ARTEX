@@ -2,6 +2,7 @@ package db
 
 import (
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 )
@@ -42,5 +43,62 @@ func TestInsertSettingIfAbsentDoesNotOverwrite(t *testing.T) {
 	}
 	if got != "first" {
 		t.Fatalf("值被覆盖成 %q，应保持 %q", got, "first")
+	}
+}
+
+func TestCompareAndSetSettingConcurrentChange(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Skipf("postgres unavailable (%v)", err)
+	}
+	defer d.Close()
+	key := fmt.Sprintf("test.compare_and_set.%d", time.Now().UnixNano())
+	defer func() { _, _ = d.Exec(`DELETE FROM settings WHERE key=$1`, key) }()
+	if err := d.SetSetting(key, "authenticated-old-value"); err != nil {
+		t.Fatal(err)
+	}
+	start := make(chan struct{})
+	results := make(chan bool, 16)
+	errs := make(chan error, 16)
+	var wg sync.WaitGroup
+	for i := range 16 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			changed, err := d.CompareAndSetSetting(key, "authenticated-old-value", fmt.Sprintf("replacement-%d", i))
+			results <- changed
+			errs <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	changes := 0
+	for changed := range results {
+		if changed {
+			changes++
+		}
+	}
+	if changes != 1 {
+		t.Fatalf("concurrent replacements=%d want 1", changes)
+	}
+	value, ok, err := d.GetSetting(key)
+	if err != nil || !ok || value == "authenticated-old-value" {
+		t.Fatalf("winning replacement missing: %q %v", value, err)
+	}
+	changed, err := d.CompareAndSetSetting(key, "authenticated-old-value", "stale-overwrite")
+	if err != nil || changed {
+		t.Fatalf("stale update accepted=%v err=%v", changed, err)
+	}
+	unchanged, _, err := d.GetSetting(key)
+	if err != nil || unchanged != value {
+		t.Fatal("stale update changed winning value")
 	}
 }
