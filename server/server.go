@@ -44,7 +44,8 @@ type Server struct {
 	ctx    context.Context
 
 	skillDir    string // root directory for skill subdirectories
-	jwtKey      []byte // HS256 signing key loaded from / generated into dataDir/jwt.key
+	jwtKey      []byte // private base key stored in keyDir/jwt.key
+	setupToken  string // private bootstrap ownership proof; never returned by an API
 	basicAuth   basicAuthGate
 	authLimiter authRequestLimiter // shared login/init quota; zero value is ready for use
 
@@ -155,6 +156,9 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		profChatAgents: map[int64]*agent.ChatAgent{},
 		provByProfile:  map[int64]*provEntry{}, llmHealth: newLLMHealthRegistry(m.pg),
 		taskAgents: map[string]*taskAgentBundle{}, archiveWake: make(chan struct{}, 1)}
+	if err := s.prepareAuthSetup(keyDir); err != nil {
+		log.Fatalf("[auth] setup: %v", err)
+	}
 	if err := s.basicAuth.load(basicAuthDBStore{m.pg}); err != nil {
 		log.Fatalf("[auth] HTTP Basic gate: %v", err)
 	}

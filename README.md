@@ -117,7 +117,7 @@ cd ARTEX
 - **① 全部 Docker**：填一个 Postgres 密码（可回车随机）→ 自动写 `.env` → `docker compose up -d`。
 - **② 本地运行**：选数据库（连已有 / 用 Docker 起一个）→ 生成 `config.json` → `go` 编译内嵌单二进制 → 启动。
 
-装好后打开 **http://localhost:8787**（首次进入 `/setup` 设置管理员密码）。
+装好后打开 **http://localhost:8787**。首次进入 `/setup` 时，从启动日志标出的 `setup.token` 文件复制初始化令牌，再设置管理员密码；已初始化的实例直接登录。Docker 默认可用 `docker compose exec artex cat /app/setup.token` 读取令牌，路径以启动日志为准。
 
 ### 方式二：Docker Compose（手动）
 

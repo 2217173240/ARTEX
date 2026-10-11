@@ -163,6 +163,49 @@ test("a delayed write 401 preserves a newer login and never replays the write", 
   assert.equal(client.cookieWrites.length, 0);
 });
 
+test("password rotation supersedes an old session response and a pending write 401", async () => {
+  let resolveOldSession;
+  let resolveOldWrite;
+  const oldSession = new Promise((resolve) => { resolveOldSession = resolve; });
+  const oldWrite = new Promise((resolve) => { resolveOldWrite = resolve; });
+  let sessionReads = 0;
+  const client = apiHarness((url) => {
+    if (url === "/api/auth/session") {
+      return ++sessionReads === 1 ? oldSession : new Response(JSON.stringify({ user: { username: "ARTEX" } }));
+    }
+    if (url === "/api/auth/change-password") return new Response('{"ok":true,"token":"fixture-refreshed"}');
+    return oldWrite;
+  });
+  const pendingSession = client.auth.loadSession();
+  const pendingWrite = client.api.interceptSetToolConfig(["bash"]);
+  const before = client.auth.generation();
+  await client.api.changePassword("fixture-old-password", "fixture-new-password");
+  assert.notEqual(client.auth.generation(), before);
+  resolveOldSession(new Response(null, { status: 401 }));
+  assert.equal((await pendingSession).username, "ARTEX");
+  resolveOldWrite(new Response(null, { status: 401 }));
+  await assert.rejects(pendingWrite, (error) => error.status === 401);
+  assert.equal(client.location.href, "/function/tasks");
+  assert.equal(client.auth.getCurrentUser().username, "ARTEX");
+  assert.equal(client.requests.filter(({ url }) => url === "/api/intercept/tool-config").length, 1);
+  assert.equal([...client.storage.values()].some((value) => String(value).includes("password")), false);
+});
+
+test("a rejected password change preserves the current session generation", async () => {
+  const client = apiHarness(new Response('{"error":"incorrect current password"}', { status: 403 }));
+  const before = client.auth.generation();
+  await assert.rejects(client.api.changePassword("fixture-old", "fixture-new"), (error) => error.status === 403);
+  assert.equal(client.auth.generation(), before);
+});
+
+test("initialization sends ownership proof only in the JSON body", async () => {
+  const client = apiHarness(new Response('{"token":"fixture-session"}'));
+  await client.api.initPassword("fixture-new-password", "fixture-ownership-proof");
+  assert.equal(client.requests[0].url, "/api/auth/init");
+  assert.deepEqual(JSON.parse(client.requests[0].init.body), { password: "fixture-new-password", setup_token: "fixture-ownership-proof" });
+  assert.equal([...client.storage.values()].some((value) => String(value).includes("ownership-proof")), false);
+});
+
 test("401 revalidates a cookie session established by another tab", async () => {
   const client = apiHarness((url) =>
     url === "/api/auth/session"

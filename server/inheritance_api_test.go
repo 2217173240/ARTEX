@@ -16,7 +16,7 @@ func TestInheritedActivityDetailAndRelationDeletion(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) - skipping", err)
 	}
-	defer m.Close()
+	t.Cleanup(func() { _ = m.Close() })
 
 	source, err := m.CreateTaskWithOptions("detail source", "source goal", db.TaskCreateOptions{})
 	if err != nil {
@@ -53,7 +53,7 @@ func TestInheritedActivityDetailAndRelationDeletion(t *testing.T) {
 	}
 
 	s := New(context.Background(), m, t.TempDir(), t.TempDir(), t.TempDir())
-	token, err := signJWT(s.jwtKey)
+	token, err := signAdminJWTForTest(t, s)
 	if err != nil {
 		t.Fatal(err)
 	}

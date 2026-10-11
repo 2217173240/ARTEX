@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -77,6 +78,9 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 
 	var finalText string
 	var rerr error
+	// Terminal.Messages includes prior prompts and may be compacted. Track only
+	// this Prompt's visible model output; thinking alone is not a usable reply.
+	var hasUsableOutput bool
 	for ev, err := range s.Prompt(ctx, input) {
 		if err != nil {
 			flush()
@@ -93,6 +97,7 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 			if ev.ToolUse == nil {
 				continue
 			}
+			hasUsableOutput = true
 			flush()
 			toolNames[ev.ToolUse.ID] = ev.ToolUse.Name
 			in := string(ev.ToolUse.Input)
@@ -111,6 +116,9 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 			rec(db.Activity{Kind: "tool_result", Tool: toolNames[ev.ToolResult.ToolUseID], ToolUseID: ev.ToolResult.ToolUseID,
 				IsError: ev.ToolResult.IsError, Summary: firstLine(out, 200), Detail: out})
 		case harness.KindText:
+			if strings.TrimSpace(ev.Text) != "" {
+				hasUsableOutput = true
+			}
 			addDelta("text", ev.Text)
 		case harness.KindThinking:
 			addDelta("thinking", ev.Text)
@@ -128,29 +136,37 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 			}
 		case harness.KindResult:
 			if ev.Terminal != nil {
-				if ev.Terminal.Reason != harness.ReasonAbortedStreaming {
-					sidequestion.Finish(ctx, ev.Terminal.Messages)
+				// Session saves this terminal's messages before yielding it. Only
+				// change a local value: SDK-owned terminal/history remain intact.
+				terminal := *ev.Terminal
+				if terminal.Reason == harness.ReasonCompleted && terminal.Err == nil && ctx.Err() == nil &&
+					!hasUsableOutput && strings.TrimSpace(terminal.Text) == "" {
+					terminal.Reason = harness.ReasonModelError
+					terminal.Err = errors.New("model completed without usable text or tool calls")
 				}
-				finalText = ev.Terminal.Text
-				reason = ev.Terminal.Reason
+				if terminal.Reason != harness.ReasonAbortedStreaming {
+					sidequestion.Finish(ctx, terminal.Messages)
+				}
+				finalText = terminal.Text
+				reason = terminal.Reason
 				// the buffered tail text usually equals Terminal.Text (final answer);
 				// drop it to avoid a duplicate record, the result row carries it.
-				if tkind == "text" && strings.TrimSpace(tbuf.String()) == strings.TrimSpace(ev.Terminal.Text) {
+				if tkind == "text" && strings.TrimSpace(tbuf.String()) == strings.TrimSpace(terminal.Text) {
 					tbuf.Reset()
 					tkind = ""
 				}
 				flush() // flush any trailing thinking / non-final text
-				sum, detail := ev.Terminal.Text, ev.Terminal.Text
-				if sum == "" || ev.Terminal.Reason == harness.ReasonAbortedTools || ev.Terminal.Reason == harness.ReasonAbortedStreaming {
-					sum, detail = terminalText(ctx, ev.Terminal, lastTool)
+				sum, detail := terminal.Text, terminal.Text
+				if strings.TrimSpace(sum) == "" || terminal.Reason == harness.ReasonAbortedTools || terminal.Reason == harness.ReasonAbortedStreaming {
+					sum, detail = terminalText(ctx, &terminal, lastTool)
 				}
-				u := ev.Terminal.Usage // cumulative token usage for this session
-				rec(db.Activity{Kind: "result", IsError: ev.Terminal.Err != nil,
+				u := terminal.Usage // cumulative token usage for this session
+				rec(db.Activity{Kind: "result", IsError: terminal.Err != nil,
 					Summary: firstLine(sum, 400), Detail: detail,
 					InputTokens: &u.InputTokens, OutputTokens: &u.OutputTokens,
 					CacheReadTokens: &u.CacheReadTokens, CacheWriteTokens: &u.CacheWriteTokens})
-				if ev.Terminal.Err != nil {
-					rerr = ev.Terminal.Err
+				if terminal.Err != nil {
+					rerr = terminal.Err
 				}
 			}
 		}

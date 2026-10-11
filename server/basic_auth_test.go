@@ -38,7 +38,7 @@ func (m *basicAuthMemoryStore) SetSettingContext(ctx context.Context, _ string, 
 func basicAuthTestServer(t *testing.T) (*Server, *basicAuthMemoryStore) {
 	t.Helper()
 	store := &basicAuthMemoryStore{}
-	s := &Server{jwtKey: []byte("test-only-signing-key-32-characters")}
+	s, _ := newAuthMemoryServer(t)
 	if err := s.basicAuth.load(store); err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +237,7 @@ func TestBasicAuthGate(t *testing.T) {
 	if verifyJWT(cookie.Value, s.jwtKey) {
 		t.Fatal("gate cookie accepted as admin JWT")
 	}
-	adminJWT, _ := signJWT(s.jwtKey)
+	adminJWT, _ := signAdminJWTForTest(t, s)
 	for _, tc := range []struct {
 		name, path, user, pass, bearer string
 		cookie                         *http.Cookie
@@ -440,7 +440,7 @@ func TestBasicAuthPostgresLoginFlow(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable: %v", err)
 	}
-	defer m.Close()
+	t.Cleanup(func() { _ = m.Close() })
 	for _, key := range []string{basicAuthKey, authPassKey} {
 		old, exists, err := m.pg.GetSetting(key)
 		if err != nil {
@@ -468,7 +468,7 @@ func TestBasicAuthPostgresLoginFlow(t *testing.T) {
 	if err := s.basicAuth.load(basicAuthDBStore{m.pg}); err != nil {
 		t.Fatal(err)
 	}
-	adminJWT, err := signJWT(s.jwtKey)
+	adminJWT, err := signAdminJWTForTest(t, s)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -505,7 +505,8 @@ func TestBasicAuthPostgresLoginFlow(t *testing.T) {
 	var login struct {
 		Token string `json:"token"`
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &login); err != nil || w.Code != 200 || !verifyJWT(login.Token, s.jwtKey) {
+	currentHash, _, hashErr := m.pg.GetSetting(authPassKey)
+	if err := json.Unmarshal(w.Body.Bytes(), &login); err != nil || hashErr != nil || w.Code != 200 || !s.verifyAdminJWT(login.Token, currentHash) {
 		t.Fatalf("Basic Auth + existing login failed: %d %s", w.Code, w.Body.String())
 	}
 	var gateCookie, adminCookie *http.Cookie

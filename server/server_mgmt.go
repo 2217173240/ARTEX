@@ -28,6 +28,7 @@ import (
 	"github.com/Autumn-27/artex/internal/httpsecurity"
 	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/skill"
+	"gopkg.in/yaml.v3"
 )
 
 // validSkillName checks the agentskills.io name constraints, widened so a skill can
@@ -1178,80 +1179,125 @@ func (s *Server) fsUpdateSkillMeta(w http.ResponseWriter, r *http.Request) {
 }
 
 // rewriteSkillFrontmatter parses the SKILL.md YAML frontmatter and replaces the
-// fields given as non-nil pointers. The instruction body (after the closing ---) is
-// preserved verbatim. Returns an error if the file has no recognisable frontmatter.
+// fields given as non-nil pointers. Unknown YAML values are preserved; the closing
+// delimiter and instruction body are preserved verbatim. Invalid metadata fails
+// before the caller writes the file.
 func rewriteSkillFrontmatter(content []byte, mcps *[]string, description, license, compatibility *string) ([]byte, error) {
-	lines := strings.Split(string(content), "\n")
-	if len(lines) < 2 || strings.TrimSpace(lines[0]) != "---" {
+	lines := bytes.SplitAfter(content, []byte("\n"))
+	if len(lines) < 2 || strings.TrimSpace(string(lines[0])) != "---" {
 		return nil, fmt.Errorf("SKILL.md has no YAML frontmatter")
 	}
-	fmEnd := -1
-	for i := 1; i < len(lines); i++ {
-		if strings.TrimSpace(lines[i]) == "---" {
-			fmEnd = i
+	fmStart, fmEnd := len(lines[0]), -1
+	offset := fmStart
+	for _, line := range lines[1:] {
+		if strings.TrimRight(string(line), "\r\n \t") == "---" {
+			fmEnd = offset
 			break
 		}
+		offset += len(line)
 	}
 	if fmEnd < 0 {
 		return nil, fmt.Errorf("SKILL.md frontmatter is not closed")
 	}
-	// Collect existing key → value from frontmatter (preserve unknown keys)
-	type kv struct{ k, v string }
-	var pairs []kv
-	for _, l := range lines[1:fmEnd] {
-		if idx := strings.IndexByte(l, ':'); idx >= 0 {
-			pairs = append(pairs, kv{strings.TrimSpace(l[:idx]), strings.TrimSpace(l[idx+1:])})
-		} else if strings.TrimSpace(l) != "" {
-			pairs = append(pairs, kv{"", l}) // preserve non-key lines verbatim
+
+	var document yaml.Node
+	decoder := yaml.NewDecoder(bytes.NewReader(content[fmStart:fmEnd]))
+	if err := decoder.Decode(&document); err != nil {
+		return nil, fmt.Errorf("invalid SKILL.md YAML frontmatter: %w", err)
+	}
+	var extra yaml.Node
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return nil, fmt.Errorf("SKILL.md frontmatter must contain one YAML mapping")
+	}
+	if len(document.Content) != 1 || document.Content[0].Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("SKILL.md frontmatter must be a YAML mapping")
+	}
+	mapping := document.Content[0]
+	for i := 0; i < len(mapping.Content); i += 2 {
+		key := mapping.Content[i]
+		if key.Kind != yaml.ScalarNode || (key.Tag != "!!str" && !(key.Tag == "!!merge" && key.Value == "<<")) {
+			return nil, fmt.Errorf("SKILL.md frontmatter keys must be strings")
 		}
 	}
-	// Apply updates (nil pointer = no change)
-	applyStr := func(key string, val *string) {
-		if val == nil {
+	// Decoding validates duplicate keys (including nested mappings) and aliases.
+	// Keep the node tree for writing so unknown types, styles and comments survive.
+	var values map[string]any
+	if err := document.Decode(&values); err != nil {
+		return nil, fmt.Errorf("invalid SKILL.md YAML frontmatter: %w", err)
+	}
+	if mcps == nil && description == nil && license == nil && compatibility == nil {
+		return bytes.Clone(content), nil
+	}
+
+	applyStr := func(key string, value *string) {
+		if value == nil {
 			return
 		}
-		for i, p := range pairs {
-			if p.k == key {
-				pairs[i].v = strings.TrimSpace(*val)
+		replacement := yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: strings.TrimSpace(*value)}
+		for i := 0; i < len(mapping.Content); i += 2 {
+			if mapping.Content[i].Value == key {
+				node := mapping.Content[i+1]
+				replacement.HeadComment, replacement.LineComment, replacement.FootComment = node.HeadComment, node.LineComment, node.FootComment
+				*node = replacement
 				return
 			}
 		}
-		pairs = append(pairs, kv{key, strings.TrimSpace(*val)})
+		mapping.Content = append(mapping.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}, &replacement)
 	}
 	applyStr("description", description)
 	applyStr("license", license)
 	applyStr("compatibility", compatibility)
 	if mcps != nil {
-		cleaned := cleanStrs(*mcps)
-		// Remove existing mcps line
-		filtered := pairs[:0]
-		for _, p := range pairs {
-			if p.k != "mcps" {
-				filtered = append(filtered, p)
+		filtered := mapping.Content[:0]
+		for i := 0; i < len(mapping.Content); i += 2 {
+			key := mapping.Content[i].Value
+			if key != "mcps" && key != "mcp" {
+				filtered = append(filtered, mapping.Content[i], mapping.Content[i+1])
 			}
 		}
-		pairs = filtered
-		if len(cleaned) > 0 {
-			pairs = append(pairs, kv{"mcps", strings.Join(cleaned, ", ")})
+		mapping.Content = filtered
+		if cleaned := cleanStrs(*mcps); len(cleaned) > 0 {
+			var list yaml.Node
+			if err := list.Encode(cleaned); err != nil {
+				return nil, fmt.Errorf("encode skill MCPs: %w", err)
+			}
+			mapping.Content = append(mapping.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "mcps"}, &list)
 		}
 	}
-	// Reconstruct
-	var sb strings.Builder
-	sb.WriteString("---\n")
-	for _, p := range pairs {
-		if p.k == "" {
-			sb.WriteString(p.v)
-		} else {
-			fmt.Fprintf(&sb, "%s: %s", p.k, p.v)
+
+	var frontmatter bytes.Buffer
+	encoder := yaml.NewEncoder(&frontmatter)
+	encoder.SetIndent(2)
+	if err := encoder.Encode(mapping); err != nil {
+		return nil, fmt.Errorf("encode SKILL.md frontmatter: %w", err)
+	}
+	if err := encoder.Close(); err != nil {
+		return nil, fmt.Errorf("encode SKILL.md frontmatter: %w", err)
+	}
+	// Replacing metadata must not leave an unknown field with a dangling alias.
+	values = nil
+	if err := yaml.Unmarshal(frontmatter.Bytes(), &values); err != nil {
+		return nil, fmt.Errorf("invalid updated SKILL.md YAML frontmatter: %w", err)
+	}
+	if mcps != nil {
+		if _, inherited := values["mcp"]; inherited {
+			return nil, fmt.Errorf("cannot remove mcp inherited from a YAML merge")
 		}
-		sb.WriteByte('\n')
+		if len(cleanStrs(*mcps)) == 0 {
+			if _, inherited := values["mcps"]; inherited {
+				return nil, fmt.Errorf("cannot clear mcps inherited from a YAML merge")
+			}
+		}
 	}
-	sb.WriteString("---\n")
-	// Body (lines after closing ---)
-	if fmEnd+1 < len(lines) {
-		sb.WriteString(strings.Join(lines[fmEnd+1:], "\n"))
+	header := frontmatter.Bytes()
+	if bytes.HasSuffix(lines[0], []byte("\r\n")) {
+		header = bytes.ReplaceAll(header, []byte("\n"), []byte("\r\n"))
 	}
-	return []byte(sb.String()), nil
+	updated := make([]byte, 0, fmStart+len(header)+len(content)-fmEnd)
+	updated = append(updated, content[:fmStart]...)
+	updated = append(updated, header...)
+	updated = append(updated, content[fmEnd:]...)
+	return updated, nil
 }
 
 // zip-upload safety caps (defeat zip bombs / runaway archives).

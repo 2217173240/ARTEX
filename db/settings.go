@@ -43,6 +43,18 @@ ON CONFLICT (key) DO NOTHING`, key, value)
 	return n > 0, nil
 }
 
+// CompareAndSetSetting replaces a value only while it still matches the value
+// the caller authenticated against. Concurrent credential changes cannot
+// overwrite one another after their password checks have completed.
+func (d *DB) CompareAndSetSetting(key, oldValue, newValue string) (updated bool, err error) {
+	res, err := d.Exec(`UPDATE settings SET value=$3, updated_at=now() WHERE key=$1 AND value=$2`, key, oldValue, newValue)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
 // GetBool returns the boolean setting, or def when unset/unparseable.
 func (d *DB) GetBool(key string, def bool) bool {
 	v, ok, err := d.GetSetting(key)

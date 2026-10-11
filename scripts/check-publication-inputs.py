@@ -9,7 +9,8 @@ def private_path(path: str) -> bool:
     parts = pathlib.PurePosixPath(path).parts
     name = parts[-1]
     return (
-        name in {"config.json", "jwt.key", ".env", "scheduler_state.json"}
+        name in {"config.json", "jwt.key", "setup.token", ".env", "scheduler_state.json"}
+        or name.startswith(".auth-private-")
         or (name.startswith(".env.") and name not in {".env.example", ".env.sample"})
         or name.endswith((".db", ".db-wal", ".db-shm", "-events.csv"))
         or any(part in {"node_modules", ".next", "__pycache__"} for part in parts)

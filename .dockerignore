@@ -20,6 +20,8 @@ dist/arm64/**
 **/.env.*
 **/config.json
 **/jwt.key
+**/setup.token
+**/.auth-private-*
 **/data
 **/sessions
 **/transcripts

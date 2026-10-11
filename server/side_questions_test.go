@@ -145,7 +145,7 @@ func newSideHTTPFixture(t *testing.T) *sideHTTPFixture {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	s := &Server{m: m, engine: NewEngine(m), ctx: ctx, jwtKey: []byte("btw-test-signing-key-only"), chatBusy: map[string]bool{}}
+	s := &Server{m: m, engine: NewEngine(m), ctx: ctx, jwtKey: []byte("btw-test-signing-key-only-32bytes-fixture"), chatBusy: map[string]bool{}}
 	s.initSideQuestions()
 	p := &sideHTTPProvider{started: make(chan llm.CompletionRequest, 16), release: make(chan struct{})}
 	cfg := agent.Config{Format: llm.FormatOpenAI, BaseURL: "http://fixture.invalid", Model: "fixture", Stream: true}
@@ -154,11 +154,7 @@ func newSideHTTPFixture(t *testing.T) *sideHTTPFixture {
 	s.llmOn = true
 	s.llmDirect = bindSideProvider(p, cfg, 0, "fixture")
 	s.cfgMu.Unlock()
-	token, err := signJWT(s.jwtKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	f := &sideHTTPFixture{s: s, m: m, provider: p, handler: s.Handler(), token: token}
+	f := &sideHTTPFixture{s: s, m: m, provider: p, handler: s.Handler()}
 	t.Cleanup(func() {
 		cancel()
 		for _, done := range s.cancelSideWhere(func(sidequestion.Parent) bool { return true }) {
@@ -168,6 +164,11 @@ func newSideHTTPFixture(t *testing.T) *sideHTTPFixture {
 		s.flushSideSnapshots()
 		m.Close()
 	})
+	token, err := signAdminJWTForTest(t, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.token = token
 	return f
 }
 func (f *sideHTTPFixture) call(t *testing.T, method, path string, body any, want int) *httptest.ResponseRecorder {

@@ -22,8 +22,8 @@ function authHarness(pageName, values = {}, callbackName = "handleSubmit") {
   let locale = "zh-CN";
   const translate = (key) => locale === "en" ? english[key] ?? key : key;
   const handler = vm.runInNewContext(`${ts.transpileModule(submit.getText(tree), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText}\n${callbackName}`, {
-    agreed: false, password: "abc", confirm: "different",
-    setError: (value) => { error = value; }, setLoading: () => {}, setChecking: () => {},
+    agreed: false, password: "abc", confirm: "different", setupToken: "test-only-setup-token",
+    setError: (value) => { error = value; }, setLoading: () => {}, setChecking: () => {}, setSetupToken: () => {},
     api: { initPassword: async () => {} }, auth: { signedIn: async () => {} }, router: { replace: () => {} },
     t: translate, uiText: translate, Error, ...values,
   });
@@ -38,6 +38,7 @@ for (const [page, key, values] of [
   ["login", "请先阅读并同意《使用须知》", {}],
   ["setup", "两次输入的密码不一致", {}],
   ["setup", "密码长度至少 8 位", { password: "abc", confirm: "abc" }],
+  ["setup", "请输入初始化令牌", { setupToken: "  " }],
 ]) {
   test(`${page} validation error follows locale changes after creation`, async () => {
     const harness = authHarness(page, values);
@@ -58,6 +59,25 @@ test("setup server error stays verbatim even when it matches a translated UI key
   assert.equal(harness.renderError(), message);
   harness.setLocale("en");
   assert.equal(harness.renderError(), message);
+});
+
+test("setup submits its ownership token and clears it only after success", async () => {
+  const calls = [];
+  const harness = authHarness("setup", {
+    password: "password-for-fixture", confirm: "password-for-fixture", setupToken: "  fixture-owner-token  ",
+    api: { initPassword: async (...args) => { calls.push(args); } },
+    setSetupToken: (value) => { calls.push(["clear", value]); },
+    auth: { signedIn: async () => { calls.push(["session"]); } },
+    router: { replace: (path) => { calls.push(["navigate", path]); } },
+  });
+  await harness.submit();
+  assert.deepEqual(calls, [["password-for-fixture", "fixture-owner-token"], ["clear", ""], ["session"], ["navigate", "/function/tasks"]]);
+});
+
+test("setup rejects four astral characters as fewer than eight password characters", async () => {
+  const harness = authHarness("setup", { password: "😀😀😀😀", confirm: "😀😀😀😀" });
+  await harness.submit();
+  assert.equal(harness.renderError(), "密码长度至少 8 位");
 });
 
 

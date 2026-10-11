@@ -15,6 +15,7 @@ import { auth } from "@/lib/auth";
 export default function SetupPage() {
   const { t: uiText } = useI18n();
   const router = useRouter();
+  const [setupToken, setSetupToken] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState<{ key: string } | { message: string } | null>(null);
@@ -39,18 +40,23 @@ export default function SetupPage() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (!setupToken.trim()) {
+      setError({ key: "请输入初始化令牌" });
+      return;
+    }
     if (password !== confirm) {
       setError({ key: "两次输入的密码不一致" });
       return;
     }
-    if (password.length < 8) {
+    if ([...password].length < 8) {
       setError({ key: "密码长度至少 8 位" });
       return;
     }
     setLoading(true);
     setError(null);
     try {
-      await api.initPassword(password);
+      await api.initPassword(password, setupToken.trim());
+      setSetupToken("");
       await auth.signedIn();
       router.replace("/function/tasks");
     } catch (err) {
@@ -102,6 +108,24 @@ export default function SetupPage() {
           ) : (
             <form onSubmit={handleSubmit} className="flex flex-col gap-4">
               <div className="space-y-1.5">
+                <Label htmlFor="setup-token">{uiText("初始化令牌")}</Label>
+                <Input
+                  id="setup-token"
+                  type="password"
+                  value={setupToken}
+                  onChange={(e) => setSetupToken(e.target.value)}
+                  placeholder={uiText("粘贴初始化令牌")}
+                  autoFocus
+                  autoComplete="off"
+                  autoCapitalize="none"
+                  spellCheck={false}
+                  aria-describedby="setup-token-help"
+                />
+                <p id="setup-token-help" className="text-sm text-muted-foreground">
+                  {uiText("从启动日志标出的 setup.token 文件读取令牌。令牌仅用于首次设置密码。")}
+                </p>
+              </div>
+              <div className="space-y-1.5">
                 <Label htmlFor="password">{uiText("新密码")}</Label>
                 <Input
                   id="password"
@@ -109,7 +133,6 @@ export default function SetupPage() {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder={uiText("至少 8 位")}
-                  autoFocus
                   autoComplete="new-password"
                 />
               </div>
@@ -127,7 +150,7 @@ export default function SetupPage() {
               {error && (
                 <p className="text-sm text-destructive">{"key" in error ? uiText(error.key) : error.message}</p>
               )}
-              <Button type="submit" className="w-full" disabled={loading || !password || !confirm}>
+              <Button type="submit" className="w-full" disabled={loading || !setupToken.trim() || !password || !confirm}>
                 {loading ? uiText("保存中...") : uiText("设置密码并登录")}
               </Button>
             </form>

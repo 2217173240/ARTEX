@@ -256,11 +256,15 @@ export const api = {
   health: () => get<{ ok: boolean; service: string; version: string }>("/health"),
 
   // ---- auth ----
-  authStatus: () => get<{ initialized: boolean }>("/auth/status"),
+  authStatus: () => get<{ initialized: boolean; setup_token_required: boolean }>("/auth/status"),
   login: (username: string, password: string) => post<{ token: string }>("/auth/login", { username, password }),
-  initPassword: (password: string) => post<{ token: string }>("/auth/init", { password }),
-  changePassword: (oldPassword: string, newPassword: string) =>
-    post<{ ok: boolean }>("/auth/change-password", { old_password: oldPassword, new_password: newPassword }),
+  initPassword: (password: string, setupToken: string) =>
+    post<{ token: string }>("/auth/init", { password, setup_token: setupToken }),
+  changePassword: async (oldPassword: string, newPassword: string) => {
+    const result = await post<{ ok: boolean }>("/auth/change-password", { old_password: oldPassword, new_password: newPassword });
+    auth.credentialsChanged();
+    return result;
+  },
 
   // ---- tasks ----
   tasks: () =>

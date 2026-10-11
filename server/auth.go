@@ -2,6 +2,7 @@ package server
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"fmt"
 	"log"
 	"math/big"
@@ -51,24 +52,46 @@ func validatePassword(pw string) string {
 // the project base dir (next to the executable), NOT the browsable workspace root
 // (dataDir) — the signing key must never be listable/downloadable via the file
 // manager. Legacy installs kept it at dataDir/jwt.key; if present there and not yet
-// at the new location, it is migrated (key preserved, so sessions stay valid) and
+// at the new location, it is migrated (base key preserved) and
 // the old file removed so it disappears from the workspace. On first run a random
 // key is generated and persisted.
 func loadOrCreateJWTKey(keyDir, dataDir string) ([]byte, error) {
 	path := filepath.Join(keyDir, jwtKeyFilename)
-	// one-time migration out of the old in-workspace location.
-	if legacy := filepath.Join(dataDir, jwtKeyFilename); legacy != path {
-		if _, err := os.Stat(path); os.IsNotExist(err) {
-			if data, rerr := os.ReadFile(legacy); rerr == nil {
-				if werr := os.WriteFile(path, data, 0o600); werr == nil {
-					_ = os.Remove(legacy)
-					log.Printf("[auth] JWT key 已从 %s 迁移到 %s（移出可浏览工作区）", legacy, path)
-				}
-			}
+	readKey := func() ([]byte, error) {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
 		}
+		key := []byte(strings.TrimSpace(string(data)))
+		if len(key) < 32 {
+			return nil, fmt.Errorf("existing jwt.key is invalid; file preserved")
+		}
+		return key, nil
 	}
-	if data, err := os.ReadFile(path); err == nil && len(strings.TrimSpace(string(data))) >= 32 {
-		return []byte(strings.TrimSpace(string(data))), nil
+	if key, err := readKey(); err == nil {
+		return key, nil
+	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
+	// Preserve the legacy key while moving its delivery location outside the
+	// workspace. Exclusive publication cannot overwrite a concurrent startup.
+	if legacy := filepath.Join(dataDir, jwtKeyFilename); legacy != path {
+		if data, err := os.ReadFile(legacy); err == nil {
+			if len(strings.TrimSpace(string(data))) < 32 {
+				return nil, fmt.Errorf("legacy jwt.key is invalid; file preserved")
+			}
+			created, err := publishPrivateAuthFile(keyDir, jwtKeyFilename, data)
+			if err != nil {
+				return nil, err
+			}
+			if created {
+				_ = os.Remove(legacy)
+				log.Printf("[auth] JWT key 已从 %s 迁移到 %s（移出可浏览工作区）", legacy, path)
+			}
+			return readKey()
+		} else if !os.IsNotExist(err) {
+			return nil, err
+		}
 	}
 	buf := make([]byte, 32)
 	for i := range buf {
@@ -78,11 +101,14 @@ func loadOrCreateJWTKey(keyDir, dataDir string) ([]byte, error) {
 		}
 		buf[i] = keyChars[n.Int64()]
 	}
-	if err := os.WriteFile(path, buf, 0600); err != nil {
-		return nil, fmt.Errorf("write jwt key: %w", err)
+	created, err := publishPrivateAuthFile(keyDir, jwtKeyFilename, buf)
+	if err != nil {
+		return nil, err
 	}
-	log.Printf("[auth] 新 JWT key 已写入 %s", path)
-	return buf, nil
+	if created {
+		log.Printf("[auth] 新 JWT key 已写入 %s", path)
+	}
+	return readKey()
 }
 
 // signJWT issues a 7-day HS256 token for user ARTEX.
@@ -132,8 +158,7 @@ func (s *Server) requireAuth(h http.Handler) http.Handler {
 			writeErr(w, 401, "未授权")
 			return
 		}
-		if !verifyJWT(tok, s.jwtKey) {
-			writeErr(w, 401, "token 无效或已过期")
+		if _, ok := s.authenticatedAdminHash(w, r); !ok {
 			return
 		}
 		h.ServeHTTP(w, r)
@@ -145,7 +170,7 @@ func (s *Server) requireAuth(h http.Handler) http.Handler {
 // 送到 /setup 去设置密码（login/page.tsx），把数据库故障包装成 200 等于把用户往
 // 覆盖已有密码的路上推。
 func (s *Server) authStatus(w http.ResponseWriter, r *http.Request) {
-	pg := s.pg(w)
+	pg := s.authDatabase(w)
 	if pg == nil {
 		return
 	}
@@ -154,7 +179,7 @@ func (s *Server) authStatus(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 503, errDataSourceUnavailable)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"initialized": hash != ""})
+	writeJSON(w, 200, map[string]any{"initialized": hash != "", "setup_token_required": hash == ""})
 }
 
 // POST /api/auth/init — sets the password for the first time; rejected if already set.
@@ -162,7 +187,7 @@ func (s *Server) authInit(w http.ResponseWriter, r *http.Request) {
 	if !s.allowAuthAttempt(w, r) {
 		return
 	}
-	pg := s.pg(w)
+	pg := s.authDatabase(w)
 	if pg == nil {
 		return
 	}
@@ -176,9 +201,18 @@ func (s *Server) authInit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Password string `json:"password"`
+		Password   string `json:"password"`
+		SetupToken string `json:"setup_token"`
 	}
-	if err := decode(r, &req); err != nil || req.Password == "" {
+	if err := decode(r, &req); err != nil {
+		writeErr(w, 400, "请求格式错误")
+		return
+	}
+	if len(s.jwtKey) < 32 || s.setupToken == "" || subtle.ConstantTimeCompare([]byte(req.SetupToken), []byte(s.setupToken)) != 1 {
+		writeErr(w, 403, "setup token 无效")
+		return
+	}
+	if req.Password == "" {
 		writeErr(w, 400, "密码不能为空")
 		return
 	}
@@ -203,7 +237,7 @@ func (s *Server) authInit(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 403, "密码已设置")
 		return
 	}
-	tok, err := signJWT(s.jwtKey)
+	tok, err := s.signAdminJWT(string(hash))
 	if err != nil {
 		writeErr(w, 500, "token 生成失败")
 		return
@@ -216,14 +250,11 @@ func (s *Server) authInit(w http.ResponseWriter, r *http.Request) {
 // token (this route is under /api/auth/* which requireAuth exempts, so the token
 // is validated here) AND the current password.
 func (s *Server) authChangePassword(w http.ResponseWriter, r *http.Request) {
-	pg := s.pg(w)
-	if pg == nil {
+	hash, authenticated := s.authenticatedAdminHash(w, r)
+	if !authenticated {
 		return
 	}
-	if !verifyJWT(extractToken(r), s.jwtKey) {
-		writeErr(w, 401, "未授权")
-		return
-	}
+	pg := s.m.pg
 	var req struct {
 		OldPassword string `json:"old_password"`
 		NewPassword string `json:"new_password"`
@@ -240,15 +271,6 @@ func (s *Server) authChangePassword(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, msg)
 		return
 	}
-	hash, ok, err := pg.GetSetting(authPassKey)
-	if err != nil {
-		writeErr(w, 503, errDataSourceUnavailable)
-		return
-	}
-	if !ok || hash == "" {
-		writeErr(w, 403, "密码未初始化，请先设置密码")
-		return
-	}
 	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(req.OldPassword)); err != nil {
 		writeErr(w, 401, "当前密码错误")
 		return
@@ -258,11 +280,22 @@ func (s *Server) authChangePassword(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, "密码加密失败")
 		return
 	}
-	if err := pg.SetSetting(authPassKey, string(newHash)); err != nil {
+	updated, err := pg.CompareAndSetSetting(authPassKey, hash, string(newHash))
+	if err != nil {
 		writeErr(w, 500, "保存失败: "+err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]any{"ok": true})
+	if !updated {
+		writeErr(w, 409, "密码已变更，请重新登录")
+		return
+	}
+	tok, err := s.signAdminJWT(string(newHash))
+	if err != nil {
+		writeErr(w, 500, "token 生成失败")
+		return
+	}
+	setAuthCookie(w, r, tok, int(jwtTTL.Seconds()))
+	writeJSON(w, 200, map[string]any{"ok": true, "token": tok})
 }
 
 // POST /api/auth/login — validates username/password and returns a JWT.
@@ -270,7 +303,7 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 	if !s.allowAuthAttempt(w, r) {
 		return
 	}
-	pg := s.pg(w)
+	pg := s.authDatabase(w)
 	if pg == nil {
 		return
 	}
@@ -299,7 +332,7 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 401, "用户名或密码错误")
 		return
 	}
-	tok, err := signJWT(s.jwtKey)
+	tok, err := s.signAdminJWT(hash)
 	if err != nil {
 		writeErr(w, 500, "token 生成失败")
 		return
@@ -315,8 +348,7 @@ func setAuthCookie(w http.ResponseWriter, r *http.Request, token string, age int
 }
 func (s *Server) authSession(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	if !verifyJWT(extractToken(r), s.jwtKey) {
-		writeErr(w, 401, "未授权")
+	if _, ok := s.authenticatedAdminHash(w, r); !ok {
 		return
 	}
 	writeJSON(w, 200, map[string]any{"user": map[string]string{"id": "1", "name": "ARTEX", "username": "ARTEX", "email": "", "avatar": "", "role": "operator"}})
