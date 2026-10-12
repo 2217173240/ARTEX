@@ -2433,7 +2433,8 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     return { exists: false, configured: false, enabled: false, reachable: false, tools: [] };
   if (path === "/sync/scopesentry/projects") return { projects: [], tag: {} };
   if (path === "/sync/scopesentry/tasks") return { tasks: [] };
-  if (path === "/sync/scopesentry/sync") return { synced: {}, companies: null, warnings: null, errors: null };
+  if (path === "/sync/scopesentry/sync")
+    return { status: "success", truncated: false, synced: {}, companies: null, warnings: null, errors: null };
 
   // ── skills ──
   if (path === "/skills" && m === "GET") return { skills: D.skills };

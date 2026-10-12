@@ -1,7 +1,5 @@
 "use client";
 
-import { useI18n } from "@/lib/i18n";
-
 import * as React from "react";
 
 import { AlertCircleIcon, CheckCircle2Icon, DownloadIcon, PlugZapIcon, RefreshCwIcon, SearchIcon } from "lucide-react";
@@ -16,6 +14,8 @@ import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
+import { useI18n } from "@/lib/i18n";
+import { syncOutcome } from "@/lib/sync-outcome";
 import type { SSProject, SSTask } from "@/lib/types";
 
 type SSStatus = {
@@ -295,8 +295,10 @@ function SyncWorkbench() {
         create_company: dimension === "project" ? createCompany : false,
       });
       setResult(r);
-      const total = Object.values(r.synced ?? {}).reduce((a, b) => a + b, 0);
-      toast.success(uiText("同步完成，共入库 {v0} 条资产", { v0: total }));
+      const outcome = syncOutcome(r);
+      toast[outcome.severity](
+        `${uiText(outcome.title)} · ${uiText("成功写入的资产记录数：{v0}", { v0: outcome.total })}`,
+      );
     } catch (e) {
       toast.error(uiText("同步失败：{v0}", { v0: (e as Error).message }));
     } finally {
@@ -381,7 +383,7 @@ function SyncWorkbench() {
                 checked={!!assetTypes[t.key]}
                 onCheckedChange={(c) => setAssetTypes((prev) => ({ ...prev, [t.key]: !!c }))}
               />
-              {t.label}
+              {uiText(t.label)}
             </label>
           ))}
           {dimension === "project" && (
@@ -476,14 +478,28 @@ function SyncWorkbench() {
 
 function SyncResult({ result }: { result: Awaited<ReturnType<typeof api.ssSync>> }) {
   const { t: uiText } = useI18n();
+  const outcome = syncOutcome(result);
   const synced = result.synced ?? {};
   const labels: Record<string, string> = { subdomain: "子域名", service: "服务", app: "App", ip: "IP" };
+  const statusClass = {
+    success: "text-emerald-600 dark:text-emerald-500",
+    error: "text-destructive",
+    warning: "text-amber-600 dark:text-amber-500",
+  }[outcome.severity];
   return (
-    <div className="space-y-2 rounded-md border bg-muted/40 p-3 text-sm">
+    <div className="space-y-2 rounded-md border bg-muted/40 p-3 text-sm" role="status">
+      <p className={`font-medium ${statusClass}`}>{uiText(outcome.title)}</p>
+      <p>{uiText("成功写入的资产记录数：{v0}", { v0: outcome.total })}</p>
+      <p className="text-muted-foreground">{uiText("计数包含新增和更新的成功写入，不代表新增或去重后的资产数。")}</p>
+      {result.truncated && (
+        <p className="text-amber-600 dark:text-amber-500">
+          {uiText("部分目标的某些资产类型达到 5000 条上限，仍有记录未同步。请在数据源缩小目标范围后重新同步。")}
+        </p>
+      )}
       <div className="flex flex-wrap gap-3">
         {Object.entries(synced).map(([k, v]) => (
           <Badge key={k} variant="secondary">
-            {labels[k] ?? k}: {v}
+            {labels[k] ? uiText(labels[k]) : k}: {v}
           </Badge>
         ))}
       </div>
