@@ -1,5 +1,9 @@
 # 同源功能集成
 
+2026-10-12 的同步结果修复以 `146e560d308aa26b8371c60441d7b2f4ea04c879` 为基线，借鉴 [sharenjun 的 `19d9bbc`](https://github.com/sharenjun/ARTEX-main/commit/19d9bbcebfb56a6a8dff467c5357ee0a23d1e7b2)（作者 sharenjun，AGPL-3.0）对部分同步和截断的明确报告，按当前同步 API 重新实现。保留每目标、每类型 5000 条保护上限，区分达到上限与确认还有记录；报告无效记录、派生 IP 和企业范围写入错误，避免前端把未完成结果显示为成功。计数表示成功资产写入次数，包含更新和重复源记录，不代表新建或唯一资产数。请求取消后停止后续操作，已完成写入保留；遵循 [Go context](https://pkg.go.dev/context) 的请求取消传播和 [MCP 工具规范](https://modelcontextprotocol.io/specification/2025-11-25/server/tools#error-handling)的错误报告语义。
+
+本次采用上述结果正确性部分。上游持久化同步历史、后台恢复和独立任务完成协议涉及新的状态模型，仍作为单独候选保留；没有整体合入其业务映射、任务状态机或 CI。jiwoochris PR #22 的认证、初始化、密码长度和连接池补强已存在于本 fork 的 `a951e4a` 及后续改进中，本轮确认无须重复引入。
+
 2026-10-11 的安全与可靠性增量以 `9b531c1850e789d4175bb7490be4e9208e50b0a3` 为基线：
 
 | 来源 | 采用方式 |

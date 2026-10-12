@@ -295,76 +295,149 @@ func (s *Server) syncSSRun(w http.ResponseWriter, r *http.Request) {
 	}
 	defer cl.Close()
 
-	synced := map[string]int{"subdomain": 0, "app": 0, "service": 0, "ip": 0}
-	var companies []string
-	var warnings, errs []string
-	madeCompany := false
+	writeJSON(w, 200, s.ssSync(ctx, cl, as, cs, req, pageSize))
+}
 
+// These are the operations a sync performs; the concrete stores keep their normal
+// validation and transactions. Check cancellation before starting each operation:
+// existing store methods cannot interrupt an SQL write already in flight.
+type ssCaller interface {
+	Call(context.Context, string, any) (string, error)
+}
+
+type ssAssetWriter interface {
+	UpsertSubdomain(db.UpsertSubdomainReq) (int64, error)
+	UpsertIP(db.UpsertIPReq) (int64, error)
+	UpsertApp(db.UpsertAppReq) (int64, error)
+	UpsertHTTPService(db.UpsertHTTPServiceReq) (int64, error)
+	UpsertOtherService(db.UpsertOtherServiceReq) (int64, error)
+}
+
+type ssCompanyWriter interface {
+	UpsertByName(string) (int64, error)
+	AddScope(int64, []string, string) (int, int, int, []string)
+	RecomputeAttribution() error
+}
+
+type ssSyncResult struct {
+	Status    string         `json:"status"`
+	Truncated bool           `json:"truncated"`
+	Synced    map[string]int `json:"synced"`
+	Companies []string       `json:"companies"`
+	Warnings  []string       `json:"warnings"`
+	Errors    []string       `json:"errors"`
+}
+
+func (result *ssSyncResult) setStatus() {
+	writes := 0
+	for _, n := range result.Synced {
+		writes += n
+	}
+	switch {
+	case len(result.Errors) > 0 && writes == 0:
+		result.Status = "failed"
+	case len(result.Errors) > 0 || len(result.Warnings) > 0 || result.Truncated:
+		result.Status = "partial"
+	default:
+		result.Status = "success"
+	}
+}
+
+func (s *Server) ssSync(ctx context.Context, cl ssCaller, as ssAssetWriter, cs ssCompanyWriter, req ssSyncReq, pageSize int) ssSyncResult {
+	result := ssSyncResult{Synced: map[string]int{"subdomain": 0, "app": 0, "service": 0, "ip": 0}}
+	madeCompany, interrupted := false, false
+	stop := func() bool {
+		if err := ctx.Err(); err != nil {
+			if !interrupted {
+				result.Errors = append(result.Errors, "同步未完成: "+err.Error())
+				interrupted = true
+			}
+			return true
+		}
+		return false
+	}
+
+targets:
 	for _, target := range req.Targets {
-		filter := map[string]any{}
-		switch req.Dimension {
-		case "project":
-			filter["project"] = []string{target}
-			if req.CreateCompany {
-				name, roots, perr := s.ssProjectMeta(ctx, cl, target)
-				if perr != nil {
-					warnings = append(warnings, fmt.Sprintf("项目 %s 详情获取失败: %v", target, perr))
-				} else if name != "" {
-					cid, cerr := cs.UpsertByName(name)
-					if cerr != nil {
-						warnings = append(warnings, fmt.Sprintf("公司 %s 创建失败: %v", name, cerr))
-					} else {
-						companies = append(companies, name)
-						madeCompany = true
-						if len(roots) > 0 {
-							cs.AddScope(cid, roots, "scopesentry:"+name)
+		if stop() {
+			break
+		}
+		filter := map[string]any{req.Dimension: []string{target}}
+		if req.Dimension == "project" && req.CreateCompany {
+			name, roots, perr := s.ssProjectMeta(ctx, cl, target)
+			if stop() {
+				break
+			}
+			if perr != nil {
+				result.Warnings = append(result.Warnings, fmt.Sprintf("项目 %s 详情获取失败: %v", target, perr))
+			} else if strings.TrimSpace(name) == "" {
+				result.Warnings = append(result.Warnings, fmt.Sprintf("项目 %s 缺少 name，已跳过公司创建", target))
+			} else {
+				cid, cerr := cs.UpsertByName(name)
+				if cerr != nil {
+					result.Errors = append(result.Errors, fmt.Sprintf("公司 %s 创建失败: %v", name, cerr))
+				} else {
+					result.Companies = append(result.Companies, name)
+					madeCompany = true
+					if stop() {
+						break
+					}
+					if len(roots) > 0 {
+						_, _, invalid, scopeErrs := cs.AddScope(cid, roots, "scopesentry:"+name)
+						for _, scopeErr := range scopeErrs {
+							result.Errors = append(result.Errors, fmt.Sprintf("公司 %s 范围写入失败: %s", name, scopeErr))
+						}
+						if invalid > 0 && len(scopeErrs) == 0 {
+							result.Warnings = append(result.Warnings, fmt.Sprintf("公司 %s 跳过 %d 条无效范围", name, invalid))
 						}
 					}
 				}
 			}
-		case "task":
-			filter["task"] = []string{target}
 		}
 
 		for _, at := range req.AssetTypes {
+			if stop() {
+				break targets
+			}
 			ssType, ok := map[string]string{"subdomain": "subdomain", "service": "asset", "app": "app"}[at]
 			if !ok {
-				warnings = append(warnings, "未知资产类型，已跳过: "+at)
+				result.Warnings = append(result.Warnings, "未知资产类型，已跳过: "+at)
 				continue
 			}
 			items, truncated, ferr := s.ssPageAll(ctx, cl, ssType, filter, pageSize)
+			if stop() {
+				break targets
+			}
 			if ferr != nil {
-				errs = append(errs, fmt.Sprintf("%s(%s) 拉取失败: %v", at, target, ferr))
-				continue
+				result.Errors = append(result.Errors, fmt.Sprintf("%s(%s) 拉取失败: %v", at, target, ferr))
 			}
 			if truncated {
-				warnings = append(warnings, fmt.Sprintf("%s(%s) 达到 %d 条上限，已截断", at, target, syncMaxPerType))
+				result.Truncated = true
+				result.Warnings = append(result.Warnings, fmt.Sprintf("%s(%s) 达到 %d 条上限，已截断", at, target, syncMaxPerType))
 			}
+			// A later non-cancellation error does not discard validated earlier pages.
 			for _, raw := range items {
-				if e := s.ssIngest(as, at, raw, synced); e != "" {
-					errs = append(errs, e)
+				if stop() {
+					break targets
 				}
+				result.Errors = append(result.Errors, s.ssIngest(ctx, as, at, raw, result.Synced)...)
 			}
 		}
 	}
 
-	// Rebuild company attribution so freshly-synced assets attach to their company
-	// (scope was written above; assets came after).
-	if madeCompany {
-		_ = cs.RecomputeAttribution()
+	if madeCompany && !stop() {
+		if err := cs.RecomputeAttribution(); err != nil {
+			result.Errors = append(result.Errors, "公司归属重建失败: "+err.Error())
+		}
 	}
-
-	writeJSON(w, 200, map[string]any{
-		"synced":    synced,
-		"companies": companies,
-		"warnings":  warnings,
-		"errors":    errs,
-	})
+	stop()
+	result.setStatus()
+	return result
 }
 
 // ssProjectMeta fetches a project's display name and its target root domains
 // (get_project.target is a newline-separated list) for company + scope creation.
-func (s *Server) ssProjectMeta(ctx context.Context, cl *mcphttp.Client, projectID string) (name string, roots []string, err error) {
+func (s *Server) ssProjectMeta(ctx context.Context, cl ssCaller, projectID string) (name string, roots []string, err error) {
 	text, err := cl.Call(ctx, "get_project", map[string]any{"id": projectID})
 	if err != nil {
 		return "", nil, err
@@ -387,8 +460,11 @@ func (s *Server) ssProjectMeta(ctx context.Context, cl *mcphttp.Client, projectI
 // ssPageAll pages through list_assets for one asset_type + filter until a short/empty
 // page or the protection cap. The {list:[...]} envelope has no total, so we stop when
 // a page returns fewer than pageSize items.
-func (s *Server) ssPageAll(ctx context.Context, cl *mcphttp.Client, ssType string, filter map[string]any, pageSize int) (items []json.RawMessage, truncated bool, err error) {
+func (s *Server) ssPageAll(ctx context.Context, cl ssCaller, ssType string, filter map[string]any, pageSize int) (items []json.RawMessage, truncated bool, err error) {
 	for page := 1; ; page++ {
+		if err := ctx.Err(); err != nil {
+			return items, truncated, err
+		}
 		args := map[string]any{"asset_type": ssType, "pageIndex": page, "pageSize": pageSize}
 		if len(filter) > 0 {
 			args["filter"] = filter
@@ -398,21 +474,30 @@ func (s *Server) ssPageAll(ctx context.Context, cl *mcphttp.Client, ssType strin
 			return items, truncated, cerr
 		}
 		var env struct {
-			List []json.RawMessage `json:"list"`
+			List json.RawMessage `json:"list"`
 		}
 		if uerr := json.Unmarshal([]byte(text), &env); uerr != nil {
 			return items, truncated, uerr
 		}
-		if len(env.List) == 0 {
+		if len(env.List) == 0 || string(env.List) == "null" {
+			return items, truncated, fmt.Errorf("list_assets 响应缺少 list 数组")
+		}
+		var list []json.RawMessage
+		if uerr := json.Unmarshal(env.List, &list); uerr != nil {
+			return items, truncated, uerr
+		}
+		if len(list) == 0 {
 			break
 		}
-		items = append(items, env.List...)
-		if len(items) >= syncMaxPerType {
-			items = items[:syncMaxPerType]
-			truncated = true
-			break
+		remaining := syncMaxPerType - len(items)
+		if len(list) > remaining {
+			items = append(items, list[:remaining]...)
+			return items, true, nil
 		}
-		if len(env.List) < pageSize {
+		items = append(items, list...)
+		// An exact cap is complete if this page is short. Otherwise the next
+		// request keeps the original page size and filter to probe for more.
+		if len(list) < pageSize {
 			break
 		}
 	}
@@ -420,8 +505,13 @@ func (s *Server) ssPageAll(ctx context.Context, cl *mcphttp.Client, ssType strin
 }
 
 // ssIngest maps one ScopeSentry asset JSON to the ARTEX asset store and upserts it.
-// Returns a non-empty error string on failure. synced is incremented per kind.
-func (s *Server) ssIngest(as *db.AssetStore, assetType string, raw json.RawMessage, synced map[string]int) string {
+// Returns errors for invalid records and failed writes, including derived IPs.
+// synced counts successful upserts, including updates to existing assets.
+func (s *Server) ssIngest(ctx context.Context, as ssAssetWriter, assetType string, raw json.RawMessage, synced map[string]int) []string {
+	if ctx.Err() != nil {
+		return nil // The execution loop reports interruption once.
+	}
+	var errs []string
 	switch assetType {
 	case "subdomain":
 		var it struct {
@@ -431,20 +521,30 @@ func (s *Server) ssIngest(as *db.AssetStore, assetType string, raw json.RawMessa
 			IP    []string `json:"ip"`
 		}
 		if err := json.Unmarshal(raw, &it); err != nil {
-			return "subdomain 解析失败: " + err.Error()
+			return []string{"subdomain 解析失败: " + err.Error()}
 		}
-		if it.Host == "" {
-			return ""
+		if strings.TrimSpace(it.Host) == "" {
+			return []string{"subdomain 缺少 host，已跳过"}
+		}
+		if ctx.Err() != nil {
+			return errs
 		}
 		if _, err := as.UpsertSubdomain(db.UpsertSubdomainReq{Domain: it.Host, RecordType: it.Type, RecordValue: it.Value}); err != nil {
-			return "subdomain " + it.Host + ": " + err.Error()
+			return []string{"subdomain " + it.Host + ": " + err.Error()}
 		}
 		synced["subdomain"]++
 		for _, ip := range it.IP {
-			if ip != "" {
-				if _, err := as.UpsertIP(db.UpsertIPReq{IP: ip, BoundDomains: []string{it.Host}}); err == nil {
-					synced["ip"]++
-				}
+			if ctx.Err() != nil {
+				return errs
+			}
+			if strings.TrimSpace(ip) == "" {
+				errs = append(errs, "subdomain "+it.Host+" 的 ip 为空，已跳过")
+				continue
+			}
+			if _, err := as.UpsertIP(db.UpsertIPReq{IP: ip, BoundDomains: []string{it.Host}}); err != nil {
+				errs = append(errs, "ip "+ip+" ("+it.Host+"): "+err.Error())
+			} else {
+				synced["ip"]++
 			}
 		}
 	case "app":
@@ -455,13 +555,16 @@ func (s *Server) ssIngest(as *db.AssetStore, assetType string, raw json.RawMessa
 			ICP         string `json:"icp"`
 		}
 		if err := json.Unmarshal(raw, &it); err != nil {
-			return "app 解析失败: " + err.Error()
+			return []string{"app 解析失败: " + err.Error()}
 		}
-		if it.Name == "" {
-			return ""
+		if strings.TrimSpace(it.Name) == "" {
+			return []string{"app 缺少 name，已跳过"}
+		}
+		if ctx.Err() != nil {
+			return errs
 		}
 		if _, err := as.UpsertApp(db.UpsertAppReq{Name: it.Name, Category: it.Category, Description: it.Description, ICP: it.ICP}); err != nil {
-			return "app " + it.Name + ": " + err.Error()
+			return []string{"app " + it.Name + ": " + err.Error()}
 		}
 		synced["app"]++
 	case "service":
@@ -477,29 +580,35 @@ func (s *Server) ssIngest(as *db.AssetStore, assetType string, raw json.RawMessa
 			Icon     string   `json:"icon"`
 		}
 		if err := json.Unmarshal(raw, &it); err != nil {
-			return "service 解析失败: " + err.Error()
+			return []string{"service 解析失败: " + err.Error()}
 		}
 		if it.Service == "http" || it.URL != "" {
-			if it.URL == "" {
-				return ""
+			if strings.TrimSpace(it.URL) == "" {
+				return []string{"service http 缺少 url，已跳过"}
+			}
+			if ctx.Err() != nil {
+				return errs
 			}
 			if _, err := as.UpsertHTTPService(db.UpsertHTTPServiceReq{
 				URL: it.URL, Technologies: it.Products, StatusCode: it.Status,
 				PageTitle: it.Title, FaviconMMH3: it.Icon, IP: it.IP,
 			}); err != nil {
-				return "service " + it.URL + ": " + err.Error()
+				return []string{"service " + it.URL + ": " + err.Error()}
 			}
 		} else {
 			port, _ := strconv.Atoi(it.Port)
+			if ctx.Err() != nil {
+				return errs
+			}
 			if _, err := as.UpsertOtherService(db.UpsertOtherServiceReq{
 				Domain: it.Domain, IP: it.IP, Port: port, ServiceName: it.Service,
 			}); err != nil {
-				return "service " + it.IP + ":" + it.Port + ": " + err.Error()
+				return []string{"service " + it.IP + ":" + it.Port + ": " + err.Error()}
 			}
 		}
 		synced["service"]++
 	}
-	return ""
+	return errs
 }
 
 // queryInt reads an int query param with a default fallback.

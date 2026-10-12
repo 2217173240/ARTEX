@@ -1176,7 +1176,9 @@ export const api = {
     page_size?: number;
   }) =>
     post<{
-      synced: Record<string, number>;
+      status: "success" | "partial" | "failed";
+      truncated: boolean;
+      synced: Record<string, number> | null;
       companies: string[] | null;
       warnings: string[] | null;
       errors: string[] | null;
