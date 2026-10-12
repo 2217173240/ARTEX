@@ -1550,7 +1550,7 @@ func skillPathRune(r rune) bool {
 const maxSkillPathLen = 512
 
 // skillRelPath validates a relative file path supplied by the client.
-// Returns the cleaned path and an empty error string on success.
+// Returns the cleaned slash-separated path and an empty error string on success.
 // Validation order matters: character check first (before Clean) so encoding tricks
 // can't survive normalization.
 func skillRelPath(file string) (string, string) {
@@ -1573,14 +1573,14 @@ func skillRelPath(file string) (string, string) {
 		return "", "invalid path: '..' not allowed"
 	}
 	// 3. Reject leading slash and empty segments (double slash).
-	//    Leading slash would survive filepath.Clean as an absolute path.
+	//    Leading slash would survive path.Clean as an absolute path.
 	if strings.HasPrefix(file, "/") || strings.Contains(file, "//") {
 		return "", "invalid path: must be relative with no empty segments"
 	}
 	// 4. Normalize and final safety re-check after Clean.
-	//    filepath.Clean removes redundant separators and resolves single dots.
-	clean := filepath.Clean(file)
-	if clean == "." || filepath.IsAbs(clean) || strings.HasPrefix(clean, "..") {
+	//    API paths use slashes on every OS; native joins happen at the filesystem boundary.
+	clean := path.Clean(file)
+	if clean == "." || path.IsAbs(clean) || strings.HasPrefix(clean, "..") {
 		return "", "invalid path"
 	}
 	return clean, ""
@@ -1601,6 +1601,7 @@ func walkSkillFiles(root string) ([]string, error) {
 		if relErr != nil || rel == "." {
 			return nil
 		}
+		rel = filepath.ToSlash(rel)
 		if d.IsDir() {
 			entries = append(entries, rel+"/")
 		} else {
