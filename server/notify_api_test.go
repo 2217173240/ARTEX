@@ -217,13 +217,26 @@ func markdownText(t *testing.T, body map[string]any) string {
 	return ""
 }
 
-// agePendingBatch 把该渠道的待发投递催老，用于测试汇总批次到期。
-func (f *notifyFixture) agePendingBatch(t *testing.T, chID int64) {
+// preparePendingDigestBatch makes fresh fixture deliveries both mature and
+// immediately claimable. Only the two synchronous digest tests use it; retry
+// and cooldown tests keep their scheduled next_attempt_at deadlines intact.
+func (f *notifyFixture) preparePendingDigestBatch(t *testing.T, chID int64) {
 	t.Helper()
-	if _, err := f.pg.Exec(`UPDATE notification_deliveries SET created_at = now() - interval '2 hours'
+	if _, err := f.pg.Exec(`UPDATE notification_deliveries SET created_at = now() - interval '2 hours', next_attempt_at = now() - interval '1 minute'
 WHERE channel_id=$1 AND state=$2`, chID, db.NotifyStatePending); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// logDigestState records only counts and deadlines when a fixture assertion
+// fails, so a future CI failure distinguishes age, readiness and claim state.
+func (f *notifyFixture) logDigestState(t *testing.T, chID int64) {
+	t.Helper()
+	var total, pending, ready, sending, sent int
+	var oldest, next time.Time
+	err := f.pg.QueryRow(`SELECT count(*), count(*) FILTER (WHERE state='pending'), count(*) FILTER (WHERE state='pending' AND next_attempt_at<=now()), count(*) FILTER (WHERE state='sending'), count(*) FILTER (WHERE state='sent'), COALESCE(min(created_at),now()), COALESCE(min(next_attempt_at),now()) FROM notification_deliveries WHERE channel_id=$1`, chID).Scan(&total, &pending, &ready, &sending, &sent, &oldest, &next)
+	due, dueErr := f.pg.DigestBatchDue(context.Background(), chID, f.n.digestInterval())
+	t.Logf("digest fixture state: total=%d pending=%d ready=%d sending=%d sent=%d oldest=%s next=%s interval=%v due=%t state_error=%v due_error=%v", total, pending, ready, sending, sent, oldest, next, f.n.digestInterval(), due, err, dueErr)
 }
 
 func TestNotifyEndToEndRealtimeDelivery(t *testing.T) {
@@ -421,7 +434,7 @@ func TestNotifyDigestBatchesMultipleFindingsIntoOneMessage(t *testing.T) {
 	}
 
 	// 催老批次后：三条合成一条消息。
-	f.agePendingBatch(t, chID)
+	f.preparePendingDigestBatch(t, chID)
 	f.n.stepDigest(ctx, ch, 50, "")
 	if got := hook.count(); got != 1 {
 		t.Fatalf("三条应汇总成一条消息，实际发了 %d 条", got)
@@ -750,12 +763,27 @@ func TestNotifyDigestSegmentsAndDefersRemainder(t *testing.T) {
 	if _, _, err := f.pg.FanOutPendingEvents(ctx, 500); err != nil {
 		t.Fatal(err)
 	}
-	f.agePendingBatch(t, chID)
+	// Batch age and the next claim deadline are independent. Start with a
+	// future claim deadline so the fixture must prepare both before dispatch;
+	// otherwise a mature batch can legitimately produce no HTTP request.
+	if _, err := f.pg.Exec(`UPDATE notification_deliveries SET next_attempt_at=now()+interval '1 hour' WHERE channel_id=$1 AND state=$2`, chID, db.NotifyStatePending); err != nil {
+		t.Fatal(err)
+	}
+	f.preparePendingDigestBatch(t, chID)
 	ch := f.channel(t, chID)
 
+	var ready int
+	if err := f.pg.QueryRow(`SELECT count(*) FROM notification_deliveries WHERE channel_id=$1 AND state=$2 AND next_attempt_at<=now()`, chID, db.NotifyStatePending).Scan(&ready); err != nil {
+		t.Fatal(err)
+	}
+	if ready != total {
+		f.logDigestState(t, chID)
+		t.Fatalf("fixture must make all %d pending deliveries immediately claimable, got %d", total, ready)
+	}
 	f.n.stepDigest(ctx, ch, 50, "")
-	if hook.count() != 1 {
-		t.Fatalf("应只发出一条消息，得到 %d", hook.count())
+	if got := hook.count(); got != 1 {
+		f.logDigestState(t, chID)
+		t.Fatalf("应只发出一条消息，得到 %d", got)
 	}
 
 	var sent, pending int
