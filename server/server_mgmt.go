@@ -1110,17 +1110,25 @@ func (s *Server) fsCreateSkill(w http.ResponseWriter, r *http.Request) {
 	//   Markdown body:    step-by-step instructions
 	var sb strings.Builder
 	sb.WriteString("---\n")
-	fmt.Fprintf(&sb, "name: %s\n", body.Name)
-	fmt.Fprintf(&sb, "description: %s\n", body.Description)
-	if body.License != "" {
-		fmt.Fprintf(&sb, "license: %s\n", body.License)
+	metadata := struct {
+		Name          string   `yaml:"name"`
+		Description   string   `yaml:"description"`
+		License       string   `yaml:"license,omitempty"`
+		Compatibility string   `yaml:"compatibility,omitempty"`
+		MCPs          []string `yaml:"mcps,omitempty"`
+	}{body.Name, body.Description, body.License, body.Compatibility, cleanStrs(body.MCPs)}
+	// Encode typed strings and an MCP list so punctuation, newlines and YAML
+	// scalars cannot change metadata values or escape into the Markdown body.
+	encoder := yaml.NewEncoder(&sb)
+	encoder.SetIndent(2)
+	err := encoder.Encode(metadata)
+	if err == nil {
+		err = encoder.Close()
 	}
-	if body.Compatibility != "" {
-		fmt.Fprintf(&sb, "compatibility: %s\n", body.Compatibility)
-	}
-	// mcps: MCP servers this skill unlocks on load (skill-gated deferred tools).
-	if mcps := cleanStrs(body.MCPs); len(mcps) > 0 {
-		fmt.Fprintf(&sb, "mcps: %s\n", strings.Join(mcps, ", "))
+	if err != nil {
+		_ = os.RemoveAll(skillPath)
+		writeErr(w, 500, err.Error())
+		return
 	}
 	sb.WriteString("---\n")
 	if strings.TrimSpace(body.Instructions) != "" {
