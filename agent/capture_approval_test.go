@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/Autumn-27/artex/db"
@@ -115,6 +116,10 @@ func TestCaptureApprovalLifecycle(t *testing.T) {
 				t.Fatal(err)
 			}
 			a := detail.Audit
+			wantSource := "model"
+			if tc.manual {
+				wantSource = "manual"
+			}
 			initialAction := tc.action
 			if tc.action == "invalid" {
 				initialAction = "deny"
@@ -125,8 +130,11 @@ func TestCaptureApprovalLifecycle(t *testing.T) {
 				// intentionally omit the bulky replay context from the audit row.
 				wantUserMessage = ""
 			}
-			if detail.Status != tc.status || detail.DecisionSource != "model" || a == nil || a.ExecutionStatus != tc.execution || a.ToolUseID != "probe-call" || a.UserMessage != wantUserMessage || a.InitialAction != initialAction || a.ModelFallback != (tc.action == "invalid") || a.ProfileID != 7 {
+			if detail.Status != tc.status || detail.DecisionSource != wantSource || a == nil || a.ExecutionStatus != tc.execution || a.ToolUseID != "probe-call" || a.UserMessage != wantUserMessage || a.InitialAction != initialAction || a.ModelFallback != (tc.action == "invalid") || a.ProfileID != 7 {
 				t.Fatalf("unexpected review: row=%+v audit=%+v", detail.InterceptApprovalRow, a)
+			}
+			if a.InitialReason != detail.Reason || !strings.HasPrefix(a.InitialReason, "[模型] ") || (tc.manual && a.InitialReason != "[模型] probe review") {
+				t.Fatalf("initial model evidence lost: reason=%q audit=%+v", detail.Reason, a)
 			}
 			if initialAction == "allow" && (len(a.Context) != 0 || a.UserTruncated || a.ContextTruncated) {
 				t.Fatalf("routine allow retained replay context: %+v", a)
