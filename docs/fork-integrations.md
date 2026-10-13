@@ -6,6 +6,8 @@
 
 还适配 [BaaRai PR #67](https://github.com/BaaRai/ARTEX/pull/67)（head `8f4dfe0aae12c245df5d7d5fcb2476185edc41f3`，作者 BaaRai，AGPL-3.0）的存储 API Key 归一化：模型配置测试使用存储 Key 时，去除与运行时相同的外围空白。通过本地模拟提供方复现外围换行导致非法请求头，并验证修复、表单值优先级及配置原值保留；没有改动 session header 的现有语义。来源 PR #75 所述只传 profile_id 的测试入口不适用于当前界面调用，端点回填作为独立 API 完整性候选保留。
 
+本 fork 进一步收紧技能创建的文件边界：完整编码在写盘前完成，持有 `os.Root` 并排他创建目录及文件。实际并发请求复现了旧实现两个请求同时成功的问题；现在只有一个返回 201，其他同名请求返回 409，保留成功请求的内容。已有目录、符号链接和无关文件保持，失败清理仅涉及本次创建的文件及空目录，不使用递归删除。
+
 2026-10-12 还吸纳 [jiwoochris/artex-ko PR #25](https://github.com/jiwoochris/artex-ko/pull/25) 的路径规范改进（head `d0c76b2875e68a075b832ded4d019afc6d9d5166`，作者 jaelim8789-glitch，AGPL-3.0）：技能文件 API 的输入、列表及响应始终使用 `/`，仅在文件系统边界使用本机路径。保留全部字符、编码和越界检查；六种原生 runner 直接执行嵌套中文文件的列表、读取、写入、建目录及删除往返回归。未引入来源 PR 中无关的 Python 解释器探测变更。
 
 2026-10-12 的同步结果修复以 `146e560d308aa26b8371c60441d7b2f4ea04c879` 为基线，借鉴 [sharenjun 的 `19d9bbc`](https://github.com/sharenjun/ARTEX-main/commit/19d9bbcebfb56a6a8dff467c5357ee0a23d1e7b2)（作者 sharenjun，AGPL-3.0）对部分同步和截断的明确报告，按当前同步 API 重新实现。保留每目标、每类型 5000 条保护上限，区分达到上限与确认还有记录；报告无效记录、派生 IP 和企业范围写入错误，避免前端把未完成结果显示为成功。计数表示成功资产写入次数，包含更新和重复源记录，不代表新建或唯一资产数。请求取消后停止后续操作，已完成写入保留；遵循 [Go context](https://pkg.go.dev/context) 的请求取消传播和 [MCP 工具规范](https://modelcontextprotocol.io/specification/2025-11-25/server/tools#error-handling)的错误报告语义。

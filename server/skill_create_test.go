@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/Autumn-27/norma/skill"
@@ -96,5 +97,117 @@ func TestCreateSkillFrontmatterDefaultsAndConflict(t *testing.T) {
 	after, err := os.ReadFile(path)
 	if err != nil || !bytes.Equal(after, content) {
 		t.Fatalf("duplicate request rewrote existing skill: %v", err)
+	}
+}
+
+func TestCreateSkillConcurrentRequestsPreserveWinner(t *testing.T) {
+	// Both requests start together; only the creator of the directory may
+	// write its skill. Repeated pairs exercise the previous Stat/MkdirAll race.
+	for range 32 {
+		dir := t.TempDir()
+		s := &Server{skillDir: dir}
+		var responses [2]*httptest.ResponseRecorder
+		var requests [2][]byte
+		for i, description := range []string{"winner: first", "winner: second"} {
+			var err error
+			requests[i], err = json.Marshal(map[string]string{"name": "concurrent", "description": description, "instructions": description})
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		start := make(chan struct{})
+		var workers sync.WaitGroup
+		for i := range requests {
+			workers.Go(func() {
+				<-start
+				responses[i] = httptest.NewRecorder()
+				s.fsCreateSkill(responses[i], httptest.NewRequest(http.MethodPost, "/api/skills", bytes.NewReader(requests[i])))
+			})
+		}
+		close(start)
+		workers.Wait()
+		winner := -1
+		for i, response := range responses {
+			switch response.Code {
+			case http.StatusCreated:
+				if winner != -1 {
+					t.Fatalf("both requests succeeded: %s / %s", responses[0].Body, responses[1].Body)
+				}
+				winner = i
+			case http.StatusConflict:
+			default:
+				t.Fatalf("unexpected create response: %d %s", response.Code, response.Body)
+			}
+		}
+		if winner == -1 {
+			t.Fatal("neither request created the skill")
+		}
+		var expected map[string]string
+		if err := json.Unmarshal(requests[winner], &expected); err != nil {
+			t.Fatal(err)
+		}
+		content, err := os.ReadFile(filepath.Join(dir, "concurrent", "SKILL.md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		fields := decodeSkillTestFrontmatter(t, content)
+		if fields["description"] != expected["description"] || !bytes.HasSuffix(content, []byte("---\n"+expected["instructions"])) {
+			t.Fatalf("losing request overwrote winning content: %s", content)
+		}
+	}
+}
+
+func TestCreateSkillPreservesExistingDirectoryAndFiles(t *testing.T) {
+	dir := t.TempDir()
+	existing := filepath.Join(dir, "existing")
+	if err := os.Mkdir(existing, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	unrelated := filepath.Join(existing, "unrelated.txt")
+	original := []byte("preserve existing data")
+	if err := os.WriteFile(unrelated, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	(&Server{skillDir: dir}).fsCreateSkill(rec, httptest.NewRequest(http.MethodPost, "/api/skills", strings.NewReader(`{"name":"existing","description":"new"}`)))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("existing directory: %d %s", rec.Code, rec.Body)
+	}
+	after, err := os.ReadFile(unrelated)
+	if err != nil || !bytes.Equal(after, original) {
+		t.Fatalf("existing file changed: %q %v", after, err)
+	}
+	if _, err := os.Stat(filepath.Join(existing, "SKILL.md")); !os.IsNotExist(err) {
+		t.Fatalf("existing directory acquired a skill file: %v", err)
+	}
+}
+
+func TestCreateSkillPreservesExistingSymlink(t *testing.T) {
+	dir, outside := t.TempDir(), t.TempDir()
+	path := filepath.Join(dir, "existing")
+	workspaceSymlink(t, outside, path)
+	rec := httptest.NewRecorder()
+	(&Server{skillDir: dir}).fsCreateSkill(rec, httptest.NewRequest(http.MethodPost, "/api/skills", strings.NewReader(`{"name":"existing","description":"new"}`)))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("existing symlink: %d %s", rec.Code, rec.Body)
+	}
+	if target, err := os.Readlink(path); err != nil || target != outside {
+		t.Fatalf("existing symlink changed: %q %v", target, err)
+	}
+	entries, err := os.ReadDir(outside)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("create wrote outside skill root: %v %v", entries, err)
+	}
+}
+
+func TestCreateSkillCreatesMissingRoot(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "parent", "skills")
+	rec := httptest.NewRecorder()
+	(&Server{skillDir: dir}).fsCreateSkill(rec, httptest.NewRequest(http.MethodPost, "/api/skills", strings.NewReader(`{"name":"new","description":"new"}`)))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("missing root: %d %s", rec.Code, rec.Body)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "new", "SKILL.md")); err != nil {
+		t.Fatal(err)
 	}
 }
