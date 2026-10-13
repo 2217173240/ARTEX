@@ -2,6 +2,7 @@
 // 未命中的一律返回安全默认（[] / {} / {ok:true}），保证任何页面都不崩。
 // 只在 NEXT_PUBLIC_MOCK=1 时经由 api.ts 的 http() 短路进入这里。
 
+import { approvalDecisionSource, approvalFilterError } from "../approval-history";
 import {
   classifyCompanyScopeLine,
   companyScopeRuleError,
@@ -2460,6 +2461,7 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     if (row?.status !== "pending") throw new Error("审批已处理或不存在，请刷新记录");
     if (b.decision !== "allowed" && b.decision !== "denied") throw new Error("无效审批动作");
     row.status = b.decision;
+    row.decision_source = "manual";
     row.decided_at = new Date().toISOString();
     const detail = mockInterceptDetails[id];
     if (detail) {
@@ -2473,25 +2475,59 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   if (seg[0] === "intercept" && seg[1] === "history" && seg.length === 3) {
     const row = mockInterceptHistory.find((r) => r.id === Number(seg[2]));
     if (!row) throw new Error("审批记录不存在");
-    return { ...row, audit: mockInterceptDetails[row.id] ?? null };
+    const audit = mockInterceptDetails[row.id] ?? null;
+    return { ...row, decision_source: approvalDecisionSource(row, audit), audit };
   }
   if (seg[0] === "intercept" && seg[1] === "pending" && seg.length === 3 && m === "GET")
     return mockInterceptPending.find((p) => p.id === Number(seg[2])) ?? null;
   if (path === "/intercept/history" || (seg[0] === "intercept" && seg[1] === "task")) {
     const status = q.get("status") || "";
     const decisionSource = q.get("decision_source") || "";
+    const search = (q.get("q") || "").trim();
+    const from = q.get("created_from") || "";
+    const to = q.get("created_to") || "";
     if (status && !["pending", "allowed", "denied", "timeout"].includes(status)) throw new Error("无效审批状态");
-    if (decisionSource && !["model", "rule", "unknown"].includes(decisionSource)) throw new Error("无效判定来源");
-    const filtered = mockInterceptHistory.filter((row) => {
-      const source =
-        row.decision_source || (row.rule_id ? "rule" : row.reason?.startsWith("[模型]") ? "model" : "unknown");
-      return (
-        (seg[1] !== "task" || row.task_id === decodeURIComponent(seg[2])) &&
-        (!status || row.status === status) &&
-        (!decisionSource || source === decisionSource)
-      );
-    });
-    if (!q.has("page") && !q.has("size") && !status && !decisionSource)
+    if (decisionSource && !["model", "rule", "manual", "unknown"].includes(decisionSource))
+      throw new Error("无效判定来源");
+    const validation = approvalFilterError({ q: search, created_from: from, created_to: to });
+    if (validation) throw new Error(validation);
+    const filtered = mockInterceptHistory
+      .filter((row) => {
+        const audit = mockInterceptDetails[row.id] ?? null;
+        const source = approvalDecisionSource(row, audit);
+        const task = mockTasks.find((item) => item.id === row.task_id);
+        const values = [
+          row.id,
+          row.conversation_id,
+          row.task_id,
+          row.agent_name,
+          row.tool_name,
+          JSON.stringify(row.tool_input),
+          row.reason,
+          JSON.stringify(audit),
+          row.conv_title,
+          row.conv_agent_key,
+          task?.name,
+          task?.description,
+          task?.goal,
+          row.rule_name,
+        ];
+        const instant = new Date(row.created_at);
+        const day = Number.isFinite(instant.getTime()) ? instant.toISOString().slice(0, 10) : "";
+        return (
+          (seg[1] !== "task" || row.task_id === decodeURIComponent(seg[2])) &&
+          (!status || row.status === status) &&
+          (!decisionSource || source === decisionSource) &&
+          (!from || day >= from) &&
+          (!to || day <= to) &&
+          (!search ||
+            (search.startsWith("#")
+              ? BigInt(row.id) === BigInt(search.slice(1))
+              : values.some((value) => value != null && String(value).toLowerCase().includes(search.toLowerCase()))))
+        );
+      })
+      .map((row) => ({ ...row, decision_source: approvalDecisionSource(row, mockInterceptDetails[row.id]) }));
+    if (!q.has("page") && !q.has("size") && !status && !decisionSource && !search && !from && !to)
       return { items: filtered, total: filtered.length };
     const page = Math.max(1, Number(q.get("page")) || 1);
     const size = Math.min(100, Math.max(1, Number(q.get("size")) || 20));

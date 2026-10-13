@@ -1,7 +1,5 @@
 "use client";
 
-import { useI18n } from "@/lib/i18n";
-
 import * as React from "react";
 
 import {
@@ -12,6 +10,7 @@ import {
   ClipboardListIcon,
   CopyIcon,
   RefreshCwIcon,
+  SearchIcon,
   ShieldAlertIcon,
   XIcon,
 } from "lucide-react";
@@ -24,10 +23,13 @@ import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { api } from "@/lib/api";
+import { approvalDecisionSource, approvalFilterError } from "@/lib/approval-history";
+import { useI18n } from "@/lib/i18n";
 import type {
   InterceptApprovalFilter,
   InterceptApprovalRow,
@@ -47,12 +49,6 @@ function fmtTime(value?: string) {
     minute: "2-digit",
     second: "2-digit",
   });
-}
-
-function source(row: InterceptApprovalRow) {
-  if (row.decision_source) return row.decision_source;
-  if (row.rule_id) return "rule";
-  return row.reason?.startsWith("[模型]") ? "model" : "unknown";
 }
 
 function originLabel(row: InterceptApprovalRow) {
@@ -117,19 +113,32 @@ function StatusBadge({ status }: { status: string }) {
   return <Badge variant={variant}>{labels[status] ?? status}</Badge>;
 }
 
-function MatchCell({ row, showReason = true }: { row: InterceptApprovalRow; showReason?: boolean }) {
+function MatchCell({
+  row,
+  showReason = true,
+  audit,
+}: {
+  row: InterceptApprovalRow;
+  showReason?: boolean;
+  audit?: InterceptAudit | null;
+}) {
   const { t: uiText } = useI18n();
   const reason = row.reason?.replace(/^\[模型\]\s*/, "");
+  const decisionSource = approvalDecisionSource(row, audit);
+  let label: React.ReactNode = <Badge variant="outline">{uiText("来源未知")}</Badge>;
+  if (decisionSource === "model")
+    label = (
+      <Badge variant="outline">
+        <BotIcon />
+        {uiText("模型判定")}
+      </Badge>
+    );
+  else if (decisionSource === "manual") label = <Badge variant="outline">{uiText("人工判定")}</Badge>;
+  else if (decisionSource === "rule")
+    label = <span className="truncate">{row.rule_name || uiText("规则未记录或已删除")}</span>;
   return (
     <div className="flex min-w-0 flex-col gap-1">
-      {source(row) === "model" ? (
-        <Badge variant="outline">
-          <BotIcon />
-          {uiText("模型判定")}
-        </Badge>
-      ) : (
-        <span className="truncate">{row.rule_name || uiText("规则未记录或已删除")}</span>
-      )}
+      {label}
       {showReason ? (
         <p className="truncate text-muted-foreground text-xs" title={reason}>
           {reason || uiText("未记录理由")}
@@ -372,7 +381,11 @@ export function ApprovalDetail({
   if (audit && audit.correlation !== "exact" && audit.effective_action === "allow")
     execution = uiText("未关联执行结果");
   const command = typeof row.tool_input?.command === "string" ? row.tool_input.command : undefined;
-  let initialLabel = source(row) === "model" ? uiText("模型初判") : uiText("规则初判");
+  // The final manual source does not establish who made the initial review.
+  let initialLabel = uiText("初判");
+  if (audit?.initial_reason.startsWith("[模型]") || audit?.model_input || audit?.profile_id)
+    initialLabel = uiText("模型初判");
+  else if (audit?.rule_name || row.rule_id) initialLabel = uiText("规则初判");
   if (audit?.model_fallback) initialLabel = uiText("模型异常回退");
 
   return (
@@ -407,7 +420,7 @@ export function ApprovalDetail({
           </h3>
           <div className="flex flex-wrap items-center gap-2">
             <StatusBadge status={current.status} />
-            <MatchCell row={current} showReason={false} />
+            <MatchCell row={current} showReason={false} audit={audit} />
           </div>
           <p className="whitespace-pre-wrap break-words text-sm leading-7 [overflow-wrap:anywhere]">
             {current.reason?.replace(/^\[模型\]\s*/, "") || uiText("未记录审批理由")}
@@ -733,6 +746,7 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
   const [pageSize, setPageSize] = React.useState(20);
   const [total, setTotal] = React.useState(0);
   const [filter, setFilter] = React.useState<InterceptApprovalFilter>({});
+  const [searchText, setSearchText] = React.useState("");
   const [loading, setLoading] = React.useState(true);
   const [refreshing, setRefreshing] = React.useState(false);
   const [error, setError] = React.useState("");
@@ -742,13 +756,25 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
   const request = React.useRef(0);
   const decisionLock = React.useRef(false);
   const filterID = React.useId();
-  const filtered = Boolean(filter.status || filter.decision_source);
+  const filtered = Boolean(
+    filter.status || filter.decision_source || searchText.trim() || filter.created_from || filter.created_to,
+  );
+  const searchError = approvalFilterError({ q: searchText });
+  const dateError = approvalFilterError({ created_from: filter.created_from, created_to: filter.created_to });
+  const filterError = searchError || dateError;
+  const searchPending = searchText.trim() !== (filter.q ?? "");
+  const historyReady = !filterError && !searchPending;
 
   // A task can stay mounted while the user switches between task details.
   // Reset the cursor so the new scope always starts at its newest records.
   // biome-ignore lint/correctness/useExhaustiveDependencies: taskId intentionally resets pagination when scope changes.
   React.useEffect(() => {
+    request.current++;
     setPage(1);
+    setRows([]);
+    setTotal(0);
+    setError("");
+    setLoading(true);
   }, [taskId]);
 
   const load = React.useCallback(
@@ -759,17 +785,20 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
         // The approval queue is independent of the current history page and its
         // filter. Older requests must remain actionable even when newer decisions
         // fill the page or a filter would hide them.
-        const [history, pending] = await Promise.allSettled([
-          taskId
+        const historyRequest = async () => {
+          if (!historyReady) return null;
+          return taskId
             ? api.interceptTaskPage(taskId, page, pageSize, filter)
-            : api.interceptHistoryPage(page, pageSize, filter),
-          api.interceptPending(),
-        ]);
+            : api.interceptHistoryPage(page, pageSize, filter);
+        };
+        const [history, pending] = await Promise.allSettled([historyRequest(), api.interceptPending()]);
         if (id !== request.current) return;
         if (history.status === "fulfilled") {
-          setRows(history.value.items);
-          setTotal(history.value.total);
-          setError("");
+          if (history.value) {
+            setRows(history.value.items);
+            setTotal(history.value.total);
+            setError("");
+          }
         } else {
           setError((history.reason as Error).message || uiText("加载失败"));
         }
@@ -784,12 +813,12 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
         if (id === request.current) setError((e as Error).message || uiText("加载失败"));
       } finally {
         if (id === request.current) {
-          setLoading(false);
+          setLoading(!filterError && searchPending);
           setRefreshing(false);
         }
       }
     },
-    [taskId, page, pageSize, filter, uiText],
+    [taskId, page, pageSize, filter, historyReady, filterError, searchPending, uiText],
   );
   const latestLoad = React.useRef(load);
   latestLoad.current = load;
@@ -808,7 +837,7 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
     setPage(1);
   };
 
-  const changeFilter = (next: InterceptApprovalFilter) => {
+  const changeFilter = React.useCallback((next: InterceptApprovalFilter) => {
     // An in-flight response for the old filter must not repopulate the table.
     request.current++;
     setFilter(next);
@@ -817,7 +846,37 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
     setTotal(0);
     setError("");
     setLoading(true);
+  }, []);
+
+  const changeSearch = (value: string) => {
+    setSearchText(value);
+    if (value.trim() === (filter.q ?? "") && !filterError) return;
+    request.current++;
+    setPage(1);
+    setRows([]);
+    setTotal(0);
+    setError("");
+    setLoading(!approvalFilterError({ ...filter, q: value }));
   };
+
+  const submitSearch = () => {
+    if (approvalFilterError({ ...filter, q: searchText })) return;
+    changeFilter({ ...filter, q: searchText.trim() || undefined });
+  };
+
+  React.useEffect(() => {
+    if (!searchPending || approvalFilterError({ q: searchText })) return;
+    const timer = setTimeout(() => {
+      request.current++;
+      setFilter((previous) => ({ ...previous, q: searchText.trim() || undefined }));
+      setPage(1);
+      setRows([]);
+      setTotal(0);
+      setError("");
+      setLoading(true);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchText, searchPending]);
 
   const decide: Decide = async (id, decision) => {
     if (decisionLock.current) return;
@@ -830,7 +889,11 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
       // Optimistically drop the decided item from the independent pending queue
       // for instant feedback; the re-fetch below reconciles with server truth.
       setRows((prev) =>
-        prev.map((row) => (row.id === id ? { ...row, status: decision, decided_at: new Date().toISOString() } : row)),
+        prev.map((row) =>
+          row.id === id
+            ? { ...row, status: decision, decision_source: "manual", decided_at: new Date().toISOString() }
+            : row,
+        ),
       );
       setPendingRows((prev) => prev.filter((row) => row.id !== id));
       setRevision((v) => v + 1);
@@ -875,9 +938,59 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
         </Button>
       </div>
       <p className="text-muted-foreground text-sm">
-        {uiText("展开记录查看工具请求和审批裁决，以及当时的上下文与执行结果。")}
+        {uiText("展开记录查看工具请求和审批裁决，以及当时的上下文与执行结果。")}{" "}
+        {uiText("输入 #编号 可精确定位审批。日期按 UTC 自然日筛选，包含起止日。")}
       </p>
       <FieldGroup className="flex-row flex-wrap items-end gap-3" aria-label={uiText("审批记录筛选")}>
+        <Field className="w-full sm:min-w-72 sm:flex-1">
+          <FieldLabel htmlFor={`${filterID}-search`}>{uiText("搜索审批内容")}</FieldLabel>
+          <div className="flex gap-2">
+            <div className="relative min-w-0 flex-1">
+              <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                id={`${filterID}-search`}
+                type="search"
+                className="pl-8"
+                value={searchText}
+                aria-invalid={Boolean(searchError)}
+                aria-describedby={searchError ? `${filterID}-error` : undefined}
+                placeholder={uiText("#编号、标题、URL、命令或审计内容")}
+                onChange={(event) => changeSearch(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+                    event.preventDefault();
+                    submitSearch();
+                  }
+                }}
+              />
+            </div>
+            <Button type="button" variant="outline" onClick={submitSearch} disabled={Boolean(filterError)}>
+              {uiText("搜索")}
+            </Button>
+          </div>
+        </Field>
+        <Field className="w-full sm:w-44">
+          <FieldLabel htmlFor={`${filterID}-from`}>{uiText("申请日期从（UTC）")}</FieldLabel>
+          <Input
+            id={`${filterID}-from`}
+            type="date"
+            value={filter.created_from ?? ""}
+            aria-invalid={Boolean(dateError)}
+            aria-describedby={dateError ? `${filterID}-error` : undefined}
+            onChange={(event) => changeFilter({ ...filter, created_from: event.target.value || undefined })}
+          />
+        </Field>
+        <Field className="w-full sm:w-44">
+          <FieldLabel htmlFor={`${filterID}-to`}>{uiText("申请日期至（UTC）")}</FieldLabel>
+          <Input
+            id={`${filterID}-to`}
+            type="date"
+            value={filter.created_to ?? ""}
+            aria-invalid={Boolean(dateError)}
+            aria-describedby={dateError ? `${filterID}-error` : undefined}
+            onChange={(event) => changeFilter({ ...filter, created_to: event.target.value || undefined })}
+          />
+        </Field>
         <Field className="w-full sm:w-40">
           <FieldLabel htmlFor={`${filterID}-status`}>{uiText("审批状态")}</FieldLabel>
           <Select
@@ -922,17 +1035,30 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
                 <SelectItem value="all">{uiText("全部来源")}</SelectItem>
                 <SelectItem value="model">{uiText("模型判定")}</SelectItem>
                 <SelectItem value="rule">{uiText("规则判定")}</SelectItem>
+                <SelectItem value="manual">{uiText("人工判定")}</SelectItem>
                 <SelectItem value="unknown">{uiText("来源未知")}</SelectItem>
               </SelectGroup>
             </SelectContent>
           </Select>
         </Field>
         {filtered ? (
-          <Button variant="ghost" size="sm" onClick={() => changeFilter({})}>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setSearchText("");
+              changeFilter({});
+            }}
+          >
             {uiText("清除筛选")}
           </Button>
         ) : null}
       </FieldGroup>
+      {filterError ? (
+        <Alert variant="destructive" id={`${filterID}-error`} role="alert">
+          <AlertDescription>{uiText(filterError)}</AlertDescription>
+        </Alert>
+      ) : null}
       {error ? (
         <Alert variant="destructive">
           <AlertDescription>
@@ -978,7 +1104,7 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
             <Skeleton className="h-10 w-full" />
           </div>
         ) : null}
-        {!loading && !rows.length && !error ? (
+        {!loading && !rows.length && !error && !filterError ? (
           <Empty>
             <EmptyHeader>
               <EmptyMedia variant="icon">
@@ -987,7 +1113,7 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
               <EmptyTitle>{filtered ? uiText("没有符合筛选条件的审批记录") : uiText("暂无审批记录")}</EmptyTitle>
               <EmptyDescription>
                 {filtered
-                  ? uiText("请调整审批状态或判定来源，或清除筛选查看全部记录。")
+                  ? uiText("请调整搜索、日期、审批状态或判定来源，或清除筛选查看全部记录。")
                   : uiText("规则或模型作出审批决定后，记录将显示在这里。")}
               </EmptyDescription>
             </EmptyHeader>
@@ -1002,7 +1128,7 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
             label={uiText("审批记录列表")}
           />
         ) : null}
-        {!loading && !error ? (
+        {!loading && !error && historyReady ? (
           <TablePagination
             page={page}
             pageSize={pageSize}

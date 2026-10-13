@@ -553,3 +553,28 @@ test("case export selection retains raw IDs and optional originals without leaki
   assert.equal(params.has("task_id"), false);
   assert.equal(params.has("asset_scope"), false);
 });
+
+test("approval pages serialize trimmed literal search and canonical UTC date filters for both scopes", async () => {
+  const client = apiHarness(() => new Response(JSON.stringify({ items: [], total: 0 })));
+  const filter = {
+    status: "denied",
+    decision_source: "manual",
+    q: " https://example.test/a?rate=100%_\\path 😀 ",
+    created_from: "2026-10-01",
+    created_to: "2026-10-12",
+  };
+  await client.api.interceptHistoryPage(2, 10, filter);
+  await client.api.interceptTaskPage("task-1", 2, 10, filter);
+  for (const request of client.requests) {
+    const params = new URL(request.url, "https://example.test").searchParams;
+    assert.equal(params.get("q"), filter.q.trim());
+    assert.equal(params.get("created_from"), filter.created_from);
+    assert.equal(params.get("created_to"), filter.created_to);
+    assert.equal(params.get("decision_source"), "manual");
+    assert.equal(params.get("status"), "denied");
+    assert.equal(params.get("page"), "2");
+    assert.equal(params.get("size"), "10");
+    assert.equal(params.has("from"), false);
+    assert.equal(params.has("to"), false);
+  }
+});

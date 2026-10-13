@@ -4208,5 +4208,18 @@
   "初始化令牌": "Setup token",
   "粘贴初始化令牌": "Paste the setup token",
   "从启动日志标出的 setup.token 文件读取令牌。令牌仅用于首次设置密码。": "Read the token from the setup.token file identified in the startup log. It is used only for initial password setup.",
-  "。需先输入当前密码验证；当前浏览器保持登录，其他已签发会话在下次请求时失效。": ". Enter the current password first; this browser stays signed in, and previously issued sessions become invalid on their next request."
+  "。需先输入当前密码验证；当前浏览器保持登录，其他已签发会话在下次请求时失效。": ". Enter the current password first; this browser stays signed in, and previously issued sessions become invalid on their next request.",
+  "人工判定": "Human decision",
+  "初判": "Initial review",
+  "输入 #编号 可精确定位审批。日期按 UTC 自然日筛选，包含起止日。": "Enter #ID to find an exact approval. Dates use UTC calendar days and include both endpoints.",
+  "搜索审批内容": "Search approval content",
+  "#编号、标题、URL、命令或审计内容": "#ID, title, URL, command, or audit content",
+  "申请日期从（UTC）": "Created from (UTC)",
+  "申请日期至（UTC）": "Created through (UTC)",
+  "搜索关键词不能超过 200 个字符": "Search must not exceed 200 Unicode characters",
+  "审批编号必须为 # 后接正整数，且不能超过 9223372036854775807": "Approval ID must be # followed by a positive integer no greater than 9223372036854775807",
+  "日期必须是有效的 YYYY-MM-DD 日期": "Dates must be valid YYYY-MM-DD calendar dates",
+  "开始日期不能晚于结束日期": "Start date must not be later than end date",
+  "请调整搜索、日期、审批状态或判定来源，或清除筛选查看全部记录。": "Adjust the search, dates, status, or decision source, or clear filters to view all records.",
+  "报告加载失败，请重试。": "Unable to load the report. Please retry."
 }

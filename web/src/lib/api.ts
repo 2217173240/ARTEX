@@ -248,6 +248,9 @@ function interceptPageQuery(page: number, size: number, filter: InterceptApprova
   const query = new URLSearchParams({ page: String(page), size: String(size) });
   if (filter.status) query.set("status", filter.status);
   if (filter.decision_source) query.set("decision_source", filter.decision_source);
+  if (filter.q?.trim()) query.set("q", filter.q.trim());
+  if (filter.created_from) query.set("created_from", filter.created_from);
+  if (filter.created_to) query.set("created_to", filter.created_to);
   return query.toString();
 }
 
@@ -261,7 +264,10 @@ export const api = {
   initPassword: (password: string, setupToken: string) =>
     post<{ token: string }>("/auth/init", { password, setup_token: setupToken }),
   changePassword: async (oldPassword: string, newPassword: string) => {
-    const result = await post<{ ok: boolean }>("/auth/change-password", { old_password: oldPassword, new_password: newPassword });
+    const result = await post<{ ok: boolean }>("/auth/change-password", {
+      old_password: oldPassword,
+      new_password: newPassword,
+    });
     auth.credentialsChanged();
     return result;
   },
@@ -715,7 +721,10 @@ export const api = {
   // 漏洞链路:该漏洞节点回溯到任务初始节点的子图(节点 + 关系)。
   findingLineage: (id: string) => get<{ nodes: TaskNode[]; edges: Edge[] }>(`/exploration/findings/${id}/lineage`),
   setFindingStatus: (id: string, status: FindingStatus, contextTask?: string) =>
-    patch<Finding>(`/exploration/findings/${id}${contextTask ? `?context_task=${encodeURIComponent(contextTask)}` : ""}`, { status }),
+    patch<Finding>(
+      `/exploration/findings/${id}${contextTask ? `?context_task=${encodeURIComponent(contextTask)}` : ""}`,
+      { status },
+    ),
   setFindingSeverity: (id: string, severity: Severity) => patch<Finding>(`/exploration/findings/${id}`, { severity }),
   // 一次保存漏洞的名称/类别/严重等级(发现列表行内编辑用),只传出现的字段。
   updateFinding: (

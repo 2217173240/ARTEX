@@ -4,8 +4,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // InterceptRule is one row of intercept_rules.
@@ -225,10 +227,14 @@ func scanInterceptApprovalRow(rows interface{ Scan(...any) error }, r *Intercept
 	)
 }
 
-// Keep legacy rows without decision_source consistent with their displayed source.
-const approvalDecisionSource = `COALESCE(NULLIF(ip.decision_source,''), CASE
+// Historical human decisions retain their original rule/model metadata. Infer
+// their final source only from the decision reasons written by Decide.
+const approvalDecisionSource = `CASE
+ WHEN (ip.status='allowed' AND ip.audit->>'decision_reason'='人工允许执行')
+   OR (ip.status='denied' AND ip.audit->>'decision_reason'='人工拒绝执行') THEN 'manual'
+ ELSE COALESCE(NULLIF(ip.decision_source,''), CASE
  WHEN ip.rule_id IS NOT NULL THEN 'rule'
- WHEN ip.reason LIKE '[模型]%' THEN 'model' ELSE 'unknown' END)`
+ WHEN ip.reason LIKE '[模型]%' THEN 'model' ELSE 'unknown' END) END`
 
 const approvalRowColumns = `ip.id, ip.rule_id, ip.conversation_id, ip.task_id, ip.agent_name,
        ip.tool_name, ip.tool_input, ip.status, ip.reason, ip.decided_at, ip.created_at, ` + approvalDecisionSource + `,
@@ -239,6 +245,7 @@ const approvalRowColumns = `ip.id, ip.rule_id, ip.conversation_id, ip.task_id, i
 const approvalRowJoins = `
 FROM intercept_pending ip
 LEFT JOIN conversations c ON c.id = ip.conversation_id
+LEFT JOIN tasks t ON t.id::text = ip.task_id
 LEFT JOIN intercept_rules ir ON ir.id = ip.rule_id`
 
 const approvalRowSelect = `SELECT ` + approvalRowColumns + approvalRowJoins
@@ -284,11 +291,39 @@ func (d *DB) ListAllIntercepts(limit int) ([]InterceptApprovalRow, error) {
 	return out, rows.Err()
 }
 
-// InterceptApprovalFilter combines exact status and decision-source filters.
+// InterceptApprovalFilter combines exact filters with literal substring search.
+// Date bounds are UTC instants: CreatedFrom is inclusive, CreatedTo exclusive.
 // Empty fields include all values.
 type InterceptApprovalFilter struct {
 	Status         string
 	DecisionSource string
+	Search         string
+	CreatedFrom    *time.Time
+	CreatedTo      *time.Time
+}
+
+// ValidateInterceptSearch trims and validates the bounded search contract for
+// HTTP and direct store callers. A leading # denotes an exact positive row ID.
+func ValidateInterceptSearch(search string) (string, error) {
+	search = strings.TrimSpace(search)
+	if !utf8.ValidString(search) || utf8.RuneCountInString(search) > 200 {
+		return search, fmt.Errorf("q 必须是最多 200 个字符的有效文本")
+	}
+	if strings.HasPrefix(search, "#") {
+		digits := strings.TrimPrefix(search, "#")
+		if digits == "" || digits[0] < '1' || digits[0] > '9' {
+			return search, fmt.Errorf("审批编号必须为 # 后接正整数")
+		}
+		for _, digit := range digits {
+			if digit < '0' || digit > '9' {
+				return search, fmt.Errorf("审批编号必须为 # 后接正整数")
+			}
+		}
+		if _, err := strconv.ParseInt(digits, 10, 64); err != nil {
+			return search, fmt.Errorf("审批编号必须为 # 后接正整数")
+		}
+	}
+	return search, nil
 }
 
 // ListAllInterceptsPage returns one 1-based page and the total matching count.
@@ -330,6 +365,10 @@ func (d *DB) listInterceptsPage(taskID string, page, size int, filter InterceptA
 		size = 100
 	}
 	offset := (page - 1) * size
+	search, err := ValidateInterceptSearch(filter.Search)
+	if err != nil {
+		return nil, 0, err
+	}
 
 	conditions := []string{}
 	args := []any{}
@@ -342,12 +381,41 @@ func (d *DB) listInterceptsPage(taskID string, page, size int, filter InterceptA
 	add("ip.task_id", taskID)
 	add("ip.status", filter.Status)
 	add(approvalDecisionSource, filter.DecisionSource)
+	if filter.CreatedFrom != nil {
+		args = append(args, filter.CreatedFrom.UTC())
+		conditions = append(conditions, "ip.created_at >= $"+fmt.Sprint(len(args)))
+	}
+	if filter.CreatedTo != nil {
+		args = append(args, filter.CreatedTo.UTC())
+		conditions = append(conditions, "ip.created_at < $"+fmt.Sprint(len(args)))
+	}
+	if strings.HasPrefix(search, "#") {
+		id, _ := strconv.ParseInt(search[1:], 10, 64) // validated above
+		args = append(args, id)
+		conditions = append(conditions, "ip.id=$"+fmt.Sprint(len(args)))
+	} else if search != "" {
+		// Escape the explicit LIKE escape character before SQL wildcards so
+		// %, _ and backslash remain literal characters in the user's query.
+		pattern := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(search)
+		args = append(args, "%"+pattern+"%")
+		like := "$" + fmt.Sprint(len(args)) + ` ESCAPE E'\\'`
+		columns := []string{
+			"ip.id::text", "ip.conversation_id::text", "ip.task_id", "ip.agent_name",
+			"ip.tool_name", "ip.tool_input::text", "ip.reason", "ip.audit::text",
+			"c.title", "c.agent_key", "t.name", "t.description", "t.goal", "ir.name",
+		}
+		matches := make([]string, 0, len(columns))
+		for _, column := range columns {
+			matches = append(matches, column+" ILIKE "+like)
+		}
+		conditions = append(conditions, "("+strings.Join(matches, " OR ")+")")
+	}
 	where := ""
 	if len(conditions) > 0 {
 		where = " WHERE " + strings.Join(conditions, " AND ")
 	}
 	var total int
-	if err := d.QueryRow("SELECT COUNT(*) FROM intercept_pending ip"+where, args...).Scan(&total); err != nil {
+	if err := d.QueryRow("SELECT COUNT(*) "+approvalRowJoins+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
