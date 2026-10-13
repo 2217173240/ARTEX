@@ -114,6 +114,10 @@ func TestInterceptDetailHTTP(t *testing.T) {
 	if r := do(http.MethodPost, decisionPath, `{"decision":"denied"}`, true); r.Code != 200 {
 		t.Fatalf("decide: %d %s", r.Code, r.Body.String())
 	}
+	decided, err := d.GetInterceptDetail(id)
+	if err != nil || decided.DecisionSource != "manual" || decided.Reason != "[模型] 确认" || decided.Audit.DecisionReason != "人工拒绝执行" {
+		t.Fatalf("HTTP human decision lost source or metadata: %+v %v", decided, err)
+	}
 	if r := do(http.MethodPost, decisionPath, `{"decision":"allowed"}`, true); r.Code != 409 {
 		t.Fatalf("duplicate decision: %d", r.Code)
 	}

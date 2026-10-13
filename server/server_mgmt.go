@@ -1095,32 +1095,30 @@ func (s *Server) fsCreateSkill(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "description is required")
 		return
 	}
-	skillPath := filepath.Join(s.skillDir, body.Name)
-	if _, err := os.Stat(skillPath); err == nil {
-		writeErr(w, 409, "skill already exists")
-		return
-	}
-	if err := os.MkdirAll(skillPath, 0o755); err != nil {
-		writeErr(w, 500, err.Error())
-		return
-	}
 	// Build a spec-compliant SKILL.md (agentskills.io format):
 	//   YAML frontmatter: name (required), description (required),
 	//                     license, compatibility (optional)
 	//   Markdown body:    step-by-step instructions
 	var sb strings.Builder
 	sb.WriteString("---\n")
-	fmt.Fprintf(&sb, "name: %s\n", body.Name)
-	fmt.Fprintf(&sb, "description: %s\n", body.Description)
-	if body.License != "" {
-		fmt.Fprintf(&sb, "license: %s\n", body.License)
+	metadata := struct {
+		Name          string   `yaml:"name"`
+		Description   string   `yaml:"description"`
+		License       string   `yaml:"license,omitempty"`
+		Compatibility string   `yaml:"compatibility,omitempty"`
+		MCPs          []string `yaml:"mcps,omitempty"`
+	}{body.Name, body.Description, body.License, body.Compatibility, cleanStrs(body.MCPs)}
+	// Encode typed strings and an MCP list so punctuation, newlines and YAML
+	// scalars cannot change metadata values or escape into the Markdown body.
+	encoder := yaml.NewEncoder(&sb)
+	encoder.SetIndent(2)
+	err := encoder.Encode(metadata)
+	if err == nil {
+		err = encoder.Close()
 	}
-	if body.Compatibility != "" {
-		fmt.Fprintf(&sb, "compatibility: %s\n", body.Compatibility)
-	}
-	// mcps: MCP servers this skill unlocks on load (skill-gated deferred tools).
-	if mcps := cleanStrs(body.MCPs); len(mcps) > 0 {
-		fmt.Fprintf(&sb, "mcps: %s\n", strings.Join(mcps, ", "))
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
 	}
 	sb.WriteString("---\n")
 	if strings.TrimSpace(body.Instructions) != "" {
@@ -1131,8 +1129,45 @@ func (s *Server) fsCreateSkill(w http.ResponseWriter, r *http.Request) {
 		sb.WriteString("<!-- Describe step-by-step instructions in Markdown. -->\n\n")
 		sb.WriteString("1. \n2. \n3. \n")
 	}
-	if err := os.WriteFile(filepath.Join(skillPath, "SKILL.md"), []byte(sb.String()), 0o644); err != nil {
-		_ = os.RemoveAll(skillPath)
+	// Finish encoding before touching disk. Anchor all requested paths beneath
+	// the trusted skill root and claim the directory exclusively, so concurrent
+	// creates cannot overwrite a skill or clean up another request's files.
+	if err := os.MkdirAll(s.skillDir, 0o755); err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	root, err := os.OpenRoot(s.skillDir)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	defer root.Close()
+	if err := root.Mkdir(body.Name, 0o755); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			writeErr(w, 409, "skill already exists")
+		} else {
+			writeErr(w, 500, err.Error())
+		}
+		return
+	}
+	name := filepath.Join(body.Name, "SKILL.md")
+	file, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		// Remove only our empty directory. An unexpected existing file belongs
+		// to someone else, so it must survive this failed open.
+		_ = root.Remove(body.Name)
+		writeErr(w, 500, err.Error())
+		return
+	}
+	_, err = file.WriteString(sb.String())
+	if closeErr := file.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		// This request successfully opened the new file exclusively. Cleanup
+		// stays rooted and never recursively deletes unrelated directory data.
+		_ = root.Remove(name)
+		_ = root.Remove(body.Name)
 		writeErr(w, 500, err.Error())
 		return
 	}

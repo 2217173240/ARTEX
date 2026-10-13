@@ -740,7 +740,7 @@ func (i *Interceptor) Decide(pendingID int64, allowed bool) error {
 	if allowed {
 		action, reason = "allow", "人工允许执行"
 	}
-	resolved, err := i.db.ResolveIntercept(pendingID, status, action, reason)
+	resolved, err := i.db.ResolveIntercept(pendingID, status, action, reason, "manual")
 	if err != nil {
 		return err
 	}

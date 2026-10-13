@@ -1464,7 +1464,8 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 	if req.ProfileID != nil && (cfg.APIKey == "" || cfg.SessionHeaderKey == "") {
 		if p, err := s.m.pg.ProfileByID(*req.ProfileID); err == nil && p != nil {
 			if cfg.APIKey == "" {
-				cfg.APIKey = p.APIKey
+				// Match ConfigFrom normalization for a key loaded from storage.
+				cfg.APIKey = strings.TrimSpace(p.APIKey)
 			}
 			if cfg.SessionHeaderKey == "" {
 				cfg.SessionHeaderKey = p.SessionHeaderKey

@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/guard"
@@ -322,15 +323,41 @@ func (s *Server) interceptHistory(w http.ResponseWriter, r *http.Request) {
 
 func interceptFilterParams(q url.Values) (db.InterceptApprovalFilter, error) {
 	filter := db.InterceptApprovalFilter{Status: q.Get("status"), DecisionSource: q.Get("decision_source")}
+	var err error
+	filter.Search, err = db.ValidateInterceptSearch(q.Get("q"))
+	if err != nil {
+		return filter, err
+	}
+	for _, date := range []struct {
+		name   string
+		target **time.Time
+	}{{"created_from", &filter.CreatedFrom}, {"created_to", &filter.CreatedTo}} {
+		value := q.Get(date.name)
+		if value == "" {
+			continue
+		}
+		parsed, err := time.Parse("2006-01-02", value) // UTC, independent of database timezone
+		if err != nil {
+			return filter, fmt.Errorf("%s 必须是 YYYY-MM-DD 日期", date.name)
+		}
+		*date.target = &parsed
+	}
+	if filter.CreatedFrom != nil && filter.CreatedTo != nil && filter.CreatedFrom.After(*filter.CreatedTo) {
+		return filter, fmt.Errorf("created_from 不能晚于 created_to")
+	}
+	if filter.CreatedTo != nil {
+		nextDay := filter.CreatedTo.AddDate(0, 0, 1)
+		filter.CreatedTo = &nextDay
+	}
 	switch filter.Status {
 	case "", "pending", "allowed", "denied", "timeout":
 	default:
 		return filter, fmt.Errorf("status 必须是 pending、allowed、denied 或 timeout")
 	}
 	switch filter.DecisionSource {
-	case "", "model", "rule", "unknown":
+	case "", "model", "rule", "manual", "unknown":
 	default:
-		return filter, fmt.Errorf("decision_source 必须是 model、rule 或 unknown")
+		return filter, fmt.Errorf("decision_source 必须是 model、rule、manual 或 unknown")
 	}
 	return filter, nil
 }
