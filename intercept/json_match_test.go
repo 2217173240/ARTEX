@@ -11,7 +11,7 @@ import (
 )
 
 func TestJSONRegexPayloadStrings(t *testing.T) {
-	r := compiledRule{InterceptRule: db.InterceptRule{MatchTarget: "tool_input", MatchType: "regex"}, re: regexp.MustCompile(`rm\s+-rf`)}
+	r := compiledRule{InterceptRule: db.InterceptRule{MatchTarget: "tool_input", MatchType: "regex", Action: "deny"}, re: regexp.MustCompile(`rm\s+-rf`)}
 	for _, tc := range []struct {
 		name, input string
 		want        bool
@@ -99,5 +99,71 @@ func TestJSONRegexPreservesRuleChainAndJudge(t *testing.T) {
 	dec, judged, err := ic.Judge(t.Context(), "Bash", input)
 	if err != nil || !judged || !called || dec.Action != "deny" || dec.RuleID != 0 {
 		t.Fatalf("fallback changed: %+v judged=%v called=%v err=%v", dec, judged, called, err)
+	}
+}
+
+func TestJSONRegexDecodedMatchingOnlyRestricts(t *testing.T) {
+	input := []byte(`{"command":"echo other","annotation":"fixture"}`)
+	for _, action := range []string{"allow", "deny", "ask", "", "unknown"} {
+		t.Run(action, func(t *testing.T) {
+			r := compiledRule{InterceptRule: db.InterceptRule{MatchTarget: "tool_input", MatchType: "regex", Action: action}, re: regexp.MustCompile(`^fixture$`)}
+			// The initial any-leaf extension would have matched this annotation,
+			// although the existing raw predicate does not match the tool call.
+			if r.re.Match(input) || !matchesJSONStrings(r.re, map[string]any{"annotation": "fixture"}) {
+				t.Fatal("fixture does not reproduce the broadened any-leaf match")
+			}
+			if got, want := ruleMatches(r, "Bash", input), action == "deny" || action == "ask"; got != want {
+				t.Fatalf("decoded action %q matched=%v want=%v", action, got, want)
+			}
+			// Every action retains its explicit raw regex matching behavior.
+			r.re = regexp.MustCompile(`^\{"command":`)
+			if !ruleMatches(r, "Bash", input) {
+				t.Fatal("explicit raw match changed")
+			}
+		})
+	}
+	for _, action := range []string{"ask", "deny"} {
+		r := compiledRule{InterceptRule: db.InterceptRule{MatchTarget: "tool_input", MatchType: "regex", Action: action}, re: regexp.MustCompile(`rm\s+-rf`)}
+		if !ruleMatches(r, "Bash", []byte(`{"command":"\u0072m -rf fixture"}`)) {
+			t.Fatalf("restrictive action %s lost Unicode matching", action)
+		}
+	}
+}
+
+func TestJSONRegexAllowAnnotationKeepsJudgeFallback(t *testing.T) {
+	input := json.RawMessage(`{"command":"echo other","annotation":"fixture"}`)
+	s := &configTestStore{
+		rules:    []db.InterceptRule{{ID: 1, Enabled: true, Priority: 200, MatchTarget: "tool_input", MatchType: "regex", Pattern: `^fixture$`, Action: "allow"}},
+		settings: map[string]string{settingJudgeEnabled: "true"},
+	}
+	ic := New(s.open(t))
+	called := false
+	ic.SetReviewer(func(_ context.Context, _ int64, _ string, in ReviewInput) (Decision, error) {
+		called = true
+		if !bytes.Equal(in.Arguments, input) {
+			t.Fatal("judge raw input changed")
+		}
+		return Decision{Action: "deny"}, nil
+	})
+	dec, matched, err := ic.Match("Bash", input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// PreToolUse invokes Judge only on a rule non-match. An automatic allow
+	// produced by the annotation would skip this reviewer completely.
+	if !matched {
+		var judged bool
+		dec, judged, err = ic.Judge(t.Context(), "Bash", input)
+		if err != nil || !judged {
+			t.Fatalf("judge: judged=%v err=%v", judged, err)
+		}
+	}
+	if matched || !called || dec.Action != "deny" {
+		t.Fatalf("annotation bypassed judge: matched=%v called=%v action=%s", matched, called, dec.Action)
+	}
+	ic.cached[0].re = regexp.MustCompile(`^\{"command":`)
+	dec, matched, err = ic.Match("Bash", input)
+	if err != nil || !matched || dec.Action != "allow" {
+		t.Fatalf("raw allow lost: %+v matched=%v err=%v", dec, matched, err)
 	}
 }

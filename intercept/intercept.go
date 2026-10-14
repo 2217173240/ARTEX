@@ -612,12 +612,14 @@ func ruleMatches(r compiledRule, toolName string, input []byte) bool {
 		if r.re.MatchString(subject) {
 			return true
 		}
-		if r.MatchTarget != "tool_input" || !json.Valid(input) {
+		if r.MatchTarget != "tool_input" || (r.Action != "deny" && r.Action != "ask") || !json.Valid(input) {
 			return false
 		}
 		// Match decoded payload values independently; keys and field boundaries
 		// are not executable payload text. Keep raw matching above for existing
-		// rules that intentionally target JSON syntax. This is not a command sandbox.
+		// rules that intentionally target JSON syntax. Only restrictive rules gain
+		// decoded matching: an unrelated leaf must not broaden an automatic allow.
+		// This is not a command sandbox.
 		var payload any
 		decoder := json.NewDecoder(bytes.NewReader(input))
 		decoder.UseNumber() // Valid JSON numbers need not fit in float64.
