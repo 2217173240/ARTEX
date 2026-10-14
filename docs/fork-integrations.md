@@ -1,5 +1,9 @@
 # 同源功能集成
 
+2026-10-14 借鉴 [BaaRai PR #92](https://github.com/BaaRai/ARTEX/pull/92)（head `c191b3b6e70ed4c4194d19d0ce2dfa276b8f9443`，作者 BaaRai，AGPL-3.0），补齐任务详情的聚合指标。真实 PostgreSQL 和已认证 API 回归复现列表非零、详情全零的问题；列表和详情现在共用 DTO 填充，详情查询仅聚合当前任务，复用现有 SQL 计数。保留结果活动的 token 口径、目标及运行中意图、内存 heartbeat、归并案例与原始上报的区别、空任务省略字段、归档依赖和现有可降级读取行为。没有引入来源每次查询全部任务的实现。
+
+同轮适配 [RuoJi6 PR #9](https://github.com/RuoJi6/ARTEX/pull/9)（head `b9b137dc914139194a6f0debfb2d1552c79bf525`，作者 ji ruo / RuoJi6，AGPL-3.0）的 HTTP 选中复制修复思路。通过 DOM Range 端点映射原始文本位置，保留 CRLF、LF、单独 CR、连续空行、跨高亮片段及反向选择；仅处理完整位于当前报文内的单段选择。实现遵循 [copy 事件](https://developer.mozilla.org/en-US/docs/Web/API/Element/copy_event)的 `clipboardData.setData` 和取消默认行为语义；跨组件选择、无有效选择或剪贴板事件不可用时保留原行为。隔离 Chrome 挂载实际组件验证修复前后的 DOM 与复制事件，追加 Unicode 和节点边界回归；合成事件验证不等同于操作系统剪贴板验收。
+
 2026-10-13 借鉴 [RuoJi6 的审批检索 `2f2b78c`](https://github.com/RuoJi6/ARTEX/commit/2f2b78cc78ac9ca81c47f67ad45841828571a8a5) 与 [人工裁决来源 `97213e3`](https://github.com/RuoJi6/ARTEX/commit/97213e357b6b49edb3a5c760c235658e2ca30981)（作者 ji ruo / RuoJi6，AGPL-3.0），按当前分页和审批事务适配。全局及任务内审批记录支持内容搜索、UTC 创建日期范围和人工来源筛选；人工决定仍只允许从待审批状态原子提交，超时、取消和执行结果关联沿用现有保障。来源提交中的脚本快照、脚本策略配置和旁路问答布局没有整体移植。
 
 同轮适配 [jiwoochris/artex-ko PR #30](https://github.com/jiwoochris/artex-ko/pull/30)（head `06ae2504d454320b227fd4f623ecf29d269bd223`，作者 jum-apzn，AGPL-3.0）的报告加载状态：读取错误显示可重试提示，成功读取空内容才显示暂无报告；切换任务隔离请求和可复制内容，沿用当前翻译系统。另借鉴 [BaaRai 的 `94efd1c`](https://github.com/BaaRai/ARTEX/commit/94efd1ca316fadd8b0f487a48a638a8a435075ef)（作者 BaaRai，AGPL-3.0），修复新建技能遗漏的 YAML 安全序列化：通过已有 yaml.v3 编码字符串和 MCP 列表，实际技能加载器验证冒号、多行、分隔符和中文往返，保留 Markdown 正文、空值省略及冲突处理；没有复制自定义标量编码器或启动检查机制。

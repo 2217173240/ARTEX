@@ -1109,26 +1109,35 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 		dto := taskDTO(t, s.resolvedTaskStatus(t))
 		applyTaskArchiveBlocker(&dto, archiveBlockers)
 		metric := metrics[t.ExpID]
-		dto.Tokens = tokenTotalDTO(metric.Tokens)
-		// prefer the live in-memory heartbeat (fresher) and fall back to the
-		// persisted max activity time (survives restarts) for run-duration display.
-		dto.LastActivity = metric.LastActivity
-		if live := s.engine.LastActivity(t.ID); live > dto.LastActivity {
-			dto.LastActivity = live
-		}
-		dto.GoalsTotal = metric.Goals.Total
-		dto.GoalsMet = metric.Goals.Met
-		dto.InFlight = metric.RunningIntents
-		dto.DistinctFindings = distinct[t.ID]
-		dto.Findings = FindingSeverityDTO{
-			Critical: metric.Findings.Critical,
-			High:     metric.Findings.High,
-			Medium:   metric.Findings.Medium,
-			Low:      metric.Findings.Low,
-		}
+		s.applyTaskMetrics(&dto, t, metric, distinct[t.ID])
 		dtos = append(dtos, dto)
 	}
 	writeJSON(w, 200, map[string]any{"tasks": dtos, "active": active})
+}
+
+func (s *Server) applyTaskMetrics(dto *TaskDTO, t *Task, metric db.TaskListMetrics, distinct *db.FindingDistinctStats) {
+	dto.Tokens = tokenTotalDTO(metric.Tokens)
+	// prefer the live in-memory heartbeat (fresher) and fall back to the
+	// persisted max activity time (survives restarts) for run-duration display.
+	dto.LastActivity = metric.LastActivity
+	if live := s.engine.LastActivity(t.ID); live > dto.LastActivity {
+		dto.LastActivity = live
+	}
+	dto.GoalsTotal = metric.Goals.Total
+	dto.GoalsMet = metric.Goals.Met
+	dto.InFlight = metric.RunningIntents
+	// The batch query has no row for tasks without observations. Preserve that
+	// omitted JSON shape when the scoped query returns an empty aggregate.
+	if distinct != nil && distinct.Reports == 0 {
+		distinct = nil
+	}
+	dto.DistinctFindings = distinct
+	dto.Findings = FindingSeverityDTO{
+		Critical: metric.Findings.Critical,
+		High:     metric.Findings.High,
+		Medium:   metric.Findings.Medium,
+		Low:      metric.Findings.Low,
+	}
 }
 
 func (s *Server) resolvedTaskStatus(t *Task) string {
@@ -1797,6 +1806,14 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dto := taskDTO(t, s.resolvedTaskStatus(t))
+	// Match the list's best-effort metrics reads while keeping detail aggregation
+	// scoped to this task. Optional persisted metrics do not gate lifecycle reads.
+	metric, _ := s.m.PG().TaskListMetricsForTask(t.ID)
+	distinct, err := s.m.PG().DistinctFindingStats(t.ID)
+	if err != nil {
+		distinct = nil
+	}
+	s.applyTaskMetrics(&dto, t, metric, distinct)
 	archiveBlockers, _ := s.m.PG().TaskArchiveBlockers()
 	applyTaskArchiveBlocker(&dto, archiveBlockers)
 	writeJSON(w, 200, dto)
