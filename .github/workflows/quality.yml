@@ -180,6 +180,7 @@ jobs:
       - name: Check startup and pinned browser tool provisioning
         run: |
           docker run --rm --network none --entrypoint /app/artex artex:ci-only -h
+          docker run --rm --network none --entrypoint sh artex:ci-only -ec 'test -s /app/LICENSE; test -s /app/THIRD-PARTY-NOTICES.txt'
           docker run --rm --network none --entrypoint sh artex:ci-only -ec '
             playwright-cli --help > /dev/null
             playwright-mcp --help > /dev/null

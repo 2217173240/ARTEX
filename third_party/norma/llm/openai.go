@@ -68,7 +68,7 @@ type oaStreamOpts struct {
 // assistant tool_use → tool_calls; user-embedded tool_result → standalone
 // role:tool messages; system prompt → leading system message (FR-03.6).
 func toOpenAIMessages(system string, msgs []Message) []oaMessage {
-	out := make([]oaMessage, 0, len(msgs)+1)
+	out := make([]oaMessage, 0, len(msgs))
 	if system != "" {
 		out = append(out, oaMessage{Role: "system", Content: system})
 	}

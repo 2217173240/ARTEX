@@ -30,7 +30,7 @@ try {
     $stage = Join-Path $work 'payload'
     New-Item -ItemType Directory $stage | Out-Null
     Copy-Item $binaryPath (Join-Path $stage 'artex.exe')
-    foreach ($name in @('config.example.json', 'LICENSE', 'CHANGELOG.md')) {
+    foreach ($name in @('config.example.json', 'LICENSE', 'THIRD-PARTY-NOTICES.txt', 'CHANGELOG.md')) {
         Copy-Item (Join-Path $repo $name) $stage -Recurse
     }
     & python (Join-Path $repo 'scripts/stage-skills.py') (Join-Path $stage 'skills')

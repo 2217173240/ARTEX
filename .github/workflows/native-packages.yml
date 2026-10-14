@@ -140,6 +140,7 @@ jobs:
           expected=x86_64; if [ "$ARCH" = arm64 ]; then expected=arm64; fi
           test "$(lipo -archs /Applications/ARTEX.app/Contents/MacOS/artex)" = "$expected"
           test -f /Applications/ARTEX.app/Contents/Resources/skills/api-recon/SKILL.md
+          test -s /Applications/ARTEX.app/Contents/Resources/THIRD-PARTY-NOTICES.txt
           python3 scripts/native-smoke.py /Applications/ARTEX.app/Contents/MacOS/artex
           sudo rm -rf /Applications/ARTEX.app
           sudo pkgutil --forget io.github.2217173240.artex

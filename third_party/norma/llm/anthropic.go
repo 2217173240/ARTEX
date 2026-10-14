@@ -374,7 +374,7 @@ func mergeAdjacentSameRole(msgs []Message) []Message {
 	out := make([]Message, 0, len(msgs))
 	for _, m := range msgs {
 		if n := len(out); n > 0 && out[n-1].Role == m.Role {
-			merged := make([]ContentBlock, 0, len(out[n-1].Content)+len(m.Content))
+			merged := make([]ContentBlock, 0, len(out[n-1].Content))
 			merged = append(merged, out[n-1].Content...)
 			merged = append(merged, m.Content...)
 			out[n-1].Content = merged

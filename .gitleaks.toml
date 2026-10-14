@@ -61,3 +61,10 @@ condition = "AND"
 regexTarget = "line"
 paths = ["(^|/)cmd/artex/launcher\\.go$"]
 regexes = ['(?m)^\t\t\t\tcmd\.Env = append\(launcherEnv\(home, os\.Environ\(\)\), "ARTEX_LAUNCH_TOKEN="\+childToken, "ARTEX_LAUNCH_PARENT=1"\)$']
+
+[[rules.allowlists]]
+description = "Audited SHA256 of the unchanged upstream noa/tokenize.go source, not a token"
+condition = "AND"
+regexTarget = "line"
+paths = ['(^|/)third_party/norma/UPSTREAM-SHA256\.json$']
+regexes = ['(?m)^    "noa/tokenize\.go": "8e5d83a010342961ce76dae5fad6f679f0c92a425c786a68e29fed7266df633f",$']

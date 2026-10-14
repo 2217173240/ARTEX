@@ -22,6 +22,8 @@ contents:
     type: tree
   - src: "${ARTEX_PACKAGE_ROOT}/LICENSE"
     dst: /usr/share/doc/artex/LICENSE
+  - src: "${ARTEX_PACKAGE_ROOT}/THIRD-PARTY-NOTICES.txt"
+    dst: /usr/share/doc/artex/THIRD-PARTY-NOTICES.txt
   - src: "${ARTEX_PACKAGE_ROOT}/CHANGELOG.md"
     dst: /usr/share/doc/artex/CHANGELOG.md
   - src: "${ARTEX_PACKAGE_ROOT}/config.example.json"

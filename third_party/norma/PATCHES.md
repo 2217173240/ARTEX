@@ -35,11 +35,33 @@ alignment. `continuity_helpers_test.go` extracts only required upstream test
 helpers; `continuity_wire_test.go` is a local regression. No reasoning/signature,
 provider selection, usage, token sizing or other runtime behavior was upgraded.
 
+Additional local safety repair: `llm/openai.go` and `llm/anthropic.go` use
+a single existing slice length for initial capacity instead of adding lengths.
+This removes unchecked allocation-capacity arithmetic (CodeQL allocationoverflow)
+while append preserves output order/content and Anthropic merge source immutability.
+This repair is local ARTEX work, separate from the attributed RC-derived changes.
+
 Retained upstream tests cover provider encoders (OpenAI, Responses, Anthropic),
 thinking placeholders/overrides, boundary pairing, projection/reassembly,
 Session initialization and state persistence. Noa's unrelated pacing, long-session
 capacity and retry tests are not presented as passing: the full original v0.4.3
-`llm`, `noa`, `noaadapter` test run has known failures recorded in the R17 review.
+`llm`, `noa`, `noaadapter` test run has the following independently reproduced
+failures on untouched commit `320ae32989da97dd91469bb89164cbfe87d83d5d`:
+
+- `TestDoStreamHonorsConfiguredRetries`: nil HTTPClient panic.
+- `TestAdaptiveGrowthTracksTheWindow`: equal growth floor/cap prevent adaptation.
+- `TestSuppressionReleaseFitsInsideTheWindow`: suppression growth threshold
+  exceeds the small-window pressure band.
+- `TestLongSessionStaysBounded`: last-ten-turn token peak exceeds the bound.
+- `TestLongSessionWithPartiallyCompliantModel`: view token peak exceeds window.
+- `TestOverflowLearningIsWiredIn`: armed floor follows configured rather than
+  provider-reported window.
+- `TestTierTwoIsUnreachableOnSmallWindows`: its limitation assertion fails
+  because tier two does fire.
+
+These unrelated tests are omitted from this bounded replacement; no unrelated
+runtime repair is claimed. A passing retained suite does not establish that the
+complete upstream suite passes. The complete omitted-test list is in the manifest.
 
 Root `go test ./...` does not enter nested modules. CI must explicitly run:
 
@@ -47,7 +69,7 @@ Root `go test ./...` does not enter nested modules. CI must explicitly run:
 (cd third_party/norma && go test -race -count=1 ./...)
 ```
 
-Maintenance boundary: review only these three production files against the
+Maintenance boundary: review only these four production files against the
 original hashes. Upgrade by restoring exact official source, reconsidering each
 patch against the new version, and rerunning retained tests and ARTEX tests.
 Remove the replacement once an official release carries equivalent fixes.

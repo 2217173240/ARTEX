@@ -49,3 +49,32 @@ func TestDoctorOptionalSecurityToolsNeverExecute(t *testing.T) {
 		}
 	}
 }
+
+func TestDoctorOptionalTemplateFileWarnsButCoreDirectoryFails(t *testing.T) {
+	root := t.TempDir()
+	file := filepath.Join(root, "not-a-directory")
+	if err := os.WriteFile(file, []byte("fixture"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ARTEX_CONFIG", filepath.Join(root, "absent.json"))
+	t.Setenv("ARTEX_PG_DSN", "invalid fixture")
+	t.Setenv("ARTEX_SKILL_DIR", root)
+	t.Setenv("NUCLEI_TEMPLATES_DIR", file)
+	found := false
+	for _, check := range inspectDoctor(root).Checks {
+		if check.Name == "optional nuclei templates directory" {
+			found = true
+			if check.Status != "WARN" || check.Detail != "configured path is not a directory" {
+				t.Fatalf("optional template defect: %+v", check)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("missing template check")
+	}
+	var core doctorCheck
+	checkDoctorDir(file, "data directory", func(s, n, d string) { core = doctorCheck{n, s, d} })
+	if core.Status != "FAIL" {
+		t.Fatalf("core directory defect must fail: %+v", core)
+	}
+}

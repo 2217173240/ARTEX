@@ -102,7 +102,7 @@ func inspectDoctor(data string) doctorReport {
 	// Only an explicitly configured root can be checked without guessing the
 	// scanner's version-dependent template discovery or executing its binary.
 	if templates := strings.TrimSpace(os.Getenv("NUCLEI_TEMPLATES_DIR")); templates != "" {
-		checkDoctorDir(templates, "optional nuclei templates directory", add)
+		checkDoctorOptionalDir(templates, "optional nuclei templates directory", add)
 	} else {
 		add("SKIP", "optional nuclei templates directory", "NUCLEI_TEMPLATES_DIR unset; template availability and version not tested")
 	}
@@ -116,6 +116,16 @@ func inspectDoctor(data string) doctorReport {
 	defer cancel()
 	probeDoctorDatabase(ctx, dsn, add)
 	return r
+}
+
+// Optional capability defects must not change doctor's critical failure status.
+func checkDoctorOptionalDir(path, name string, add func(string, string, string)) {
+	checkDoctorDir(path, name, func(status, name, detail string) {
+		if status == "FAIL" {
+			status = "WARN"
+		}
+		add(status, name, detail)
+	})
 }
 
 func checkDoctorDir(path, name string, add func(string, string, string)) {

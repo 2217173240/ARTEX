@@ -131,7 +131,8 @@
     "llm/openai.go",
     "llm/sanitize_test.go",
     "noaadapter/project.go",
-    "noaadapter/session.go"
+    "noaadapter/session.go",
+    "llm/anthropic.go"
   ],
   "local_or_rc_derived_files": [
     "PATCHES.md",
@@ -232,5 +233,20 @@
     "tool/captureonce_test.go",
     "tool/task_test.go",
     "tool/ripgrep_test.go"
-  ]
+  ],
+  "changed_production_paths": [
+    "llm/openai.go",
+    "llm/anthropic.go",
+    "noaadapter/project.go",
+    "noaadapter/session.go"
+  ],
+  "local_security_patches": {
+    "allocation_capacity": {
+      "paths": [
+        "llm/openai.go",
+        "llm/anthropic.go"
+      ],
+      "scope": "Use one existing slice length as initial capacity; append grows without unchecked length arithmetic. Local ARTEX safety repair, not RC-derived."
+    }
+  }
 }
