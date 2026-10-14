@@ -122,6 +122,10 @@ type Engine struct {
 	runtimeMu sync.Mutex
 	runtimes  map[string]*taskRuntime
 
+	// Serialize worker configuration reads through pool installation/application.
+	// SQL runs before deleteMu/runtimeMu; task teardown never takes this mutex.
+	workerConfigMu sync.Mutex
+
 	// per-task execution context: each planner.Plan / worker.Execute runs under it,
 	// so pausing can CANCEL an in-flight run (not just skip the next one). Recreated
 	// on resume since cancelling is one-shot. Every cancellation carries a named
@@ -799,24 +803,29 @@ func (e *Engine) ReadyFor(t *Task) bool {
 // but no-op until an LLM is configured (so a task created while idle picks up
 // automatically once LLM is set from the UI).
 func (e *Engine) Run(ctx context.Context, t *Task) {
+	e.workerConfigMu.Lock()
+	workers := e.m.Workers()
 	e.deleteMu.RLock()
 	if e.IsDeleting(t.ID) {
 		e.deleteMu.RUnlock()
+		e.workerConfigMu.Unlock()
 		return
 	}
 	if _, loaded := e.started.LoadOrStore(t.ID, true); loaded {
 		e.deleteMu.RUnlock()
+		e.workerConfigMu.Unlock()
 		t.Notify() // already running — just nudge a planning round
 		return
 	}
 	rt := e.registerTaskRoutines(ctx, t.ID, 2)
 	e.runtimeMu.Lock()
-	pool := newWorkerPool(rt.ctx, e.m.Workers(), func(loopCtx context.Context, i int, pool *workerPool) {
+	pool := newWorkerPool(rt.ctx, workers, func(loopCtx context.Context, i int, pool *workerPool) {
 		e.pooledWorkerLoop(loopCtx, t, fmt.Sprintf("work#%d", i+1), pool, i)
 	})
 	rt.pool = pool
 	e.runtimeMu.Unlock()
 	e.deleteMu.RUnlock()
+	e.workerConfigMu.Unlock()
 	e.touch(t.ID)
 	runTaskRoutine(rt, func(loopCtx context.Context) { e.plannerLoop(loopCtx, t) })
 	runTaskRoutine(rt, func(loopCtx context.Context) { <-loopCtx.Done(); pool.Close() })

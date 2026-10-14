@@ -85,17 +85,19 @@ func (p *workerPool) Close() {
 // ReconcileWorkers reads the persisted value while serializing updates with task
 // startup/deletion. It never cancels the task's execution context.
 func (e *Engine) ReconcileWorkers() error {
-	e.deleteMu.RLock()
-	defer e.deleteMu.RUnlock()
 	if e.m == nil {
 		return nil
 	}
-	e.runtimeMu.Lock()
-	defer e.runtimeMu.Unlock()
+	e.workerConfigMu.Lock()
+	defer e.workerConfigMu.Unlock()
 	limit, err := e.m.workerCount()
 	if err != nil {
 		return err
 	}
+	e.deleteMu.RLock()
+	defer e.deleteMu.RUnlock()
+	e.runtimeMu.Lock()
+	defer e.runtimeMu.Unlock()
 	for id, rt := range e.runtimes {
 		if rt.pool != nil && !e.IsDeleting(id) {
 			rt.pool.Resize(limit)

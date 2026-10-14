@@ -77,7 +77,7 @@
 
 - 借鉴 [6ccg/ARTEX 的 `cb5dfec`](https://github.com/6ccg/ARTEX/commit/cb5dfec8fcc3844bd7d56f3e208ff1cb1a34d4b0)（作者 6ccg），修补当前 `go-mitmproxy v1.9.2` 在 SOCKS5 拨号失败后关闭 nil 连接的问题。官方 `v1.9.3` 仍包含该代码，因此只固定原版本的运行包并应用小补丁，保留原 MIT 许可证、文件来源和校验清单；没有引入来源仓库的整体 vendor、代理架构或 Docker 出站策略。维护及回归方法见 [依赖补丁说明](../third_party/go-mitmproxy/ARTEX-PATCHES.md)，本地模块替换沿用 [Go 官方 replace 机制](https://go.dev/ref/mod#go-mod-file-replace)。
 - 借鉴 [wufufu770/reArtex 的 `b85d2d9`](https://github.com/wufufu770/reArtex/commit/b85d2d974111b226b1a1f0291437f19a4ac745fd)（作者 wufufu770），为 `deny/ask` 正则规则增加 JSON 解码后独立字符串值匹配。`allow` 继续仅匹配原始参数，避免无关字段扩大自动放行范围。原始参数仍用于审计和模型复核；保留启用范围、优先级与 first-match，不跨字段拼接，不采用来源的凭据短路表或工具 ask 策略。它补齐等价转义的确定性匹配，不构成完整命令语义沙箱。
-- 借鉴 [RC-CHN/ARTEX 的 `9278fb7`](https://github.com/RC-CHN/ARTEX/commit/9278fb7c4066234bdd19729cfec8a94cf14978a1)（作者 RuochenPan / RC-CHN），将工作并发设置同步到已有任务的常规 Worker 池。扩容增加可用循环；缩容立即限制新工作准入，已经执行的工作自然完成。池独立取消并等待动态循环退出，保留任务暂停、终态、删除、归档、deadline、预算与既有 inflight 保障。设置成功保存后读取最新持久值，读取失败保持全部现有池容量；若保存后同步失败，返回明确的部分完成错误，用户可重试。任务并发上限与常规 Worker 上限各自独立，已有临时 intervention 路径保持原行为。
+- 借鉴 [RC-CHN/ARTEX 的 `9278fb7`](https://github.com/RC-CHN/ARTEX/commit/9278fb7c4066234bdd19729cfec8a94cf14978a1)（作者 RuochenPan / RC-CHN），将工作并发设置同步到已有任务的常规 Worker 池。扩容增加可用循环；缩容立即限制新工作准入，已经执行的工作自然完成。池独立取消并等待动态循环退出，保留任务暂停、终态、删除、归档、deadline、预算与既有 inflight 保障。设置成功保存后读取最新持久值，读取失败保持全部现有池容量；配置查询等待不会占用停止任务需要的锁。若保存后同步失败，返回明确的部分完成错误，用户可重试。任务并发上限与常规 Worker 上限各自独立，已有临时 intervention 路径保持原行为。
 
 三项 ARTEX 来源沿用 AGPL-3.0，底层 MIT 依赖保留其原许可与作者。采用方式为围绕当前架构重写或应用单独依赖补丁，不将 fork 提交认证为缺失的原始 PR。
 

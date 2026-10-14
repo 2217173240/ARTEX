@@ -275,8 +275,10 @@ func TestWorkerSettingsResizeRealIdleTaskLifecycle(t *testing.T) {
 		}()
 	}
 	e.BeginDelete(task.ID)
-	e.StopTask(task.ID)
 	wg.Wait()
+	// Drain Run callers while the delete barrier is installed. StopTask clears
+	// the barrier after joining; an explicit later Run is a valid new admission.
+	e.StopTask(task.ID)
 	e.runtimeMu.Lock()
 	remaining := len(e.runtimes)
 	e.runtimeMu.Unlock()
