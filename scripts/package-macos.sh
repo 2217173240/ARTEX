@@ -40,7 +40,7 @@ chmod 755 "$app/Contents/MacOS/artex"
 sed "s/@VERSION@/$version/g" "$repo/packaging/macos/Info.plist.in" > "$app/Contents/Info.plist"
 plutil -lint "$app/Contents/Info.plist"
 # Only allowlisted release resources: never copy local runtime config/data.
-cp "$repo/LICENSE" "$repo/CHANGELOG.md" "$repo/config.example.json" "$resources/"
+cp "$repo/LICENSE" "$repo/THIRD-PARTY-NOTICES.txt" "$repo/CHANGELOG.md" "$repo/config.example.json" "$resources/"
 # Git-tracked skill files exclude local/generated files and credentials.
 while IFS= read -r -d '' path; do
   [ ! -L "$repo/$path" ] || { echo "Skill symlinks are not supported: $path" >&2; exit 1; }

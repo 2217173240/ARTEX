@@ -80,7 +80,7 @@ func inspectDoctor(data string) doctorReport {
 		skill = filepath.Join(config.BaseDir(), "skills")
 	}
 	checkDoctorDir(skill, "skills directory", add)
-	for _, name := range []string{"node", "python3", "git", "playwright-cli"} {
+	for _, name := range []string{"node", "python3", "git", "playwright-cli", "nuclei", "vulnx"} {
 		if _, e := exec.LookPath(name); e != nil {
 			add("WARN", name, "optional dependency unavailable on PATH")
 		} else {
@@ -91,13 +91,20 @@ func inspectDoctor(data string) doctorReport {
 			add("OK", name, detail)
 		}
 	}
-	for _, relative := range []string{"api-recon/SKILL.md", "api-recon/scripts/runtime_harvest.js", "api-recon/scripts/node_modules/puppeteer-core/package.json", "playwright-cli/SKILL.md"} {
+	for _, relative := range []string{"api-recon/SKILL.md", "api-recon/scripts/runtime_harvest.js", "api-recon/scripts/node_modules/puppeteer-core/package.json", "playwright-cli/SKILL.md", "nuclei/SKILL.md", "vulnx/SKILL.md"} {
 		info, err := os.Stat(filepath.Join(skill, filepath.FromSlash(relative)))
 		if err != nil || !info.Mode().IsRegular() {
 			add("WARN", "optional skill asset "+relative, "absent or inaccessible; install the skill dependencies if using this capability")
 		} else {
 			add("OK", "optional skill asset "+relative, "present; runtime operation not tested")
 		}
+	}
+	// Only an explicitly configured root can be checked without guessing the
+	// scanner's version-dependent template discovery or executing its binary.
+	if templates := strings.TrimSpace(os.Getenv("NUCLEI_TEMPLATES_DIR")); templates != "" {
+		checkDoctorOptionalDir(templates, "optional nuclei templates directory", add)
+	} else {
+		add("SKIP", "optional nuclei templates directory", "NUCLEI_TEMPLATES_DIR unset; template availability and version not tested")
 	}
 	dsn, _, err := config.PostgresDSN()
 	if err != nil {
@@ -109,6 +116,16 @@ func inspectDoctor(data string) doctorReport {
 	defer cancel()
 	probeDoctorDatabase(ctx, dsn, add)
 	return r
+}
+
+// Optional capability defects must not change doctor's critical failure status.
+func checkDoctorOptionalDir(path, name string, add func(string, string, string)) {
+	checkDoctorDir(path, name, func(status, name, detail string) {
+		if status == "FAIL" {
+			status = "WARN"
+		}
+		add(status, name, detail)
+	})
 }
 
 func checkDoctorDir(path, name string, add func(string, string, string)) {

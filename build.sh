@@ -187,7 +187,7 @@ package_binary() {
   cp -R skills "$package_root/"
   cp config.example.json "$package_root/"
   if [ -f README.md ]; then cp README.md "$package_root/"; fi
-  cp LICENSE CHANGELOG.md "$package_root/"
+  cp LICENSE THIRD-PARTY-NOTICES.txt CHANGELOG.md "$package_root/"
   (cd "$ARTEX_PACKAGE_DIR" && zip -q -r -9 "$(basename "$archive")" "$(basename "$package_root")")
   rm -rf "$package_root"
   ok "Release 压缩包：$archive"

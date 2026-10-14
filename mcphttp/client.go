@@ -59,10 +59,12 @@ func (e *rpcError) Error() string { return fmt.Sprintf("mcp rpc error %d: %s", e
 // Client is a connection to one remote MCP server. New uses Streamable HTTP;
 // NewSSE uses the legacy GET /sse + POST /message transport.
 type Client struct {
-	server  string
-	url     string
-	headers map[string]string
-	http    *http.Client
+	guard     *circuit
+	closeOnce sync.Once
+	server    string
+	url       string
+	headers   map[string]string
+	http      *http.Client
 
 	mu        sync.Mutex
 	nextID    int
@@ -74,10 +76,8 @@ type Client struct {
 	streamBody   io.ReadCloser
 	streamCancel context.CancelFunc
 	streamDone   chan struct{}
-	legacyMu     sync.Mutex
 	pendingMu    sync.Mutex
 	pending      map[int]chan *rpcResponse
-	streamErr    chan error
 	protocol     string
 }
 
@@ -98,6 +98,14 @@ func normalizeHeaders(headers map[string]string) (map[string]string, error) {
 // When insecure is true, TLS certificate verification is skipped so servers that
 // present a self-signed certificate can still be reached (issue #108).
 func New(ctx context.Context, server, url string, headers map[string]string, insecure bool) (*Client, error) {
+	return NewWithOptions(ctx, server, url, headers, insecure, Options{})
+}
+
+func NewWithOptions(ctx context.Context, server, url string, headers map[string]string, insecure bool, options Options) (*Client, error) {
+	options, err := options.defaults()
+	if err != nil {
+		return nil, err
+	}
 	cleanHeaders, err := normalizeHeaders(headers)
 	if err != nil {
 		return nil, err
@@ -107,6 +115,7 @@ func New(ctx context.Context, server, url string, headers map[string]string, ins
 		hc.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
 	}
 	c := &Client{
+		guard:    newCircuit(options),
 		server:   server,
 		url:      url,
 		headers:  cleanHeaders,
@@ -114,6 +123,7 @@ func New(ctx context.Context, server, url string, headers map[string]string, ins
 		protocol: protocolVersion,
 	}
 	if err := c.initialize(ctx); err != nil {
+		_ = c.Close()
 		return nil, err
 	}
 	return c, nil
@@ -123,6 +133,14 @@ func New(ctx context.Context, server, url string, headers map[string]string, ins
 // announces a per-session POST /message endpoint, while JSON-RPC responses are
 // delivered asynchronously as SSE message events.
 func NewSSE(ctx context.Context, server, sseURL string, headers map[string]string, insecure bool) (*Client, error) {
+	return NewSSEWithOptions(ctx, server, sseURL, headers, insecure, Options{})
+}
+
+func NewSSEWithOptions(ctx context.Context, server, sseURL string, headers map[string]string, insecure bool, options Options) (*Client, error) {
+	options, err := options.defaults()
+	if err != nil {
+		return nil, err
+	}
 	cleanHeaders, err := normalizeHeaders(headers)
 	if err != nil {
 		return nil, err
@@ -132,10 +150,14 @@ func NewSSE(ctx context.Context, server, sseURL string, headers map[string]strin
 		hc.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
 	}
 	streamCtx, cancel := context.WithCancel(context.Background())
+	setupCtx, setupCancel := context.WithTimeout(ctx, 120*time.Second)
+	defer setupCancel()
+	stopSetup := context.AfterFunc(setupCtx, cancel)
+	defer stopSetup()
 	req, err := http.NewRequestWithContext(streamCtx, http.MethodGet, sseURL, nil)
 	if err != nil {
 		cancel()
-		return nil, err
+		return nil, errors.New("mcp: invalid SSE URL")
 	}
 	req.Header.Set("Accept", "text/event-stream")
 	for k, v := range cleanHeaders {
@@ -144,21 +166,34 @@ func NewSSE(ctx context.Context, server, sseURL string, headers map[string]strin
 	resp, err := hc.Do(req)
 	if err != nil {
 		cancel()
-		return nil, err
+		if setupCtx.Err() != nil {
+			return nil, setupCtx.Err()
+		}
+		return nil, errors.New("mcp: SSE connection failed")
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		defer resp.Body.Close()
 		cancel()
-		return nil, fmt.Errorf("mcp sse http %d: %s", resp.StatusCode, readSnippet(resp.Body))
+		return nil, fmt.Errorf("mcp sse http %d", resp.StatusCode)
 	}
 	reader := bufio.NewReader(resp.Body)
 	endpoint, err := readSSEEndpoint(reader, sseURL)
 	if err != nil {
 		resp.Body.Close()
 		cancel()
+		if setupCtx.Err() != nil {
+			return nil, setupCtx.Err()
+		}
+		return nil, errors.New("mcp: SSE endpoint negotiation failed")
+	}
+	stopSetup()
+	if err := setupCtx.Err(); err != nil {
+		resp.Body.Close()
+		cancel()
 		return nil, err
 	}
 	c := &Client{
+		guard:        newCircuit(options),
 		server:       server,
 		url:          sseURL,
 		headers:      cleanHeaders,
@@ -169,7 +204,6 @@ func NewSSE(ctx context.Context, server, sseURL string, headers map[string]strin
 		streamCancel: cancel,
 		streamDone:   make(chan struct{}),
 		pending:      make(map[int]chan *rpcResponse),
-		streamErr:    make(chan error, 1),
 		protocol:     legacySSEProtocolVersion,
 	}
 	go c.readLegacySSE(reader)
@@ -196,7 +230,7 @@ func readSSEEndpoint(r *bufio.Reader, base string) (string, error) {
 		}
 		u, err := url.Parse(candidate)
 		if err != nil {
-			return "", fmt.Errorf("mcp sse endpoint URL: %w", err)
+			return "", errors.New("mcp: invalid SSE endpoint URL")
 		}
 		b, err := url.Parse(base)
 		if err != nil {
@@ -216,12 +250,6 @@ func (c *Client) readLegacySSE(r *bufio.Reader) {
 	for {
 		line, err := r.ReadString('\n')
 		if err != nil {
-			if !errors.Is(err, context.Canceled) {
-				select {
-				case c.streamErr <- err:
-				default:
-				}
-			}
 			return
 		}
 		line = strings.TrimRight(line, "\r\n")
@@ -358,6 +386,11 @@ func (c *Client) Call(ctx context.Context, tool string, args any) (string, error
 // Close terminates the MCP session best-effort (DELETE with the session id, per the
 // Streamable HTTP spec). Servers that don't track sessions simply ignore it.
 func (c *Client) Close() error {
+	c.closeOnce.Do(func() { c.circuit().close(); c.closeTransport(); c.http.CloseIdleConnections() })
+	return nil
+}
+
+func (c *Client) closeTransport() error {
 	if c.legacySSE {
 		if c.streamCancel != nil {
 			c.streamCancel()
@@ -377,7 +410,9 @@ func (c *Client) Close() error {
 	if sid == "" {
 		return nil
 	}
-	req, err := http.NewRequest(http.MethodDelete, c.url, nil)
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(cleanupCtx, http.MethodDelete, c.url, nil)
 	if err != nil {
 		return nil
 	}
@@ -420,6 +455,36 @@ func (c *Client) notify(ctx context.Context, method string, params any) error {
 // server replies 202 Accepted with no body. Otherwise the reply is parsed from JSON
 // or from an SSE stream, whichever the server chose.
 func (c *Client) roundTrip(ctx context.Context, body rpcRequest, expectResp bool) (*rpcResponse, error) {
+	if _, err := json.Marshal(body); err != nil {
+		return nil, errors.New("mcp: invalid request parameters")
+	}
+	g := c.circuit()
+	a, err := g.acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	callCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	stop := context.AfterFunc(g.ctx, cancel)
+	defer func() { stop(); cancel() }()
+	response, err := c.transportRoundTrip(callCtx, body, expectResp)
+	if err == nil && expectResp && (response == nil || response.JSONRPC != "2.0" || response.ID != body.ID || (response.Error == nil && len(response.Result) == 0)) {
+		err = errors.New("mcp: invalid RPC response")
+	}
+	canceled := ctx.Err() != nil || g.ctx.Err() != nil
+	g.finish(a, err, canceled)
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	if g.ctx.Err() != nil {
+		return nil, ErrClosed
+	}
+	if err != nil {
+		return nil, errors.New("mcp: transport request failed")
+	}
+	return response, nil
+}
+
+func (c *Client) transportRoundTrip(ctx context.Context, body rpcRequest, expectResp bool) (*rpcResponse, error) {
 	if c.legacySSE {
 		return c.legacyRoundTrip(ctx, body, expectResp)
 	}
@@ -464,7 +529,7 @@ func (c *Client) roundTrip(ctx context.Context, body rpcRequest, expectResp bool
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("mcp http %d: %s", resp.StatusCode, readSnippet(resp.Body))
+		return nil, fmt.Errorf("mcp http %d", resp.StatusCode)
 	}
 	if !expectResp {
 		return nil, nil // notification — no JSON-RPC body to parse
@@ -482,10 +547,6 @@ func (c *Client) roundTrip(ctx context.Context, body rpcRequest, expectResp bool
 // legacyRoundTrip posts to the endpoint announced by GET /sse. The HTTP POST
 // only acknowledges receipt; the JSON-RPC response arrives on the SSE stream.
 func (c *Client) legacyRoundTrip(ctx context.Context, body rpcRequest, expectResp bool) (*rpcResponse, error) {
-	// Serializing calls keeps the first implementation deterministic while the
-	// shared SSE reader still handles asynchronous delivery.
-	c.legacyMu.Lock()
-	defer c.legacyMu.Unlock()
 
 	data, err := json.Marshal(body)
 	if err != nil {
@@ -518,7 +579,7 @@ func (c *Client) legacyRoundTrip(ctx context.Context, body rpcRequest, expectRes
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("mcp sse http %d: %s", resp.StatusCode, readSnippet(resp.Body))
+		return nil, fmt.Errorf("mcp sse http %d", resp.StatusCode)
 	}
 	if !expectResp {
 		return nil, nil
@@ -526,8 +587,8 @@ func (c *Client) legacyRoundTrip(ctx context.Context, body rpcRequest, expectRes
 	select {
 	case response := <-responseCh:
 		return response, nil
-	case err := <-c.streamErr:
-		return nil, fmt.Errorf("mcp sse stream: %w", err)
+	case <-c.streamDone:
+		return nil, errors.New("mcp sse stream closed")
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
@@ -573,9 +634,4 @@ func parseSSE(r io.Reader, wantID int) (*rpcResponse, error) {
 		return nil, err
 	}
 	return nil, fmt.Errorf("mcp: no matching response in event stream")
-}
-
-func readSnippet(r io.Reader) string {
-	b, _ := io.ReadAll(io.LimitReader(r, 2048))
-	return strings.TrimSpace(string(b))
 }

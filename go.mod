@@ -2,6 +2,8 @@ module github.com/Autumn-27/artex
 
 go 1.26.3
 
+replace github.com/Autumn-27/norma => ./third_party/norma
+
 replace github.com/lqqyt2423/go-mitmproxy => ./third_party/go-mitmproxy
 
 require (

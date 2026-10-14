@@ -3,6 +3,8 @@
 !Dockerfile
 !.dockerignore
 !start.sh
+!LICENSE
+!THIRD-PARTY-NOTICES.txt
 !skills/
 !skills/**
 !dist/

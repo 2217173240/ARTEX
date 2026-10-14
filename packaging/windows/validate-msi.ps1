@@ -93,7 +93,7 @@ try {
         Invoke-Msi '/i' $Msi
         Assert-Installed $productCode $Architecture $sameVersionCode
     }
-    foreach ($name in @('artex.exe', 'launch.vbs', 'config.example.json', 'LICENSE', 'CHANGELOG.md', 'README.txt', 'skills')) {
+    foreach ($name in @('artex.exe', 'launch.vbs', 'config.example.json', 'LICENSE', 'THIRD-PARTY-NOTICES.txt', 'CHANGELOG.md', 'README.txt', 'skills')) {
         if (-not (Test-Path (Join-Path $target $name))) { throw "Missing installed payload: $name" }
     }
     $repo = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent

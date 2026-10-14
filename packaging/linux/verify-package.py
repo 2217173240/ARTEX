@@ -13,6 +13,7 @@ required = {
     '/usr/share/applications/artex.desktop',
     '/usr/share/icons/hicolor/scalable/apps/artex.svg',
     '/usr/share/doc/artex/LICENSE', '/usr/share/doc/artex/CHANGELOG.md',
+    '/usr/share/doc/artex/THIRD-PARTY-NOTICES.txt',
     '/usr/share/doc/artex/config.example.json',
     '/usr/share/artex/skills/api-recon/SKILL.md',
 }
