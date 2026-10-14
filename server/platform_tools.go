@@ -315,7 +315,7 @@ func (s *Server) toolCreateMCP() actool.CoreTool {
 			}
 			message := fmt.Sprintf("mcp created: id=%d name=%s", id, a.Name)
 			if m.Transport == "stdio" {
-				message += "; stdio disabled: operator must enable it in authenticated settings"
+				message += "; stdio disabled: operator must authorize execution in authenticated settings"
 			}
 			return actool.Text(message), nil
 		})
@@ -336,7 +336,7 @@ func (s *Server) toolUpdateMCP() actool.CoreTool {
 			}
 			message := fmt.Sprintf("mcp updated: id=%d", a.ID)
 			if m.Transport == "stdio" {
-				message += "; stdio disabled: operator must enable it in authenticated settings"
+				message += "; stdio disabled: operator must authorize execution in authenticated settings"
 			}
 			return actool.Text(message), nil
 		})
