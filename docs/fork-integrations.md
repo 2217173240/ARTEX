@@ -70,3 +70,14 @@
 [MDN SSE 文档](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events/Using_server-sent_events)说明了断线重连、事件 ID 与代理缓冲。补取仅在实时连接断开时工作；代理仍应禁用缓冲。页面切换会丢弃进行中的旧补取响应，已有 HTTP 请求可能完成。
 
 备注、归档和任务控制沿用数据库事务与既有锁序；[PostgreSQL 显式锁文档](https://www.postgresql.org/docs/current/explicit-locking.html)为并发控制参考。本轮没有移植其他 fork 的多账户认证、AI 自动忽略发现、强制出站标记或可覆盖正式发布资产的流程。
+
+## 扩展来源筛选：2026-10-14
+
+本轮将发现范围扩大到监测名单以外的同名、改名仓库和较早 fork。GitHub 元数据枚举返回 841 个同名仓库、765 个原始网络 fork；具体审查采用分层提交样本，不代表对全部仓库完成代码审计。
+
+- 借鉴 [6ccg/ARTEX 的 `cb5dfec`](https://github.com/6ccg/ARTEX/commit/cb5dfec8fcc3844bd7d56f3e208ff1cb1a34d4b0)（作者 6ccg），修补当前 `go-mitmproxy v1.9.2` 在 SOCKS5 拨号失败后关闭 nil 连接的问题。官方 `v1.9.3` 仍包含该代码，因此只固定原版本的运行包并应用小补丁，保留原 MIT 许可证、文件来源和校验清单；没有引入来源仓库的整体 vendor、代理架构或 Docker 出站策略。维护及回归方法见 [依赖补丁说明](../third_party/go-mitmproxy/ARTEX-PATCHES.md)，本地模块替换沿用 [Go 官方 replace 机制](https://go.dev/ref/mod#go-mod-file-replace)。
+- 借鉴 [wufufu770/reArtex 的 `b85d2d9`](https://github.com/wufufu770/reArtex/commit/b85d2d974111b226b1a1f0291437f19a4ac745fd)（作者 wufufu770），为正则规则增加 JSON 解码后独立字符串值匹配。原始参数仍用于审计和模型复核；保留启用范围、优先级与 first-match，不跨字段拼接，不采用来源的凭据短路表或工具 ask 策略。它补齐等价转义的确定性匹配，不构成完整命令语义沙箱。
+
+两项 ARTEX 来源沿用 AGPL-3.0，底层 MIT 依赖保留其原许可与作者。采用方式为围绕当前架构重写或应用单独依赖补丁，不将 fork 提交认证为缺失的原始 PR。
+
+RC-CHN 的连续 tool 消息校验和摘要排序已保留当前依赖的 localhost 复现证据；修复涉及 Norma 的私有压缩状态，官方 `v0.4.4` 尚未覆盖，作为后续依赖适配候选。lin9527ya 的 MCP 熔断需修正恢复状态机和取消分类，其公司知识共享需明确授权与来源生命周期。seongilp 的全量 scope overview 与当前按需 `list_companies` 契约冲突；旧 Windows PowerShell 启动器需适配现有初始化令牌和进程监督，不直接移植。M0dred 清除的 postcss 附加混淆内容不存在于当前文件。

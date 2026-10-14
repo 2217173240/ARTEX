@@ -12,6 +12,7 @@
 package intercept
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -605,9 +606,47 @@ func ruleMatches(r compiledRule, toolName string, input []byte) bool {
 		return false
 	}
 	if r.MatchType == "regex" {
-		return r.re != nil && r.re.MatchString(subject)
+		if r.re == nil {
+			return false
+		}
+		if r.re.MatchString(subject) {
+			return true
+		}
+		if r.MatchTarget != "tool_input" || !json.Valid(input) {
+			return false
+		}
+		// Match decoded payload values independently; keys and field boundaries
+		// are not executable payload text. Keep raw matching above for existing
+		// rules that intentionally target JSON syntax. This is not a command sandbox.
+		var payload any
+		decoder := json.NewDecoder(bytes.NewReader(input))
+		decoder.UseNumber() // Valid JSON numbers need not fit in float64.
+		if err := decoder.Decode(&payload); err != nil {
+			return false
+		}
+		return matchesJSONStrings(r.re, payload)
 	}
 	return strings.Contains(subject, r.Pattern)
+}
+
+func matchesJSONStrings(re *regexp.Regexp, value any) bool {
+	switch v := value.(type) {
+	case string:
+		return re.MatchString(v)
+	case []any:
+		for _, child := range v {
+			if matchesJSONStrings(re, child) {
+				return true
+			}
+		}
+	case map[string]any:
+		for _, child := range v {
+			if matchesJSONStrings(re, child) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func defaultMessage(action, name string) string {
