@@ -1,5 +1,7 @@
 # 同源功能集成
 
+2026-10-14 另适配 [jiwoochris/artex-global PR #34](https://github.com/jiwoochris/artex-global/pull/34) 的 MCP 卡片部分（最终 head `9fdfd69d0e92ee590e6437ca7b5f04c3568bb93d`，作者 meowassassin，AGPL-3.0）。当前展开侧栏、1100px 视口中的卡片宽度为 183px，启用及删除控件会超出卡片并被裁剪；调整卡片列数断点和传输标签收缩规则后，实际组件的控件边界、鼠标命中及键盘焦点均通过验证。覆盖 320px 中文、1100px 中英文及 1440px 英文；mock 不持久化启用状态，未将其视为服务状态验收。保留现有侧栏偏好、任务表格列和全部配置行为。仓库旧名称 `jiwoochris/artex-ko` 仍作为增量监测键，通过别名记录对应新名称。
+
 2026-10-14 借鉴 [BaaRai PR #92](https://github.com/BaaRai/ARTEX/pull/92)（head `c191b3b6e70ed4c4194d19d0ce2dfa276b8f9443`，作者 BaaRai，AGPL-3.0），补齐任务详情的聚合指标。真实 PostgreSQL 和已认证 API 回归复现列表非零、详情全零的问题；列表和详情现在共用 DTO 填充，详情查询仅聚合当前任务，复用现有 SQL 计数。保留结果活动的 token 口径、目标及运行中意图、内存 heartbeat、归并案例与原始上报的区别、空任务省略字段、归档依赖和现有可降级读取行为。没有引入来源每次查询全部任务的实现。
 
 同轮适配 [RuoJi6 PR #9](https://github.com/RuoJi6/ARTEX/pull/9)（head `b9b137dc914139194a6f0debfb2d1552c79bf525`，作者 ji ruo / RuoJi6，AGPL-3.0）的 HTTP 选中复制修复思路。通过 DOM Range 端点映射原始文本位置，保留 CRLF、LF、单独 CR、连续空行、跨高亮片段及反向选择；仅处理完整位于当前报文内的单段选择。实现遵循 [copy 事件](https://developer.mozilla.org/en-US/docs/Web/API/Element/copy_event)的 `clipboardData.setData` 和取消默认行为语义；跨组件选择、无有效选择或剪贴板事件不可用时保留原行为。隔离 Chrome 挂载实际组件验证修复前后的 DOM 与复制事件，追加 Unicode 和节点边界回归；合成事件验证不等同于操作系统剪贴板验收。
