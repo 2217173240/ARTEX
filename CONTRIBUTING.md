@@ -50,6 +50,8 @@ docker stop artex-contrib-pg
 
 检查每个包的结果；脚本遇到失败后停止，修复后用新的 fixture 重跑。若中途退出，可手动执行 `docker stop artex-contrib-pg` 清理本段命令创建的容器。`TestLiveContextReview` 是显式连接私有模型配置的测试，不属于常规贡献验证。
 
+本地替换的嵌套依赖不会被根目录 `go test ./...` 收录。涉及依赖补丁时额外执行 `(cd third_party/go-mitmproxy && go test -race -count=1 ./internal/helper)` 和 `(cd third_party/norma && go test -race -count=1 ./...)`；源码来源、许可、所保留测试和未收录的上游测试分别见各模块补丁说明。Python 生命周期回归需要 Python 3，可用 `ARTEX_TEST_PYTHON` 指定解释器；原生 CI 明确检查解释器并执行该回归，不将缺解释器的跳过视为验证。
+
 新增备注与日历 API 集成测试使用 `ARTEX_NOTES_TEST_ADMIN_DSN` 和 `ARTEX_CALENDAR_TEST_ADMIN_DSN` 指向本段隔离 PostgreSQL 的 `postgres` 数据库，测试自行创建并移除临时数据库；需要 fixture 角色具有创建数据库权限。CI 已配置这些变量。缺少变量时会明确跳过，不能视为已验证。不要指向用户数据库。
 
 前端检查与 CI 相同：

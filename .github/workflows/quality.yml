@@ -71,6 +71,9 @@ jobs:
       - name: Patched proxy dependency regression tests
         working-directory: third_party/go-mitmproxy
         run: go test -race -count=1 ./internal/helper
+      - name: Patched Norma dependency regression tests
+        working-directory: third_party/norma
+        run: go test -race -count=1 ./...
       - name: Cross-compile supported CLI platforms
         env:
           CGO_ENABLED: "0"

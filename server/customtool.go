@@ -397,6 +397,7 @@ func execPython(ctx context.Context, interp, key, code string, params map[string
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	c := exec.CommandContext(runCtx, interp, tmp)
+	configurePythonProcess(c)
 	c.Dir = workDir
 	c.Env = append(os.Environ(), sessionEnv...) // 会话代理 env
 	for k, v := range params {                  // 标量参数镜像成 TOOL_<NAME>
@@ -406,7 +407,7 @@ func execPython(ctx context.Context, interp, key, code string, params map[string
 	}
 	pj, _ := json.Marshal(params)
 	c.Stdin = bytes.NewReader(pj) // 参数 JSON 走 stdin
-	out, err := c.CombinedOutput()
+	out, err := pythonCombinedOutput(runCtx, c)
 	body := string(out)
 	if runCtx.Err() == context.DeadlineExceeded {
 		body += "\n... [超时终止] ..."

@@ -81,4 +81,13 @@
 
 三项 ARTEX 来源沿用 AGPL-3.0，底层 MIT 依赖保留其原许可与作者。采用方式为围绕当前架构重写或应用单独依赖补丁，不将 fork 提交认证为缺失的原始 PR。
 
-RC-CHN 的连续 tool 消息校验和摘要排序已保留当前依赖的 localhost 复现证据；修复涉及 Norma 的私有压缩状态，官方 `v0.4.4` 尚未覆盖，作为后续依赖适配候选。lin9527ya 的 MCP 熔断需修正恢复状态机和取消分类，其公司知识共享需明确授权与来源生命周期。seongilp 的全量 scope overview 与当前按需 `list_companies` 契约冲突；旧 Windows PowerShell 启动器需适配现有初始化令牌和进程监督，不直接移植。M0dred 清除的 postcss 附加混淆内容不存在于当前文件。
+当时暂缓的 Norma 连续 tool 消息和 MCP 熔断现已按下述边界适配。lin9527ya 的公司知识共享仍需明确授权与来源生命周期。seongilp 的全量 scope overview 与当前按需 `list_companies` 契约冲突；旧 Windows PowerShell 启动器需适配现有初始化令牌和进程监督，不直接移植。M0dred 清除的 postcss 附加混淆内容不存在于当前文件。
+
+## 后续采纳：消息协议、故障隔离与可选工具
+
+- 适配 RuochenPan / RC-CHN 的 [`956abad7`](https://github.com/RC-CHN/ARTEX/commit/956abad73e9f88cd9f4dcc37036af4344bf2f3ba) 与 [`568ad83a`](https://github.com/RC-CHN/ARTEX/commit/568ad83a2e5978ec2546434c832bc6076ae86bce)：压缩摘要置于存活工具交换之外，Session 模型引用使用实际排序；OpenAI 编码器按紧随 assistant 的连续工具结果校验，保留合法反序并行结果、原始历史和合法空结果。官方 Norma v0.4.3 的依赖闭包固定到 [third_party/norma](../third_party/norma/PATCHES.md)，三个生产文件应用窄补丁；没有整体引入 RC 模块或升级到 v0.4.4。原版本树没有许可证文件，附带官方后续明确的 Apache-2.0 文档并准确记录来源；RC 补丁保留 AGPL-3.0 来源边界。保留测试范围与原版本既有失败分别记录，根 CI 显式执行嵌套模块回归。NOA 仍为默认关闭的实验设置，局部请求复现不等于所有真实任务失败。
+- 借鉴 lin9527ya [`24b776e0`](https://github.com/lin9527ya/ARTEX/commit/24b776e09716013b50e4aa2c72e2cc581ba0017c) 的并发与熔断思路，原创实现每个 remote MCP Client 的状态机，没有直接 cherry-pick，也没有声明已证明共同 ancestry。HTTP 与 legacy SSE 共用可取消请求准入；默认最多两个同时请求、五次连续传输故障后冷却一分钟，冷却后仅一个恢复探针。调用者取消、关闭连接及合法 RPC 业务错误不计服务故障；旧 epoch 结果不能清除新的熔断。保留同源、AskUser/Capture 和原有初始化/通知语义；不重放有副作用请求。恢复策略参考 [Microsoft Circuit Breaker pattern](https://learn.microsoft.com/en-us/azure/architecture/patterns/circuit-breaker)，取消遵循 [MCP 生命周期](https://modelcontextprotocol.io/specification/2025-06-18/basic/utilities/cancellation)的既有边界，不宣称远程服务器一定停止已开始的操作。
+- 围绕当前 Python 自定义工具修复取消与超时的进程树收敛：Unix 使用所属进程组，Windows 在句柄绑定的 Job Object 分配成功后才放行用户脚本，输出管道等待设限。保留正常完成时已有后台行为、JSON 参数、工作目录和环境；这是可实测的生命周期修复，不是 shell ulimit、CPU/RAM 配额或完整沙箱。参考 [Go os/exec](https://pkg.go.dev/os/exec) 和 [Windows Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)；六种原生 runner 执行合成 Python 回归。
+- 借鉴 RC-CHN [`c65a1cdd`](https://github.com/RC-CHN/ARTEX/commit/c65a1cdd10ad3109cd60d3ca4ee9cf608c2584da)，新增 Nuclei/Vulnx 可选工作流与只读诊断，准确区分情报候选、模板覆盖和验证发现。没有复制预装镜像声明、启动播种、自动下载或强制默认启用；沿用当前技能分发与用户修改/删除保留规则。使用说明见 [可选安全工具](security-tools.md)。
+
+远程 Runner/预热涉及当前依赖尚无的 ExecutionRuntime、租约与文件一致性，需要独立部署和真实容器验收；本轮不加入不可用骨架。公司全量知识共享没有替代现有显式、直接、实时过滤删除来源的只读继承。完整资源配额、默认公司共享及分布式执行没有实现，也不以这次回归作为它们已完成的证据。
