@@ -319,17 +319,30 @@ func (m *Manager) SetConcurrency(enabled bool, limit int) error {
 }
 
 // Workers returns the configured concurrent work-agent count (default 3). Read
-// per-task at engine.Run, so a change applies to tasks started afterwards.
+// per task; successful settings saves also reconcile existing runtime pools.
 func (m *Manager) Workers() int {
-	v, ok, err := m.pg.GetSetting(settingWorkers)
-	if err != nil || !ok {
-		return defaultWorkers
-	}
-	n, err := strconv.Atoi(strings.TrimSpace(v))
-	if err != nil || n <= 0 {
+	n, err := m.workerCount()
+	if err != nil {
 		return defaultWorkers
 	}
 	return n
+}
+
+// workerCount preserves missing/invalid-setting defaults but reports storage
+// failures, so a live pool never changes capacity based on a failed read.
+func (m *Manager) workerCount() (int, error) {
+	v, ok, err := m.pg.GetSetting(settingWorkers)
+	if err != nil {
+		return 0, err
+	}
+	if !ok {
+		return defaultWorkers, nil
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || n <= 0 {
+		return defaultWorkers, nil
+	}
+	return n, nil
 }
 
 // SetWorkers persists the concurrent work-agent count. Values <=0 are rejected.

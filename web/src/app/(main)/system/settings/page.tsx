@@ -77,7 +77,7 @@ export default function SystemSettingsPage() {
       .setSettings({ workers: n })
       .then((s) => {
         apply(s);
-        toast.success(uiText("已保存并发工作 agent 数（对之后启动的任务生效）"));
+        toast.success(uiText("已保存工作并发，运行中任务的常规工作立即生效"));
       })
       .catch((e) => toast.error(uiText("保存失败：") + (e as Error).message))
       .finally(() => setSavingWorkers(false));
@@ -719,9 +719,9 @@ export default function SystemSettingsPage() {
               {uiText("工作并发 · Work Agent 数")}
             </CardTitle>
             <CardDescription>
-              {uiText("每个任务并发运行的工作 agent 数量（默认 3）。数值越大并发探测越多、消耗也越高。修改后")}
-              <b>{uiText("对之后启动的任务生效")}</b>
-              {uiText("，正在运行的任务不受影响。")}
+              {uiText("每个任务中常规工作 agent 的并发上限（默认 3），独立于同时运行的任务数上限。")}
+              <b>{uiText("保存后立即应用于运行中的任务。")}</b>
+              {uiText("增大可增加并行工作；缩小让当前工作自然完成，新工作按新上限开始。并发越高，资源消耗越大。")}
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
