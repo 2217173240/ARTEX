@@ -361,7 +361,7 @@ export default function MCPPage() {
         <p className="text-muted-foreground text-sm">{uiText("外部 MCP 工具服务器 · 按 Agent 授权可见")}</p>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
         <button
           type="button"
           onClick={openAdd}
@@ -381,7 +381,7 @@ export default function MCPPage() {
               <div className="flex items-center gap-2">
                 <ServerIcon className="text-muted-foreground size-4 shrink-0" />
                 <CardTitle className="truncate text-base">{s.name}</CardTitle>
-                <Badge variant="outline" className="uppercase">
+                <Badge variant="outline" className="shrink-0 uppercase">
                   {s.transport}
                 </Badge>
                 <div className="ml-auto flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
