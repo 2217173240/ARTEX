@@ -9,6 +9,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn, copyText } from "@/lib/utils";
+import { packetLines, selectedPacketText } from "@/lib/http-packet-selection";
 
 function statusTone(status: number) {
   if (status >= 500) return "text-red-500";
@@ -118,7 +119,8 @@ export function HttpCodeBlock({ raw }: { raw: string }) {
   const [wrapLines, setWrapLines] = React.useState(true);
   const [copied, setCopied] = React.useState(false);
   const value = raw || uiText("（空）");
-  const lines = value.replaceAll("\r\n", "\n").split("\n");
+  const sourceLines = packetLines(value);
+  const lines = sourceLines.map((line) => line.text);
   const separator = lines.indexOf("");
   const body = separator >= 0 ? lines.slice(separator + 1).join("\n") : "";
   const bodyFormat = detectBodyFormat(body);
@@ -186,6 +188,13 @@ export function HttpCodeBlock({ raw }: { raw: string }) {
         aria-readonly="true"
         tabIndex={0}
         className="max-h-[calc(100vh-15rem)] min-w-0 overflow-auto bg-background py-3 font-mono text-xs outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+        onCopy={(event) => {
+          if (!event.clipboardData) return;
+          const text = selectedPacketText(event.currentTarget, value, window.getSelection());
+          if (text === null) return;
+          event.clipboardData.setData("text/plain", text);
+          event.preventDefault();
+        }}
         onKeyDown={(event) => {
           if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "a") return;
           event.preventDefault();
@@ -204,6 +213,7 @@ export function HttpCodeBlock({ raw }: { raw: string }) {
             className="grid min-w-0 grid-cols-[1.5rem_minmax(0,1fr)] leading-relaxed before:sticky before:left-0 before:self-stretch before:border-r before:bg-muted/20 before:px-1 before:text-right before:text-muted-foreground/60 before:content-[attr(data-line)]"
           >
             <code
+              data-packet-start={sourceLines[index].start}
               className={cn(
                 "min-h-[1lh] min-w-0 pr-16 pl-1.5 [tab-size:4]",
                 wrapLines ? "break-words whitespace-pre-wrap" : "whitespace-pre",

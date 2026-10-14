@@ -1310,7 +1310,24 @@ type TaskListMetrics struct {
 // The lateral lookups use the per-exploration indexes instead of grouping the
 // complete activity history on every poll.
 func (d *DB) TaskListMetricsAll() (map[int64]TaskListMetrics, error) {
-	rows, err := d.Query(`
+	return d.taskListMetrics("")
+}
+
+// TaskListMetricsForTask uses the same aggregates as the list, scoped to one
+// live task so detail polling does not aggregate unrelated explorations.
+func (d *DB) TaskListMetricsForTask(taskID string) (TaskListMetrics, error) {
+	if taskID == "" {
+		return TaskListMetrics{}, errors.New("task ID is required")
+	}
+	metrics, err := d.taskListMetrics(taskID)
+	for _, metric := range metrics {
+		return metric, err
+	}
+	return TaskListMetrics{}, err
+}
+
+func (d *DB) taskListMetrics(taskID string) (map[int64]TaskListMetrics, error) {
+	query := `
 		SELECT task.exploration_id,
 		       COALESCE(token_metrics.input_tokens,0),
 		       COALESCE(token_metrics.output_tokens,0),
@@ -1359,7 +1376,13 @@ func (d *DB) TaskListMetricsAll() (map[int64]TaskListMetrics, error) {
 			FROM findings
 			WHERE task_id=task.id
 		) finding_metrics ON true
-		WHERE task.deleted_at IS NULL`)
+		WHERE task.deleted_at IS NULL`
+	var args []any
+	if taskID != "" {
+		query += ` AND task.id=$1`
+		args = append(args, taskID)
+	}
+	rows, err := d.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
