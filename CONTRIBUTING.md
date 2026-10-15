@@ -66,6 +66,8 @@ npm audit --audit-level=high
 
 涉及后端、前端或采集脚本时运行对应检查，并在 PR 中写明实际执行结果和跳过项。完整检查定义见 [quality.yml](.github/workflows/quality.yml)。其跨平台检查验证编译，镜像检查验证启动和文件层；不代表已在每种操作系统上执行所有运行测试。
 
+维护者遇到 PR 事件未生成 quality 运行时，可执行 `gh workflow run quality.yml --repo 2217173240/ARTEX --ref <branch>` 手动检查该分支。触发后确认实际运行的 `headSha` 等于 PR 当前 HEAD，全部检查成功后再正常合并；新增提交需要重新验证，手动触发成功不等于检查通过。
+
 修改采集脚本依赖时，在 `skills/api-recon/scripts` 中执行 `npm ci --ignore-scripts` 和 `npm audit --audit-level=high`。运行时需要系统 Chromium；Puppeteer Core 不下载浏览器。CI 对该依赖树执行同样的安装和审计。
 
 本 fork 使用 `ghcr.io/2217173240/artex` 和本仓库的 GitHub Releases，正式版本及资产以本仓库 Releases 为准。发布流程将正式标签固定到实际 commit，确认它已合入默认分支，并要求该 commit 的 `quality` 成功；所有构建使用这一 commit，发布任务仅能读取缓存。维护者可在同一个已存在标签上手动重试未完成的发布，例如 `gh workflow run release.yml --ref v0.3.18 -f tag=v0.3.18`；工作流触发 commit 必须等于预检验证的标签 commit，已公开 Release 不会被覆盖。
