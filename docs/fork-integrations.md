@@ -1,5 +1,15 @@
 # 同源功能集成
 
+2026-10-15 借鉴 [RuoJi6/ARTEX PR #11](https://github.com/RuoJi6/ARTEX/pull/11) 的五类设置删除确认（固定 head `c6ea8ee6a4d8e430aeb540c0c99c43d98c9fa7dc`，实际作者 **adeljck**，AGPL-3.0），按当前组件和中英文独立改写。对应源提交为 MCP [`e336dba`](https://github.com/adeljck/ARTEX/commit/e336dbaeda505e0a11d1dc4384e400dff18c4ce5)、自定义工具 [`34e1083`](https://github.com/adeljck/ARTEX/commit/34e1083158f0001e59f11d3f1e7086827b836d66)、通知 [`aec6e7b`](https://github.com/adeljck/ARTEX/commit/aec6e7bb0d93c36d59980a1f4fb36a860a1b6ca4)、拦截 [`9d8f49a`](https://github.com/adeljck/ARTEX/commit/9d8f49a120a210b6c822e9c3fed55c9ef874691b)、模型 [`5d954f8`](https://github.com/adeljck/ARTEX/commit/5d954f88fc297c2aa9b28a241fd00d92d9b144a1)。PR base 到 head 的祖先关系已核对；未证明候选与当前 main 的共同祖先，因此不宣称直接 cherry-pick。
+
+删除前说明目标和影响：MCP 同时删除 Agent 可见性；通知同时删除投递记录；模型删除可能调整已有任务的配置链和回退；拦截删除影响后续规则匹配。工具配置删除不承诺立即停止已经运行的调用。只有确认才提交，取消与初始焦点采用安全选项，提交中防重入，失败保留可重试对话框；保留默认模型、内置工具及后端保护。复用 [Radix AlertDialog 的受控异步关闭](https://www.radix-ui.com/primitives/docs/components/alert-dialog#close-after-asynchronous-form-submission)和 [WAI-ARIA Alert Dialog 语义](https://www.w3.org/WAI/ARIA/apg/patterns/alertdialog/)，未为开关和保存增加确认，也未新增依赖。
+
+实际页面验收另外发现通知 mock 缺少 `/notify/meta`，空对象使页面访问 `kinds.find` 时崩溃。围绕当前演示接口补齐完整元数据、明确合成且停用的渠道和合法空投递页；删除只修改内存副本并同步列表/计数，未支持的 `/notify` 写入明确报错。未改动真实后端或发送通知，也不将演示回归当作真实渠道投递验收。
+
+同一验收还复现长渠道名将删除控件推出卡片：1440px 下按钮边界超出卡片，中心命中外层网格，真实鼠标无法点击。仅调整通知卡片的最小内容宽度、名称截断及控件禁止收缩，完整名称保留在提示与确认内容中；没有隐藏控件或改动侧栏偏好。
+
+同一 PR 的 RAG 和 Makefile 没有整体引入：RAG 的凭据响应、设置校验、来源撤销、网络与输出预算、任务归档契约仍需完整适配；重复构建入口没有替代当前脚本。jiwoochris PR #34 的 MCP 卡片和 PR #30 的报告重试已覆盖，未重复采用；自动侧栏折叠会改变已保存偏好，任务表隐藏列尚无当前缺陷复现，不据此移植。
+
 2026-10-14 另适配 [jiwoochris/artex-global PR #34](https://github.com/jiwoochris/artex-global/pull/34) 的 MCP 卡片部分（最终 head `9fdfd69d0e92ee590e6437ca7b5f04c3568bb93d`，作者 meowassassin，AGPL-3.0）。当前展开侧栏、1100px 视口中的卡片宽度为 183px，启用及删除控件会超出卡片并被裁剪；调整卡片列数断点和传输标签收缩规则后，实际组件的控件边界、鼠标命中及键盘焦点均通过验证。覆盖 320px 中文、1100px 中英文及 1440px 英文；mock 不持久化启用状态，未将其视为服务状态验收。保留现有侧栏偏好、任务表格列和全部配置行为。仓库旧名称 `jiwoochris/artex-ko` 仍作为增量监测键，通过别名记录对应新名称。
 
 2026-10-14 借鉴 [BaaRai PR #92](https://github.com/BaaRai/ARTEX/pull/92)（head `c191b3b6e70ed4c4194d19d0ce2dfa276b8f9443`，作者 BaaRai，AGPL-3.0），补齐任务详情的聚合指标。真实 PostgreSQL 和已认证 API 回归复现列表非零、详情全零的问题；列表和详情现在共用 DTO 填充，详情查询仅聚合当前任务，复用现有 SQL 计数。保留结果活动的 token 口径、目标及运行中意图、内存 heartbeat、归并案例与原始上报的区别、空任务省略字段、归档依赖和现有可降级读取行为。没有引入来源每次查询全部任务的实现。

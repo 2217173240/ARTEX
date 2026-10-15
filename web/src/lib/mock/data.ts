@@ -25,6 +25,7 @@ import type {
   LLMTask,
   MCPServer,
   MCPTool,
+  NotificationChannel,
   MissingSkill,
   PromptVar,
   PromptVersion,
@@ -4221,3 +4222,19 @@ export function llmRecordDetail(id: number, records = llmRecords) {
     ].join("\n"),
   };
 }
+
+// Notification demo fixtures are disabled and contain no credentials. The .invalid
+// endpoint is illustrative only; the mock implements no delivery/network action.
+export const notificationChannels: NotificationChannel[] = [{
+  id: 9001,
+  name: "Synthetic demo notification channel",
+  kind: "webhook",
+  enabled: false,
+  mode: "realtime",
+  config: { url: "https://notifications.example.invalid/demo", method: "POST" },
+  filter: {},
+  rate_per_min: 10,
+  secret_keys: [],
+  created_at: "2026-10-15T00:00:00Z",
+  updated_at: "2026-10-15T00:00:00Z",
+}];

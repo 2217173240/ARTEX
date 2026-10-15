@@ -22,6 +22,7 @@ import type {
   FindingTraffic,
   FindingTrafficBinding,
   IntentAsset,
+  NotificationMeta,
   ScopeRow,
   Task,
   TaskArchive,
@@ -44,6 +45,7 @@ const mockInterceptHistory = structuredClone(D.interceptHistory);
 const mockInterceptPending = structuredClone(D.interceptPending);
 const mockInterceptDetails = structuredClone(D.interceptDetails);
 const mockTasks = structuredClone(D.tasks);
+const mockNotificationChannels = structuredClone(D.notificationChannels);
 const mockFindings = structuredClone(D.findings);
 const mockLLMRecords = structuredClone(D.llmRecords);
 const mockTaskTemplates = structuredClone(D.taskTemplates);
@@ -1014,6 +1016,40 @@ export async function mockHandle<T>(method: string, rawPath: string, body?: Body
 
 function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Record<string, unknown>): unknown {
   const task = q.get("task") ?? undefined;
+  // Minimal notification demo read/delete flow. No real send/test/retry operation
+  // exists here, and unsupported writes fail instead of pretending to succeed.
+  if (path === "/notify/meta" && m === "GET") {
+    return {
+      kinds: [{ kind: "webhook", default_rate_per_min: 10, secret_keys: [] }],
+      enabled: false,
+      public_base_url: "",
+      digest_interval_min: "30",
+      defaults: { digest_interval_min: 30 },
+      stats: {
+        channels: mockNotificationChannels.length,
+        channels_on: mockNotificationChannels.filter((channel) => channel.enabled).length,
+        pending: 0, failed: 0, sent_today: 0, backlog_age_ms: 0,
+      },
+    } satisfies NotificationMeta;
+  }
+  if (path === "/notify/channels" && m === "GET") {
+    return { channels: structuredClone(mockNotificationChannels) };
+  }
+  if (seg[0] === "notify" && seg[1] === "channels" && seg.length === 3 && m === "DELETE") {
+    const index = mockNotificationChannels.findIndex((channel) => String(channel.id) === seg[2]);
+    if (index < 0) throw new Error("Mock notification channel not found");
+    mockNotificationChannels.splice(index, 1);
+    return { ok: true };
+  }
+  if (path === "/notify/deliveries" && m === "GET") {
+    const positiveInt = (value: string | null, fallback: number) => {
+      const number = Number(value);
+      return Number.isSafeInteger(number) && number > 0 ? number : fallback;
+    };
+    return { deliveries: [], total: 0, page: positiveInt(q.get("page"), 1), page_size: positiveInt(q.get("page_size"), 50) };
+  }
+  if (seg[0] === "notify") throw new Error("Notification mock supports reading and deleting demo channels only");
+
   if (path === "/settings/basic-auth" && (m === "GET" || m === "PUT")) {
     if (m === "PUT")
       mockBasicAuthSettings = {

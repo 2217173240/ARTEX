@@ -1,6 +1,7 @@
 "use client";
 
 import { useI18n } from "@/lib/i18n";
+import { DeleteConfirmation } from "@/components/delete-confirmation";
 
 import * as React from "react";
 
@@ -219,8 +220,10 @@ export default function NotifyPage() {
       toast.success(uiText("已删除：{v0}", { v0: ch.name }));
       setOpen(false);
       load();
+      return true;
     } catch (e) {
       toast.error(uiText("删除失败：") + (e as Error).message);
+      return false;
     }
   }
 
@@ -373,36 +376,33 @@ export default function NotifyPage() {
               <Card
                 key={ch.id}
                 onClick={() => openEdit(ch)}
-                className="hover:border-primary/60 cursor-pointer gap-3 transition hover:shadow-sm"
+                className="hover:border-primary/60 min-w-0 cursor-pointer gap-3 transition hover:shadow-sm"
               >
-                <CardHeader>
-                  <div className="flex items-center gap-2">
+                <CardHeader className="min-w-0">
+                  <div className="flex min-w-0 items-center gap-2">
                     <BellIcon className="text-muted-foreground size-4 shrink-0" />
-                    <CardTitle className="truncate text-base">{ch.name}</CardTitle>
+                    <CardTitle className="min-w-0 flex-1 truncate text-base" title={ch.name}>{ch.name}</CardTitle>
                     {/* 卡片整体可点（进入编辑），所以这两个控件必须各自吞掉冒泡，
                         否则开关/删除会顺带触发编辑。把 stopPropagation 挂在控件自己
                         身上，而不是套一层 div：套 div 会造出一个「看起来可交互但没有
                         角色」的静态元素，既触发 a11y 告警，语义上也说不通。 */}
-                    <div className="ml-auto flex items-center gap-2">
+                    <div className="ml-auto flex shrink-0 items-center gap-2">
                       <Switch
                         checked={ch.enabled}
                         onCheckedChange={() => toggleEnabled(ch)}
                         onClick={(e) => e.stopPropagation()}
                         aria-label={uiText("启用")}
                       />
+                      <DeleteConfirmation name={ch.name} description={uiText("通知渠道及其投递记录将被删除，该渠道将停止接收通知。")} onConfirm={() => removeChannel(ch)}>
                       <Button
                         size="icon"
                         variant="outline"
                         aria-label={uiText("删除")}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          // void 显式丢弃 Promise：removeChannel 自己 catch 并 toast，
-                          // 这里不需要 await（onClick 不是 async）。
-                          void removeChannel(ch);
-                        }}
+                        onClick={(e) => e.stopPropagation()}
                       >
                         <Trash2Icon className="text-destructive" />
                       </Button>
+                      </DeleteConfirmation>
                     </div>
                   </div>
                 </CardHeader>

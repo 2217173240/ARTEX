@@ -1,6 +1,7 @@
 "use client";
 
 import { useI18n } from "@/lib/i18n";
+import { DeleteConfirmation } from "@/components/delete-confirmation";
 
 import * as React from "react";
 import { toast } from "sonner";
@@ -704,13 +705,15 @@ function CustomToolDialog({
     }
   }
   async function del() {
-    if (!tool) return;
+    if (!tool || tool.kind === "builtin") return false;
     try {
       await api.deleteCustomTool(tool.key);
       toast.success(uiText("已删除"));
       onSaved();
+      return true;
     } catch (e) {
       toast.error(uiText("删除失败：") + (e as Error).message);
+      return false;
     }
   }
   // runTest dry-runs the CURRENT form (unsaved) with the sample params, so a
@@ -982,10 +985,12 @@ function CustomToolDialog({
           <Button size="sm" onClick={save} disabled={saving}>
             <SaveIcon /> {isNew ? uiText("创建") : uiText("保存")}
           </Button>
-          {!isNew && (
-            <Button size="sm" variant="outline" className="text-destructive" onClick={del}>
+          {!isNew && tool && tool.kind !== "builtin" && (
+            <DeleteConfirmation name={tool.key} description={uiText("后续工具装配将不再包含此自定义工具。已运行的调用不保证立即停止。")} onConfirm={del}>
+            <Button size="sm" variant="outline" className="text-destructive">
               <Trash2Icon /> {uiText("删除")}
             </Button>
+            </DeleteConfirmation>
           )}
         </div>
       </SheetContent>
