@@ -1175,13 +1175,24 @@ export interface AgentDetail {
 }
 
 // ---- MCP ----
+export interface MCPMutationResult {
+  id: number;
+  revision: number;
+  approved: boolean;
+  enabled: boolean;
+}
+export type MCPServerWrite = Pick<MCPServer, "name" | "transport" | "command" | "args" | "env" | "url" | "insecure"> & { id?: number; revision?: number };
+
 export interface MCPServer {
+  revision: number;
+  approved: boolean;
   id: number;
   name: string;
   transport: "stdio" | "http" | "sse";
   command?: string;
   args: string[];
-  env: Record<string, string>;
+  env?: Record<string, string>;
+  env_keys?: string[];
   url?: string;
   enabled: boolean;
   insecure?: boolean; // http: skip TLS cert verification (self-signed servers)

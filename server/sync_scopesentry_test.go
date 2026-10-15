@@ -406,9 +406,18 @@ func TestSSSyncRouteIsolatedDatabase(t *testing.T) {
 		t.Fatal("missing seeded ScopeSentry fixture row")
 	}
 	original := *row
-	defer func() { _, _ = m.pg.SaveMCP(&original) }()
+	defer func() {
+		current, _ := s.findMCPByName(scopeSentryMCPName)
+		if current != nil {
+			original.Revision = current.Revision
+			_, _ = m.pg.SaveMCP(&original)
+		}
+	}()
 	row.URL, row.Enabled, row.Env = sourceURL, true, json.RawMessage(`{}`)
 	if _, err := m.pg.SaveMCP(row); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.pg.SetMCPApproval(row.ID, row.Revision, true); err != nil {
 		t.Fatal(err)
 	}
 	w := httptest.NewRecorder()

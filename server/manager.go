@@ -683,6 +683,8 @@ func (m *Manager) syncBrowserMCPProxy() {
 			env["NODE_EXTRA_CA_CERTS"] = cert
 		}
 	}
+	// SaveMCP uses the revision loaded above as CAS. Derived proxy changes
+	// revoke approval and require a fresh operator review; never approve by name.
 	srv.Args = encodeJSON(args)
 	srv.Env = encodeJSON(env)
 	if _, err := m.pg.SaveMCP(srv); err != nil {

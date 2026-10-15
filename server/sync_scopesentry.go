@@ -11,6 +11,7 @@ import (
 
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/mcphttp"
+	actool "github.com/Autumn-27/norma/tool"
 )
 
 // 资产同步（ScopeSentry 数据源）。
@@ -30,7 +31,10 @@ const (
 
 // findMCPByName returns the MCP server row with the given name, or nil.
 func (s *Server) findMCPByName(name string) (*db.MCPServer, error) {
-	all, err := s.m.pg.ListMCP()
+	return s.findMCPByNameContext(context.Background(), name)
+}
+func (s *Server) findMCPByNameContext(ctx context.Context, name string) (*db.MCPServer, error) {
+	all, err := s.m.pg.ListMCPContext(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -44,8 +48,8 @@ func (s *Server) findMCPByName(name string) (*db.MCPServer, error) {
 
 // scopeSentryClient dials the configured ScopeSentry MCP (http transport). The env
 // map doubles as HTTP headers (X-API-Key). Callers must Close the client.
-func (s *Server) scopeSentryClient(ctx context.Context) (*mcphttp.Client, error) {
-	m, err := s.findMCPByName(scopeSentryMCPName)
+func (s *Server) scopeSentryClient(ctx context.Context) (*authorizedScopeSentryClient, error) {
+	m, err := s.findMCPByNameContext(ctx, scopeSentryMCPName)
 	if err != nil {
 		return nil, err
 	}
@@ -55,7 +59,22 @@ func (s *Server) scopeSentryClient(ctx context.Context) (*mcphttp.Client, error)
 	if m.URL == "" {
 		return nil, fmt.Errorf("数据源 %s 未配置 URL，请先配置", scopeSentryMCPName)
 	}
-	return mcphttp.New(ctx, m.Name, m.URL, jsonStrMap(m.Env), m.Insecure)
+	if m.Transport != "http" {
+		return nil, fmt.Errorf("ScopeSentry requires http transport")
+	}
+	m, err = s.m.pg.AuthorizedMCPContext(ctx, m.ID, m.Revision)
+	if err != nil {
+		return nil, err
+	}
+	cl, err := mcphttp.New(ctx, m.Name, m.URL, jsonStrMap(m.Env), m.Insecure)
+	if err != nil {
+		return nil, err
+	}
+	if _, err = s.m.pg.AuthorizedMCPContext(ctx, m.ID, m.Revision); err != nil {
+		cl.Close()
+		return nil, err
+	}
+	return &authorizedScopeSentryClient{Client: cl, pg: s.m.pg, id: m.ID, revision: m.Revision}, nil
 }
 
 // envHasValue reports whether the env/header map has any non-empty value
@@ -75,12 +94,13 @@ func (s *Server) syncSSStatus(w http.ResponseWriter, r *http.Request) {
 	if s.pg(w) == nil {
 		return
 	}
-	m, err := s.findMCPByName(scopeSentryMCPName)
+	m, err := s.findMCPByNameContext(r.Context(), scopeSentryMCPName)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
 	resp := map[string]any{
+		"id": int64(0), "revision": int64(0), "approved": false,
 		"exists":     m != nil,
 		"configured": false,
 		"enabled":    false,
@@ -91,18 +111,21 @@ func (s *Server) syncSSStatus(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, resp)
 		return
 	}
+	resp["id"] = m.ID
 	configured := m.URL != "" && envHasValue(m.Env)
 	resp["configured"] = configured
 	resp["enabled"] = m.Enabled
+	resp["revision"] = m.Revision
+	resp["approved"] = m.Approved
 	resp["url"] = m.URL
 	if m.Tools != nil {
 		resp["tools"] = m.Tools
 	}
 	// Light reachability probe only when it can actually connect.
-	if configured && m.Enabled {
+	if configured && m.Enabled && m.Approved {
 		ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 		defer cancel()
-		if cl, cerr := mcphttp.New(ctx, m.Name, m.URL, jsonStrMap(m.Env), m.Insecure); cerr == nil {
+		if cl, cerr := s.scopeSentryClient(ctx); cerr == nil {
 			if _, terr := cl.Tools(ctx); terr == nil {
 				resp["reachable"] = true
 			}
@@ -113,7 +136,7 @@ func (s *Server) syncSSStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---------- POST /api/sync/scopesentry/datasource ----------
-// Creates the placeholder row if missing, and/or sets URL + API key and enables it.
+// Saves a pending configuration; explicit approval is granted on the MCP page.
 
 func (s *Server) syncSSDatasource(w http.ResponseWriter, r *http.Request) {
 	pg := s.pg(w)
@@ -121,20 +144,25 @@ func (s *Server) syncSSDatasource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		URL    string `json:"url"`
-		APIKey string `json:"api_key"`
+		Revision int64  `json:"revision"`
+		URL      string `json:"url"`
+		APIKey   string `json:"api_key"`
 	}
 	_ = decode(r, &body) // empty body = just create the placeholder
 	body.URL = strings.TrimSpace(body.URL)
 	body.APIKey = strings.TrimSpace(body.APIKey)
 
-	m, err := s.findMCPByName(scopeSentryMCPName)
+	m, err := s.findMCPByNameContext(r.Context(), scopeSentryMCPName)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
 	if m == nil {
 		m = &db.MCPServer{Name: scopeSentryMCPName, Transport: "http", Env: json.RawMessage(`{"X-API-Key":""}`)}
+	}
+	if m.ID != 0 && body.Revision != m.Revision {
+		writeErr(w, 409, db.ErrMCPRevision.Error())
+		return
 	}
 	if body.URL != "" {
 		m.URL = body.URL
@@ -143,22 +171,15 @@ func (s *Server) syncSSDatasource(w http.ResponseWriter, r *http.Request) {
 		env, _ := json.Marshal(map[string]string{"X-API-Key": body.APIKey})
 		m.Env = env
 	}
-	// Enable only once it can actually be used.
-	m.Enabled = m.URL != "" && envHasValue(m.Env)
+	// SaveMCP preserves unchanged activation, and disables changed configurations.
 
-	id, err := pg.SaveMCP(m)
+	id, err := pg.SaveMCPContext(r.Context(), m)
 	if err != nil {
-		writeErr(w, 500, err.Error())
+		writeMCPError(w, err)
 		return
 	}
 	m.ID = id
-	// Best-effort tool discovery so the status card shows tools right away.
-	if m.Enabled {
-		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-		_ = s.discoverAndCacheMCP(ctx, m)
-		cancel()
-	}
-	writeJSON(w, 200, map[string]any{"id": id, "enabled": m.Enabled})
+	writeJSON(w, 200, mcpState(m))
 }
 
 // ---------- GET /api/sync/scopesentry/projects ----------
@@ -619,4 +640,30 @@ func queryInt(r *http.Request, key string, def int) int {
 		}
 	}
 	return def
+}
+
+type authorizedScopeSentryClient struct {
+	*mcphttp.Client
+	pg           *db.DB
+	id, revision int64
+}
+
+func (c *authorizedScopeSentryClient) Call(ctx context.Context, name string, args any) (string, error) {
+	if _, err := c.pg.AuthorizedMCPContext(ctx, c.id, c.revision); err != nil {
+		return "", err
+	}
+	return c.Client.Call(ctx, name, args)
+}
+func (c *authorizedScopeSentryClient) Tools(ctx context.Context) ([]actool.CoreTool, error) {
+	if _, err := c.pg.AuthorizedMCPContext(ctx, c.id, c.revision); err != nil {
+		return nil, err
+	}
+	ts, err := c.Client.Tools(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if _, err = c.pg.AuthorizedMCPContext(ctx, c.id, c.revision); err != nil {
+		return nil, err
+	}
+	return ts, nil
 }

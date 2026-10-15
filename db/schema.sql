@@ -1522,3 +1522,7 @@ CREATE TABLE IF NOT EXISTS finding_notes (
 CREATE INDEX IF NOT EXISTS idx_finding_notes_finding_id ON finding_notes(finding_id, id DESC);
 
 ALTER TABLE task_schedules ADD COLUMN IF NOT EXISTS manual_until TIMESTAMPTZ;
+
+-- Existing configurations remain intact but require explicit approval once.
+ALTER TABLE mcp_servers ADD COLUMN IF NOT EXISTS revision BIGINT NOT NULL DEFAULT 1;
+ALTER TABLE mcp_servers ADD COLUMN IF NOT EXISTS approved_revision BIGINT NOT NULL DEFAULT 0;

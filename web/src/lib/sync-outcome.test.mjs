@@ -205,9 +205,12 @@ test("the production mock route supplies explicit completeness fields for a norm
   const source = readFileSync(new URL("./mock/handler.ts", import.meta.url), "utf8");
   const ast = ts.createSourceFile("handler.ts", source, ts.ScriptTarget.Latest, true);
   const route = ast.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === "route");
-  const sync = route?.body?.statements.find(
-    (node) => ts.isIfStatement(node) && node.expression.getText(ast) === 'path === "/sync/scopesentry/sync"',
-  );
+  let sync;
+  function findSync(node) {
+    if (ts.isIfStatement(node) && node.expression.getText(ast) === 'path === "/sync/scopesentry/sync"') sync = node;
+    ts.forEachChild(node, findSync);
+  }
+  if (route) findSync(route);
   assert.ok(sync, "production mock sync route must exist");
   const { mockSync } = evaluate(`function mockSync(path) { ${sync.getText(ast)} } module.exports = { mockSync };`);
   const response = mockSync("/sync/scopesentry/sync");

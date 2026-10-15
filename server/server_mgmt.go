@@ -851,13 +851,17 @@ func (s *Server) pgListMCP(w http.ResponseWriter, r *http.Request) {
 	if pg == nil {
 		return
 	}
-	ms, err := pg.ListMCP()
+	ms, err := pg.ListMCPContext(r.Context())
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
 	if ms == nil {
 		ms = []*db.MCPServer{}
+	}
+	for _, m := range ms {
+		m.EnvKeys = mcpEnvKeys(m.Env)
+		m.Env = nil
 	}
 	writeJSON(w, 200, map[string]any{"servers": ms})
 }
@@ -872,24 +876,12 @@ func (s *Server) pgSaveMCP(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	isNew := m.ID == 0
-	id, err := pg.SaveMCP(&m)
+	_, err := pg.SaveMCPContext(r.Context(), &m)
 	if err != nil {
-		writeErr(w, 500, err.Error())
+		writeMCPError(w, err)
 		return
 	}
-	// On initial add, auto-discover + cache the tool list so the UI shows it right
-	// away (bounded so a slow/broken server can't hang the request). Skipped on
-	// plain updates (e.g. enable toggles) to avoid re-spawning the server each time.
-	if isNew && m.Enabled {
-		m.ID = id
-		ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
-		if derr := s.discoverAndCacheMCP(ctx, &m); derr != nil {
-			log.Printf("[mcp] %s 添加后工具发现失败: %v", m.Name, derr)
-		}
-		cancel()
-	}
-	writeJSON(w, 200, map[string]any{"id": id})
+	writeJSON(w, 200, mcpState(&m))
 }
 
 func (s *Server) pgDeleteMCP(w http.ResponseWriter, r *http.Request) {
@@ -912,8 +904,10 @@ func (s *Server) pgRefreshMCP(w http.ResponseWriter, r *http.Request) {
 	if pg == nil {
 		return
 	}
+	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
+	defer cancel()
 	id, _ := pathInt(r, "id")
-	all, err := pg.ListMCP()
+	all, err := pg.ListMCPContext(ctx)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -929,10 +923,8 @@ func (s *Server) pgRefreshMCP(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "MCP 不存在")
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
-	defer cancel()
 	if err := s.discoverAndCacheMCP(ctx, target); err != nil {
-		writeErr(w, 502, "工具发现失败："+err.Error())
+		writeErr(w, 502, "工具发现失败，请检查授权和服务器配置")
 		return
 	}
 	tools, _ := pg.MCPToolsDetailed(id)
@@ -2312,4 +2304,41 @@ func templateFields(t *template.Template) []string {
 		walk(t.Tree.Root)
 	}
 	return out
+}
+
+func mcpState(m *db.MCPServer) map[string]any {
+	return map[string]any{"id": m.ID, "revision": m.Revision, "approved": m.Approved, "enabled": m.Enabled}
+}
+func (s *Server) pgApproveMCP(w http.ResponseWriter, r *http.Request) { s.pgMCPApproval(w, r, true) }
+func (s *Server) pgDisableMCP(w http.ResponseWriter, r *http.Request) { s.pgMCPApproval(w, r, false) }
+func (s *Server) pgMCPApproval(w http.ResponseWriter, r *http.Request, approve bool) {
+	pg := s.pg(w)
+	if pg == nil {
+		return
+	}
+	id, _ := pathInt(r, "id")
+	var b struct {
+		Revision int64 `json:"revision"`
+	}
+	if err := decode(r, &b); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	m, err := pg.SetMCPApprovalContext(r.Context(), id, b.Revision, approve)
+	if err != nil {
+		writeMCPError(w, err)
+		return
+	}
+	writeJSON(w, 200, mcpState(m))
+}
+
+func writeMCPError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, db.ErrMCPRevision):
+		writeErr(w, 409, db.ErrMCPRevision.Error())
+	case errors.Is(err, db.ErrMCPInvalid):
+		writeErr(w, 400, err.Error())
+	default:
+		writeErr(w, 503, "MCP storage unavailable; retry after reloading")
+	}
 }
