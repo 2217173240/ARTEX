@@ -376,17 +376,17 @@ export default function NotifyPage() {
               <Card
                 key={ch.id}
                 onClick={() => openEdit(ch)}
-                className="hover:border-primary/60 cursor-pointer gap-3 transition hover:shadow-sm"
+                className="hover:border-primary/60 min-w-0 cursor-pointer gap-3 transition hover:shadow-sm"
               >
-                <CardHeader>
-                  <div className="flex items-center gap-2">
+                <CardHeader className="min-w-0">
+                  <div className="flex min-w-0 items-center gap-2">
                     <BellIcon className="text-muted-foreground size-4 shrink-0" />
-                    <CardTitle className="truncate text-base">{ch.name}</CardTitle>
+                    <CardTitle className="min-w-0 flex-1 truncate text-base" title={ch.name}>{ch.name}</CardTitle>
                     {/* 卡片整体可点（进入编辑），所以这两个控件必须各自吞掉冒泡，
                         否则开关/删除会顺带触发编辑。把 stopPropagation 挂在控件自己
                         身上，而不是套一层 div：套 div 会造出一个「看起来可交互但没有
                         角色」的静态元素，既触发 a11y 告警，语义上也说不通。 */}
-                    <div className="ml-auto flex items-center gap-2">
+                    <div className="ml-auto flex shrink-0 items-center gap-2">
                       <Switch
                         checked={ch.enabled}
                         onCheckedChange={() => toggleEnabled(ch)}
