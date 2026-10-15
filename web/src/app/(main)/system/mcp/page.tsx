@@ -1,6 +1,7 @@
 "use client";
 
 import { useI18n } from "@/lib/i18n";
+import { DeleteConfirmation } from "@/components/delete-confirmation";
 
 import * as React from "react";
 import { toast } from "sonner";
@@ -203,8 +204,10 @@ export default function MCPPage() {
       toast.success(uiText("已删除：{v0}", { v0: s.name }));
       setOpen(false);
       load();
+      return true;
     } catch (e) {
       toast.error(uiText("删除失败：") + (e as Error).message);
+      return false;
     }
   }
 
@@ -386,9 +389,11 @@ export default function MCPPage() {
                 </Badge>
                 <div className="ml-auto flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
                   <Switch checked={s.enabled} onCheckedChange={() => toggleEnabled(s)} aria-label={uiText("启用")} />
-                  <Button size="icon" variant="outline" aria-label={uiText("删除")} onClick={() => removeServer(s)}>
+                  <DeleteConfirmation name={s.name} description={uiText("服务器配置及其 Agent 可见性设置将被删除，后续工具装配将不再包含此服务器的工具。已运行的调用不保证立即停止。")} onConfirm={() => removeServer(s)}>
+                  <Button size="icon" variant="outline" aria-label={uiText("删除")}>
                     <Trash2Icon className="text-destructive" />
                   </Button>
+                  </DeleteConfirmation>
                 </div>
               </div>
             </CardHeader>

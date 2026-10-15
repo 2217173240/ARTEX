@@ -3893,7 +3893,6 @@
   "同步完成，共入库 {v0} 条资产": "Sync complete; {v0} assets saved",
   "同步完成": "Sync complete",
   "同步部分完成": "Sync partially complete",
-  "同步失败": "Sync failed",
   "同步结果未确认": "Sync outcome unconfirmed",
   "成功写入的资产记录数：{v0}": "Successful asset record writes: {v0}",
   "计数包含新增和更新的成功写入，不代表新增或去重后的资产数。": "Counts include successful inserts and updates, rather than new or unique assets.",
@@ -4219,5 +4218,14 @@
   "日期必须是有效的 YYYY-MM-DD 日期": "Dates must be valid YYYY-MM-DD calendar dates",
   "开始日期不能晚于结束日期": "Start date must not be later than end date",
   "请调整搜索、日期、审批状态或判定来源，或清除筛选查看全部记录。": "Adjust the search, dates, status, or decision source, or clear filters to view all records.",
-  "报告加载失败，请重试。": "Unable to load the report. Please retry."
+  "报告加载失败，请重试。": "Unable to load the report. Please retry.",
+  "确认删除？": "Confirm deletion?",
+  "将永久删除“{name}”。此操作无法撤销。": "“{name}” will be permanently deleted. This cannot be undone.",
+  "正在删除…": "Deleting…",
+  "通知渠道及其投递记录将被删除，该渠道将停止接收通知。": "The notification channel and its delivery records will be deleted. This channel will stop receiving notifications.",
+  "后续请求和响应匹配将不再应用此拦截规则。": "Future request and response matching will no longer apply this interception rule.",
+  "模型配置将被移除；引用它的任务配置链和回退选择会调整，可能影响现有任务。当前激活的配置不能删除。": "The model profile will be removed. Task profile chains and fallback choices that reference it will be adjusted, which may affect existing tasks. The active profile cannot be deleted.",
+  "服务器配置及其 Agent 可见性设置将被删除，后续工具装配将不再包含此服务器的工具。已运行的调用不保证立即停止。": "The server configuration and its Agent visibility settings will be deleted. Future tool assembly will exclude its tools. Running calls may not stop immediately.",
+  "后续工具装配将不再包含此自定义工具。已运行的调用不保证立即停止。": "Future tool assembly will exclude this custom tool. Running calls may not stop immediately.",
+  "删除失败，请重试。": "Deletion failed. Please try again."
 }

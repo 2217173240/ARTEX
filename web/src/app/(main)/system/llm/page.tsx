@@ -1,6 +1,7 @@
 "use client";
 
 import { useI18n } from "@/lib/i18n";
+import { DeleteConfirmation } from "@/components/delete-confirmation";
 
 import * as React from "react";
 
@@ -872,14 +873,16 @@ export default function LLMPage() {
   async function remove(p: LLMProfile) {
     if (p.is_default) {
       toast.error(uiText("无法删除当前激活的配置"));
-      return;
+      return false;
     }
     try {
       await api.deleteLLMProfile(p.id);
       toast.success(uiText("已删除：{v0}", { v0: p.name }));
       await load();
+      return true;
     } catch (e) {
       toast.error(uiText("删除失败：{v0}", { v0: (e as Error).message }));
+      return false;
     }
   }
 
@@ -1002,17 +1005,17 @@ export default function LLMPage() {
                       >
                         {p.is_default ? uiText("已激活") : uiText("设为激活")}
                       </Button>
+                      <DeleteConfirmation name={p.name} description={uiText("模型配置将被移除；引用它的任务配置链和回退选择会调整，可能影响现有任务。当前激活的配置不能删除。")} onConfirm={() => remove(p)}>
                       <Button
                         size="icon"
                         variant="outline"
+                        disabled={p.is_default}
                         aria-label={uiText("删除配置")}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void remove(p);
-                        }}
+                        onClick={(e) => e.stopPropagation()}
                       >
                         <Trash2Icon className="text-destructive" />
                       </Button>
+                      </DeleteConfirmation>
                     </div>
                   </CardContent>
                 </Card>

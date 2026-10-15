@@ -1,6 +1,7 @@
 "use client";
 
 import { useI18n } from "@/lib/i18n";
+import { DeleteConfirmation } from "@/components/delete-confirmation";
 
 import * as React from "react";
 import { toast } from "sonner";
@@ -571,8 +572,10 @@ export default function InterceptPage() {
       await api.deleteInterceptRule(id);
       toast.success(uiText("规则已删除"));
       load();
+      return true;
     } catch (e) {
       toast.error((e as Error).message);
+      return false;
     }
   }
 
@@ -754,14 +757,16 @@ export default function InterceptPage() {
                             <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => openEdit(rule)}>
                               <PencilIcon className="h-3.5 w-3.5" />
                             </Button>
+                            <DeleteConfirmation name={rule.name} description={uiText("后续请求和响应匹配将不再应用此拦截规则。")} onConfirm={() => handleDelete(rule.id)}>
                             <Button
                               size="icon"
                               variant="ghost"
+                              aria-label={uiText("删除")}
                               className="h-7 w-7 text-destructive hover:text-destructive"
-                              onClick={() => handleDelete(rule.id)}
                             >
                               <Trash2Icon className="h-3.5 w-3.5" />
                             </Button>
+                            </DeleteConfirmation>
                           </div>
                         </TableCell>
                       </TableRow>

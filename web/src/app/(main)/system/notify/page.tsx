@@ -1,6 +1,7 @@
 "use client";
 
 import { useI18n } from "@/lib/i18n";
+import { DeleteConfirmation } from "@/components/delete-confirmation";
 
 import * as React from "react";
 
@@ -219,8 +220,10 @@ export default function NotifyPage() {
       toast.success(uiText("已删除：{v0}", { v0: ch.name }));
       setOpen(false);
       load();
+      return true;
     } catch (e) {
       toast.error(uiText("删除失败：") + (e as Error).message);
+      return false;
     }
   }
 
@@ -390,19 +393,16 @@ export default function NotifyPage() {
                         onClick={(e) => e.stopPropagation()}
                         aria-label={uiText("启用")}
                       />
+                      <DeleteConfirmation name={ch.name} description={uiText("通知渠道及其投递记录将被删除，该渠道将停止接收通知。")} onConfirm={() => removeChannel(ch)}>
                       <Button
                         size="icon"
                         variant="outline"
                         aria-label={uiText("删除")}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          // void 显式丢弃 Promise：removeChannel 自己 catch 并 toast，
-                          // 这里不需要 await（onClick 不是 async）。
-                          void removeChannel(ch);
-                        }}
+                        onClick={(e) => e.stopPropagation()}
                       >
                         <Trash2Icon className="text-destructive" />
                       </Button>
+                      </DeleteConfirmation>
                     </div>
                   </div>
                 </CardHeader>
