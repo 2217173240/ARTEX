@@ -17,6 +17,8 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogCancel, AlertDialogAction } from "@/components/ui/alert-dialog";
+import { parseMcpArgs, mcpApprovalDestination } from "@/lib/mcp-approval";
 import { api } from "@/lib/api";
 import type { MCPServer, MCPTool, Agent } from "@/lib/types";
 
@@ -29,15 +31,17 @@ type FormState = {
   url: string;
   env: string;
   insecure: boolean;
+  clearEnv: boolean;
 };
 const emptyForm: FormState = {
   name: "",
   transport: "stdio",
   command: "",
-  args: "",
+  args: "[]",
   url: "",
   env: "",
   insecure: false,
+  clearEnv: false,
 };
 
 export default function MCPPage() {
@@ -53,6 +57,14 @@ export default function MCPPage() {
   const [saving, setSaving] = React.useState(false);
   const [tools, setTools] = React.useState<MCPTool[]>([]);
   const [toolsLoading, setToolsLoading] = React.useState(false);
+  const [approval, setApproval] = React.useState<MCPServer | null>(null);
+  const [mutating, setMutating] = React.useState(false);
+  const mutationLock = React.useRef(false);
+  const saveLock = React.useRef(false);
+  const cancelApprovalRef = React.useRef<HTMLButtonElement>(null);
+  const approvalLauncherRef = React.useRef<HTMLElement | null>(null);
+  const savedForm = React.useRef(JSON.stringify(emptyForm));
+  const dirty = JSON.stringify(form) !== savedForm.current;
   const [refreshing, setRefreshing] = React.useState(false);
 
   const load = React.useCallback(() => {
@@ -87,6 +99,7 @@ export default function MCPPage() {
       const trimmed = line.trim();
       if (!trimmed) continue;
       const idx = trimmed.indexOf("=");
+      if (idx <= 0) throw new Error(uiText("每行凭据必须使用 KEY=VALUE 格式"));
       if (idx > 0) {
         const key = trimmed.slice(0, idx).trim();
         if (key) out[key] = trimmed.slice(idx + 1).trim();
@@ -94,15 +107,10 @@ export default function MCPPage() {
     }
     return out;
   }
-  function envToText(env: Record<string, string> | undefined): string {
-    return Object.entries(env ?? {})
-      .map(([k, v]) => `${k}=${v}`)
-      .join("\n");
-  }
-
   function openAdd() {
     setEditing(null);
     setForm(emptyForm);
+    savedForm.current = JSON.stringify(emptyForm);
     setTools([]);
     setTab("config");
     setOpen(true);
@@ -110,15 +118,18 @@ export default function MCPPage() {
 
   function openEdit(s: MCPServer) {
     setEditing(s);
-    setForm({
+    const nextForm = {
       name: s.name,
       transport: s.transport,
       command: s.command ?? "",
-      args: (s.args ?? []).join(" "),
+      args: JSON.stringify(s.args ?? []),
       url: s.url ?? "",
-      env: envToText(s.env),
+      env: "",
+      clearEnv: false,
       insecure: s.insecure ?? false,
-    });
+    };
+    setForm(nextForm);
+    savedForm.current = JSON.stringify(nextForm);
     setTab("config");
     setOpen(true);
     loadTools(s.id);
@@ -136,6 +147,7 @@ export default function MCPPage() {
   }
 
   async function saveForm() {
+    if (saveLock.current || mutationLock.current) return;
     if (!form.name.trim()) {
       toast.error(uiText("请填写名称"));
       return;
@@ -148,6 +160,7 @@ export default function MCPPage() {
       toast.error(uiText("请填写远程 URL"));
       return;
     }
+    saveLock.current = true;
     setSaving(true);
     try {
       const base =
@@ -157,34 +170,40 @@ export default function MCPPage() {
               url: form.url.trim(),
               command: "",
               args: [] as string[],
-              env: parseEnv(form.env), // 远程模式下 env 即请求头
+              ...(form.env.trim() || form.clearEnv || !editing ? { env: form.clearEnv ? {} : parseEnv(form.env) } : {}),
               insecure: form.insecure,
             }
           : {
               transport: "stdio" as const,
               command: form.command.trim(),
-              args: form.args.trim() ? form.args.trim().split(/\s+/) : [],
-              env: parseEnv(form.env),
+              args: parseMcpArgs(form.args),
+              ...(form.env.trim() || form.clearEnv || !editing ? { env: form.clearEnv ? {} : parseEnv(form.env) } : {}),
               insecure: false,
             };
-      await api.saveMcpServer({
-        ...(editing ? { id: editing.id } : {}),
+      const result = await api.saveMcpServer({
+        ...(editing ? { id: editing.id, revision: editing.revision } : {}),
         name: form.name.trim(),
-        enabled: editing ? editing.enabled : true,
         ...base,
       });
-      toast.success(editing ? uiText("已保存") : uiText("已添加 MCP 服务器"));
-      if (!editing) setOpen(false);
+      setEditing({ ...editing, ...base, ...result, name: form.name.trim(), env: undefined, env_keys: base.env ? Object.keys(base.env) : editing?.env_keys ?? [] });
+      savedForm.current = JSON.stringify({ ...form, env: "", clearEnv: false });
+      setForm((old) => ({ ...old, env: "", clearEnv: false }));
+      loadTools(result.id);
+      toast.success(uiText("配置已保存；连接权限变更需显式授权。"));
       load();
     } catch (e) {
-      toast.error(uiText("保存失败：") + (e as Error).message);
+      if ((e as { status?: number } | null)?.status === 409) {
+        load();
+        toast.error(uiText("配置版本已变化，请重新打开并核对配置；本次输入仍保留。"));
+      } else toast.error(uiText("保存失败：") + (e as Error).message);
     } finally {
+      saveLock.current = false;
       setSaving(false);
     }
   }
 
   async function refreshTools() {
-    if (!editing) return;
+    if (!editing || !editing.approved || !editing.enabled || dirty || refreshing) return;
     setRefreshing(true);
     try {
       const t = await api.refreshMcpServer(editing.id);
@@ -211,13 +230,38 @@ export default function MCPPage() {
     }
   }
 
-  async function toggleEnabled(s: MCPServer) {
+  async function requestApproval(s: MCPServer) {
+    if (mutationLock.current || saveLock.current) return;
+    const launcher = document.activeElement;
+    approvalLauncherRef.current = launcher instanceof HTMLElement && launcher !== document.body ? launcher : null;
+    mutationLock.current = true;
+    setMutating(true);
     try {
-      await api.saveMcpServer({ ...s, enabled: !s.enabled });
-      load();
+      const current = (await api.mcpServers()).find((row) => row.id === s.id);
+      if (!current) throw new Error(uiText("服务器不存在"));
+      setApproval(current);
     } catch (e) {
       toast.error(uiText("操作失败：") + (e as Error).message);
-    }
+    } finally { mutationLock.current = false; setMutating(false); }
+  }
+
+  async function mutateServer(s: MCPServer, approve: boolean) {
+    if (mutationLock.current || saveLock.current) return;
+    mutationLock.current = true;
+    setMutating(true);
+    try {
+      const result = approve ? await api.approveMcpServer(s.id, s.revision) : await api.disableMcpServer(s.id, s.revision);
+      if (editing?.id === s.id) setEditing((old) => old ? { ...old, ...result } : old);
+      setApproval(null);
+      load();
+      toast.success(approve ? uiText("已授权并启用当前配置") : uiText("已停用并撤销授权"));
+    } catch (e) {
+      if ((e as { status?: number } | null)?.status === 409) {
+        setApproval(null);
+        load();
+        toast.error(uiText("配置版本已变化，请重新打开并核对配置；本次输入仍保留。"));
+      } else toast.error(uiText("操作失败：") + (e as Error).message);
+    } finally { mutationLock.current = false; setMutating(false); }
   }
 
   async function toggleVisibility(serverId: number, agentId: string, agentName: string) {
@@ -233,7 +277,7 @@ export default function MCPPage() {
 
   function renderForm() {
     return (
-      <div className="grid gap-4 py-4">
+      <fieldset disabled={saving || mutating} className="grid gap-4 py-4">
         <div className="grid gap-2">
           <Label>{uiText("传输方式")}</Label>
           <div className="flex gap-2">
@@ -282,11 +326,11 @@ export default function MCPPage() {
               />
             </div>
             <div className="grid gap-2">
-              <Label htmlFor="m-args">{uiText("参数（空格分隔）")}</Label>
+              <Label htmlFor="m-args">{uiText("参数（JSON 字符串数组，保留空格）")}</Label>
               <Input
                 id="m-args"
                 className="font-mono"
-                placeholder="-y @modelcontextprotocol/server-filesystem /data"
+                placeholder={'["-y", "@modelcontextprotocol/server-filesystem", "/data"]'}
                 value={form.args}
                 onChange={(e) => setF({ args: e.target.value })}
               />
@@ -314,15 +358,19 @@ export default function MCPPage() {
               ? uiText("请求头（每行 KEY=VALUE，如 Authorization=Bearer xxx）")
               : uiText("环境变量（每行 KEY=VALUE）")}
           </Label>
+          <p className="text-muted-foreground text-xs">{uiText("留空保留已存凭据；输入新值将替换全部环境变量或请求头。")}</p>
+          {editing && <p className="text-muted-foreground text-xs">{uiText("已存键名")}: {(editing.env_keys ?? Object.keys(editing.env ?? {})).join(", ") || "—"}</p>}
+          {editing && <label className="flex items-center gap-2 text-sm"><Checkbox checked={form.clearEnv} onCheckedChange={(value) => setF({ clearEnv: value === true })} />{uiText("清空全部已存环境变量 / 请求头")}</label>}
           <Textarea
             id="m-env"
+            disabled={form.clearEnv}
             className="font-mono"
             placeholder={form.transport !== "stdio" ? "Authorization=Bearer xxxx" : "API_KEY=xxxx\nFOO=bar"}
             value={form.env}
             onChange={(e) => setF({ env: e.target.value })}
           />
         </div>
-      </div>
+      </fieldset>
     );
   }
 
@@ -333,10 +381,11 @@ export default function MCPPage() {
           <span className="text-muted-foreground text-sm">
             {tools.length} {uiText("个工具")}
           </span>
-          <Button size="sm" variant="outline" disabled={refreshing} onClick={refreshTools}>
+          <Button size="sm" variant="outline" disabled={refreshing || !editing?.approved || !editing?.enabled || dirty} onClick={refreshTools}>
             <RefreshCwIcon className={refreshing ? "animate-spin" : ""} /> {uiText("刷新")}
           </Button>
         </div>
+        <p className="text-muted-foreground text-xs">{uiText("工具列表为缓存；仅已授权、已启用且无未保存修改时可实时刷新。")}</p>
         {toolsLoading ? (
           <p className="text-muted-foreground text-sm">{uiText("加载中…")}</p>
         ) : tools.length === 0 ? (
@@ -364,6 +413,7 @@ export default function MCPPage() {
         <p className="text-muted-foreground text-sm">{uiText("外部 MCP 工具服务器 · 按 Agent 授权可见")}</p>
       </div>
 
+      <p className="text-muted-foreground text-sm">{uiText("保存不授权、不连接。升级前的配置需重新授权一次；授权后调用自动执行。")}</p>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
         <button
           type="button"
@@ -388,7 +438,7 @@ export default function MCPPage() {
                   {s.transport}
                 </Badge>
                 <div className="ml-auto flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-                  <Switch checked={s.enabled} onCheckedChange={() => toggleEnabled(s)} aria-label={uiText("启用")} />
+                  <Switch checked={s.enabled && s.approved} disabled={mutating || saving} onCheckedChange={() => s.enabled && s.approved ? mutateServer(s, false) : requestApproval(s)} aria-label={uiText("授权并启用")} />
                   <DeleteConfirmation name={s.name} description={uiText("服务器配置及其 Agent 可见性设置将被删除，后续工具装配将不再包含此服务器的工具。已运行的调用不保证立即停止。")} onConfirm={() => removeServer(s)}>
                   <Button size="icon" variant="outline" aria-label={uiText("删除")}>
                     <Trash2Icon className="text-destructive" />
@@ -398,6 +448,7 @@ export default function MCPPage() {
               </div>
             </CardHeader>
             <CardContent className="grid gap-3">
+              <Badge variant="outline">{s.approved ? (s.enabled ? uiText("已授权并启用") : uiText("已停用")) : uiText("待授权")}</Badge>
               <p className="text-muted-foreground text-sm">
                 {s.tools && s.tools.length > 0 ? uiText("{v0} 个工具", { v0: s.tools.length }) : uiText("尚未发现工具")}
               </p>
@@ -420,6 +471,24 @@ export default function MCPPage() {
         ))}
       </div>
 
+      <AlertDialog open={!!approval} onOpenChange={(next) => { if (!next && !mutationLock.current) setApproval(null); }}>
+        <AlertDialogContent aria-busy={mutating} onOpenAutoFocus={(event) => { event.preventDefault(); cancelApprovalRef.current?.focus(); }} onCloseAutoFocus={(event) => { event.preventDefault(); if (approvalLauncherRef.current?.isConnected) approvalLauncherRef.current.focus({ preventScroll: true }); }} onEscapeKeyDown={(event) => { if (mutationLock.current) event.preventDefault(); }}>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{uiText("授权并启用当前持久化配置？")}</AlertDialogTitle>
+            <AlertDialogDescription>{uiText("确认后允许连接并自动调用此版本的工具。未保存的输入不会获得授权。")}</AlertDialogDescription>
+          </AlertDialogHeader>
+          {approval && <div className="grid gap-2 overflow-auto text-sm">
+            <p>{approval.name} · {approval.transport} · {uiText("配置版本")} {approval.revision}</p>
+            <pre className="max-h-48 whitespace-pre-wrap break-all rounded bg-muted p-3">{mcpApprovalDestination(approval)}</pre>
+            <p>{uiText("TLS 状态")}: {approval.transport === "stdio" ? uiText("不适用") : approval.url?.startsWith("https:") ? approval.insecure ? uiText("跳过证书校验") : uiText("校验证书") : uiText("明文 HTTP")}</p>
+            <p>{uiText("环境变量 / 请求头键名（值不显示）")}: {(approval.env_keys ?? Object.keys(approval.env ?? {})).join(", ") || "—"}</p>
+          </div>}
+          <AlertDialogFooter>
+            <AlertDialogCancel ref={cancelApprovalRef} disabled={mutating}>{uiText("取消")}</AlertDialogCancel>
+            <AlertDialogAction disabled={mutating} onClick={(event) => { event.preventDefault(); if (approval) void mutateServer(approval, true); }}>{uiText("授权并启用")}</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <Sheet open={open} onOpenChange={setOpen}>
         <SheetContent side="right" className="w-full data-[side=right]:sm:max-w-lg">
           <SheetHeader>
@@ -443,9 +512,10 @@ export default function MCPPage() {
               <TabsContent value="config" className="min-h-0 flex-1 overflow-y-auto">
                 {renderForm()}
                 <div className="flex gap-2 pt-2 pb-6">
-                  <Button onClick={saveForm} disabled={saving}>
-                    {uiText("保存")}
+                  <Button onClick={saveForm} disabled={saving || mutating}>
+                    {uiText("保存配置")}
                   </Button>
+                  <Button variant="outline" disabled={saving || mutating || dirty} onClick={() => requestApproval(editing)}>{uiText("授权并启用")}</Button>
                 </div>
               </TabsContent>
               <TabsContent value="tools" className="min-h-0 flex-1 overflow-y-auto">
@@ -456,7 +526,7 @@ export default function MCPPage() {
             <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4">
               {renderForm()}
               <div className="pt-2 pb-6">
-                <Button onClick={saveForm} disabled={saving}>
+                <Button onClick={saveForm} disabled={saving || mutating}>
                   <PlusIcon /> {uiText("添加")}
                 </Button>
               </div>

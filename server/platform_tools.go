@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/Autumn-27/artex/db"
@@ -21,6 +22,7 @@ func (s *Server) platformTools() []actool.CoreTool {
 		s.toolUpdateSkillFile(),
 		s.toolCreateCustomTool(),
 		s.toolUpdateCustomTool(),
+		s.toolListMCP(),
 		s.toolCreateMCP(),
 		s.toolUpdateMCP(),
 		s.toolDeleteAssetsByHost(),
@@ -31,7 +33,7 @@ func (s *Server) platformTools() []actool.CoreTool {
 var platformToolKeys = []string{
 	"create_skill", "update_skill_file",
 	"create_custom_tool", "update_custom_tool",
-	"create_mcp", "update_mcp",
+	"list_mcp", "create_mcp", "update_mcp",
 	"delete_assets_by_host",
 }
 
@@ -246,6 +248,7 @@ func (s *Server) toolUpdateCustomTool() actool.CoreTool {
 // ---- MCP ----
 
 type mcpToolInput struct {
+	Revision  int64           `json:"revision"`
 	ID        int64           `json:"id"`
 	Name      string          `json:"name"`
 	Transport string          `json:"transport"`
@@ -265,43 +268,35 @@ func mcpSchema(withID bool) map[string]any {
 		"args":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "命令参数数组"},
 		"env":       map[string]any{"type": "object", "description": "环境变量 {KEY:VALUE}"},
 		"url":       strParam("http/sse 的 URL"),
-		"enabled":   map[string]any{"type": "boolean", "description": "HTTP/SSE 是否启用(默认 true)；Agent 保存 stdio 配置时始终停用，需操作员在设置中启用"},
+		"enabled":   map[string]any{"type": "boolean", "description": "兼容输入，不能启用或授权；由管理员明确授权控制执行"},
 		"insecure":  map[string]any{"type": "boolean", "description": "http: 跳过 TLS 证书校验(自签证书时置 true, 默认 false)"},
 	}
 	required := []string{"name", "transport"}
 	if withID {
+		props["revision"] = map[string]any{"type": "integer", "description": "list_mcp 返回的当前 revision"}
 		props["id"] = map[string]any{"type": "integer", "description": "要修改的 MCP 服务器 id"}
-		required = []string{"id", "name", "transport"}
+		required = []string{"id", "revision", "name", "transport"}
 	}
 	return objSchema(props, required...)
 }
 
 func (a mcpToolInput) toDB() *db.MCPServer {
-	enabled := true
-	if a.Enabled != nil {
-		enabled = *a.Enabled
-	}
-	// Model-callable platform tools cannot approve executable plugin configs.
-	// Every stdio write is disabled, avoiding a read/write race that could restore
-	// an operator's revoked approval. The authenticated management API is separate.
+	enabled := false
 	transport := strings.ToLower(strings.TrimSpace(a.Transport))
-	if transport == "stdio" {
-		enabled = false
-	}
 	insecure := false
 	if a.Insecure != nil {
 		insecure = *a.Insecure
 	}
 	return &db.MCPServer{
-		ID: a.ID, Name: a.Name, Transport: transport, Command: a.Command,
+		Revision: a.Revision, ID: a.ID, Name: a.Name, Transport: transport, Command: a.Command,
 		Args: a.Args, Env: a.Env, URL: a.URL, Enabled: enabled, Insecure: insecure,
 	}
 }
 
 func (s *Server) toolCreateMCP() actool.CoreTool {
-	return wrTool("create_mcp", "创建一个 MCP 服务器(stdio/http/sse)。stdio 保存为停用，需操作员在设置中启用；工具仍需按 agent 可见性授权。",
+	return wrTool("create_mcp", "创建一个 MCP 服务器(stdio/http/sse)。所有传输保存为待授权，需管理员在设置中明确授权；工具仍需按 agent 可见性授权。",
 		mcpSchema(false),
-		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 			var a mcpToolInput
 			_ = json.Unmarshal(in, &a)
 			a.ID = 0
@@ -309,35 +304,55 @@ func (s *Server) toolCreateMCP() actool.CoreTool {
 				return actool.Errorf("name / transport 必填"), nil
 			}
 			m := a.toDB()
-			id, err := s.m.pg.SaveMCP(m)
+			id, err := s.m.pg.SaveMCPContext(ctx, m)
 			if err != nil {
 				return actool.Errorf(err.Error()), nil
 			}
 			message := fmt.Sprintf("mcp created: id=%d name=%s", id, a.Name)
-			if m.Transport == "stdio" {
-				message += "; stdio disabled: operator must authorize execution in authenticated settings"
-			}
+			message += fmt.Sprintf("; revision=%d approved=%t enabled=%t; administrator approval required for changed configuration", m.Revision, m.Approved, m.Enabled)
 			return actool.Text(message), nil
 		})
 }
 
 func (s *Server) toolUpdateMCP() actool.CoreTool {
-	return wrTool("update_mcp", "修改一个已有的 MCP 服务器(按 id)。保存 stdio 配置会停用它，需操作员在设置中重新启用。",
+	return wrTool("update_mcp", "修改一个已有的 MCP 服务器(按 id)。必须提供当前 revision；连接配置变化会撤销授权，需管理员重新授权。",
 		mcpSchema(true),
-		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 			var a mcpToolInput
 			_ = json.Unmarshal(in, &a)
 			if a.ID == 0 {
 				return actool.Errorf("id 必填"), nil
 			}
 			m := a.toDB()
-			if _, err := s.m.pg.SaveMCP(m); err != nil {
+			if _, err := s.m.pg.SaveMCPContext(ctx, m); err != nil {
 				return actool.Errorf(err.Error()), nil
 			}
 			message := fmt.Sprintf("mcp updated: id=%d", a.ID)
-			if m.Transport == "stdio" {
-				message += "; stdio disabled: operator must authorize execution in authenticated settings"
-			}
+			message += fmt.Sprintf("; revision=%d approved=%t enabled=%t; administrator approval required for changed configuration", m.Revision, m.Approved, m.Enabled)
 			return actool.Text(message), nil
 		})
+}
+
+func (s *Server) toolListMCP() actool.CoreTool {
+	return roTool("list_mcp", "读取 MCP 配置元数据和 revision（不含环境变量或凭据值）", objSchema(map[string]any{}), func(ctx context.Context, _ json.RawMessage) (actool.Result, error) {
+		ms, err := s.m.pg.ListMCPContext(ctx)
+		if err != nil {
+			return actool.Errorf(err.Error()), nil
+		}
+		out := []map[string]any{}
+		for _, m := range ms {
+			out = append(out, map[string]any{"id": m.ID, "name": m.Name, "transport": m.Transport, "revision": m.Revision, "approved": m.Approved, "enabled": m.Enabled, "env_keys": mcpEnvKeys(m.Env)})
+		}
+		b, _ := json.Marshal(out)
+		return actool.Text(string(b)), nil
+	})
+}
+
+func mcpEnvKeys(raw json.RawMessage) []string {
+	keys := []string{}
+	for k := range jsonStrMap(raw) {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }

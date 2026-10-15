@@ -69,6 +69,8 @@ import type {
   LLMRetryPolicy,
   LLMTask,
   MCPServer,
+  MCPServerWrite,
+  MCPMutationResult,
   MCPTool,
   MissingSkill,
   ModelTokenStat,
@@ -1157,18 +1159,20 @@ export const api = {
 
   // ---- mcp ----
   mcpServers: () => get<{ servers: MCPServer[] }>("/mcp").then((r) => arr(r.servers)),
-  saveMcpServer: (m: Partial<MCPServer>) => post<{ id: number }>("/mcp", m),
+  saveMcpServer: (m: MCPServerWrite) => post<MCPMutationResult>("/mcp", m),
+  approveMcpServer: (id: number, revision: number) => post<MCPMutationResult>(`/mcp/${id}/approve`, { revision }),
+  disableMcpServer: (id: number, revision: number) => post<MCPMutationResult>(`/mcp/${id}/disable`, { revision }),
   deleteMcpServer: (id: number) => del<{ deleted: number }>(`/mcp/${id}`),
   mcpTools: (id: number) => get<{ tools: MCPTool[] }>(`/mcp/${id}/tools`).then((r) => arr(r.tools)),
   refreshMcpServer: (id: number) => post<{ tools: MCPTool[] }>(`/mcp/${id}/refresh`, {}).then((r) => arr(r.tools)),
 
   // ---- 资产同步 (ScopeSentry 数据源) ----
   ssStatus: () =>
-    get<{ exists: boolean; configured: boolean; enabled: boolean; reachable: boolean; url?: string; tools: string[] }>(
+    get<{ id?: number; revision?: number; approved: boolean; exists: boolean; configured: boolean; enabled: boolean; reachable: boolean; url?: string; tools: string[] }>(
       "/sync/scopesentry/status",
     ),
-  ssDatasource: (body: { url?: string; api_key?: string }) =>
-    post<{ id: number; enabled: boolean }>("/sync/scopesentry/datasource", body),
+  ssDatasource: (body: { url?: string; api_key?: string; revision?: number }) =>
+    post<MCPMutationResult>("/sync/scopesentry/datasource", body),
   ssProjects: (page = 1, size = 50, search = "") =>
     get<{ projects: SSProject[]; tag: Record<string, number> }>(
       `/sync/scopesentry/projects?page=${page}&size=${size}${search ? `&search=${encodeURIComponent(search)}` : ""}`,

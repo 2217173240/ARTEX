@@ -19,6 +19,9 @@ import { syncOutcome } from "@/lib/sync-outcome";
 import type { SSProject, SSTask } from "@/lib/types";
 
 type SSStatus = {
+  id?: number;
+  revision?: number;
+  approved: boolean;
   exists: boolean;
   configured: boolean;
   enabled: boolean;
@@ -73,10 +76,12 @@ function ScopeSentryPanel() {
     loadStatus();
   }, [loadStatus]);
 
-  const ready = !!status && status.exists && status.configured && status.enabled;
+  const ready = !!status && status.exists && status.configured && status.approved && status.enabled;
 
   return (
     <div className="space-y-4">
+      <p className="text-muted-foreground text-sm">{uiText("数据源仅保存配置草稿；请前往 MCP 页面显式授权后再同步。")}</p>
+      <a className="text-sm underline" href="/system/mcp">{uiText("前往 MCP 授权")}</a>
       <DataSourceCard status={status} loading={loadingStatus} onChanged={loadStatus} />
       {ready ? (
         <SyncWorkbench />
@@ -128,12 +133,13 @@ function DataSourceCard({
     if (!url.trim()) return toast.error(uiText("请填写 MCP 地址"));
     setBusy(true);
     try {
-      const r = await api.ssDatasource({ url: url.trim(), api_key: apiKey.trim() });
-      toast.success(r.enabled ? uiText("已保存并启用数据源") : uiText("已保存（尚未满足启用条件）"));
+      await api.ssDatasource({ url: url.trim(), ...(apiKey.trim() ? { api_key: apiKey.trim() } : {}), revision: status?.revision });
+      toast.success(uiText("数据源草稿已保存，请前往 MCP 页面核对并授权。"));
       setApiKey("");
       onChanged();
     } catch (e) {
-      toast.error(uiText("保存失败：{v0}", { v0: (e as Error).message }));
+      onChanged();
+      toast.error(uiText("保存失败，请刷新并核对当前配置后重试：{v0}", { v0: (e as Error).message }));
     } finally {
       setBusy(false);
     }

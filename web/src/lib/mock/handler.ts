@@ -2458,20 +2458,70 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   if (path === "/tools/custom" && m === "POST") return { key: String(b.key ?? "custom-tool") };
   if (path === "/tools/custom/test") return { output: "（demo）工具执行输出示例。", is_error: false };
 
-  // ── mcp ──
-  if (path === "/mcp" && m === "GET") return { servers: D.mcpServers };
-  if (path === "/mcp" && m === "POST") return { id: 3 };
+  // ── MCP: saved revisions and explicit authorization ──
+  const mcpResult = (row: (typeof D.mcpServers)[number]) => ({ id: row.id, revision: row.revision, approved: row.approved, enabled: row.enabled });
+  const checkRevision = (row: (typeof D.mcpServers)[number]) => {
+    if (b.revision !== row.revision) throw Object.assign(new Error("配置版本已变化，请重新核对配置"), { status: 409 });
+  };
+  const saveMcp = (input: Record<string, unknown>) => {
+    const existing = input.id == null ? undefined : D.mcpServers.find((row) => row.id === Number(input.id));
+    if (input.id != null && !existing) throw new Error("MCP server not found");
+    if (existing) checkRevision(existing);
+    const next = {
+      id: existing?.id ?? Math.max(0, ...D.mcpServers.map((row) => row.id)) + 1,
+      revision: (existing?.revision ?? 0) + 1,
+      name: String(input.name ?? ""), transport: (input.transport ?? "stdio") as "stdio" | "http" | "sse",
+      command: String(input.command ?? ""), args: (input.args ?? []) as string[],
+      env: (input.env ?? existing?.env ?? {}) as Record<string, string>, url: String(input.url ?? ""),
+      insecure: Boolean(input.insecure), approved: false, enabled: false, tools: existing?.tools ?? [],
+    };
+    const keys = ["name", "transport", "command", "args", "env", "url", "insecure"] as const;
+    const comparable = (key: typeof keys[number], value: unknown) => JSON.stringify(
+      key === "env" ? Object.entries((value ?? {}) as Record<string, string>).sort(([left], [right]) => left.localeCompare(right)) : value ?? (key === "insecure" ? false : ""),
+    );
+    const changed = !existing || keys.some((key) => comparable(key, next[key]) !== comparable(key, existing[key]));
+    if (existing && !changed) { next.revision = existing.revision; next.approved = existing.approved; next.enabled = existing.enabled; }
+    if (existing) Object.assign(existing, next); else D.mcpServers.push(next);
+    return mcpResult(next);
+  };
+  if (path === "/mcp" && m === "GET") return { servers: D.mcpServers.map(({ env, ...row }) => ({ ...structuredClone(row), env_keys: Object.keys(env ?? {}) })) };
+  if (path === "/mcp" && m === "POST") return saveMcp(b);
   if (seg[0] === "mcp" && seg[2] === "tools") return { tools: D.mcpToolsById[Number(seg[1])] ?? [] };
-  if (seg[0] === "mcp" && seg[2] === "refresh") return { tools: D.mcpToolsById[Number(seg[1])] ?? [] };
-  if (seg[0] === "mcp" && seg.length === 2 && m === "DELETE") return { deleted: Number(seg[1]) };
+  if (seg[0] === "mcp" && ["approve", "disable", "refresh"].includes(seg[2])) {
+    const row = D.mcpServers.find((server) => server.id === Number(seg[1]));
+    if (!row) throw new Error("MCP server not found");
+    if (seg[2] === "refresh") {
+      if (!row.approved || !row.enabled) throw new Error("MCP configuration requires authorization and enablement");
+      return { tools: D.mcpToolsById[row.id] ?? [] };
+    }
+    checkRevision(row);
+    row.approved = seg[2] === "approve";
+    row.enabled = row.approved;
+    row.revision++;
+    return mcpResult(row);
+  }
+  if (seg[0] === "mcp" && seg.length === 2 && m === "DELETE") {
+    const index = D.mcpServers.findIndex((row) => row.id === Number(seg[1]));
+    if (index >= 0) D.mcpServers.splice(index, 1);
+    return { deleted: Number(seg[1]) };
+  }
 
-  // ── scopesentry（demo：未配置）──
-  if (path === "/sync/scopesentry/status")
-    return { exists: false, configured: false, enabled: false, reachable: false, tools: [] };
-  if (path === "/sync/scopesentry/projects") return { projects: [], tag: {} };
-  if (path === "/sync/scopesentry/tasks") return { tasks: [] };
-  if (path === "/sync/scopesentry/sync")
-    return { status: "success", truncated: false, synced: {}, companies: null, warnings: null, errors: null };
+  const ss = D.mcpServers.find((row) => row.name === "scopesentry");
+  if (path === "/sync/scopesentry/status") return {
+    exists: !!ss, configured: !!ss?.url && !!ss?.env?.Authorization, approved: !!ss?.approved,
+    id: ss?.id, revision: ss?.revision, enabled: !!ss?.enabled,
+    reachable: !!ss?.approved && !!ss?.enabled, url: ss?.url, tools: ss?.tools ?? [],
+  };
+  if (path === "/sync/scopesentry/datasource") return saveMcp({
+    ...ss, name: "scopesentry", transport: "http", url: b.url ?? ss?.url ?? "", revision: b.revision,
+    env: b.api_key ? { ...ss?.env, Authorization: `Bearer ${String(b.api_key)}` } : ss?.env ?? {},
+  });
+  if (path.startsWith("/sync/scopesentry/")) {
+    if (!ss?.approved || !ss?.enabled) throw new Error("ScopeSentry requires MCP authorization");
+    if (path === "/sync/scopesentry/projects") return { projects: [], tag: {} };
+    if (path === "/sync/scopesentry/tasks") return { tasks: [] };
+    if (path === "/sync/scopesentry/sync") return { status: "success", truncated: false, synced: {}, companies: null, warnings: null, errors: null };
+  }
 
   // ── skills ──
   if (path === "/skills" && m === "GET") return { skills: D.skills };

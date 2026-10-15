@@ -73,9 +73,9 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 		{
 			mcpIDs, _ := pg.AgentVisible(a.ID, "mcp")
 			want := idSet(mcpIDs)
-			all, _ := pg.ListMCP()
+			all, _ := pg.ListMCPContext(ctx)
 			for _, m := range all {
-				if !m.Enabled {
+				if !m.Enabled || !m.Approved {
 					continue
 				}
 				directVisible := want[m.ID]
@@ -83,7 +83,7 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 				if !directVisible && !skillGated {
 					continue // neither directly visible nor referenced by a visible skill
 				}
-				cl, err := connectMCP(ctx, m)
+				cl, err := connectAuthorizedMCP(ctx, pg, m.ID, m.Revision)
 				if err != nil {
 					log.Printf("[mcp] %s 连接失败: %v", m.Name, err)
 					continue
