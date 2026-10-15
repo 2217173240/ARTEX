@@ -4,6 +4,8 @@
 
 删除前说明目标和影响：MCP 同时删除 Agent 可见性；通知同时删除投递记录；模型删除可能调整已有任务的配置链和回退；拦截删除影响后续规则匹配。工具配置删除不承诺立即停止已经运行的调用。只有确认才提交，取消与初始焦点采用安全选项，提交中防重入，失败保留可重试对话框；保留默认模型、内置工具及后端保护。复用 [Radix AlertDialog 的受控异步关闭](https://www.radix-ui.com/primitives/docs/components/alert-dialog#close-after-asynchronous-form-submission)和 [WAI-ARIA Alert Dialog 语义](https://www.w3.org/WAI/ARIA/apg/patterns/alertdialog/)，未为开关和保存增加确认，也未新增依赖。
 
+实际页面验收另外发现通知 mock 缺少 `/notify/meta`，空对象使页面访问 `kinds.find` 时崩溃。围绕当前演示接口补齐完整元数据、明确合成且停用的渠道和合法空投递页；删除只修改内存副本并同步列表/计数，未支持的 `/notify` 写入明确报错。未改动真实后端或发送通知，也不将演示回归当作真实渠道投递验收。
+
 同一 PR 的 RAG 和 Makefile 没有整体引入：RAG 的凭据响应、设置校验、来源撤销、网络与输出预算、任务归档契约仍需完整适配；重复构建入口没有替代当前脚本。jiwoochris PR #34 的 MCP 卡片和 PR #30 的报告重试已覆盖，未重复采用；自动侧栏折叠会改变已保存偏好，任务表隐藏列尚无当前缺陷复现，不据此移植。
 
 2026-10-14 另适配 [jiwoochris/artex-global PR #34](https://github.com/jiwoochris/artex-global/pull/34) 的 MCP 卡片部分（最终 head `9fdfd69d0e92ee590e6437ca7b5f04c3568bb93d`，作者 meowassassin，AGPL-3.0）。当前展开侧栏、1100px 视口中的卡片宽度为 183px，启用及删除控件会超出卡片并被裁剪；调整卡片列数断点和传输标签收缩规则后，实际组件的控件边界、鼠标命中及键盘焦点均通过验证。覆盖 320px 中文、1100px 中英文及 1440px 英文；mock 不持久化启用状态，未将其视为服务状态验收。保留现有侧栏偏好、任务表格列和全部配置行为。仓库旧名称 `jiwoochris/artex-ko` 仍作为增量监测键，通过别名记录对应新名称。
