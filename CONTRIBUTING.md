@@ -68,6 +68,8 @@ npm audit --audit-level=high
 
 维护者遇到 PR 事件未生成 quality 运行时，可执行 `gh workflow run quality.yml --repo 2217173240/ARTEX --ref <branch>` 手动检查该分支。触发后确认实际运行的 `headSha` 等于 PR 当前 HEAD，全部检查成功后再正常合并；新增提交需要重新验证，手动触发成功不等于检查通过。
 
+若触发返回 HTTP 422 `Actions has been disabled for this repository`，先检查仓库 Actions 页的具体提示；权限 API 的 `enabled=true` 不代表工作流一定能执行。本 fork 曾因 GitHub Actions 使用规模而被暂停，需维护者按页面提示重新启用。恢复后确认新运行实际生成且开始作业；停用期间没有作业的旧排队记录不能作为 CI 证据。若页面没有恢复入口或重新启用后仍被拒绝，参照 [GitHub 官方说明](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-github-actions-settings-for-a-repository) 联系 Support，保留现有合并检查。
+
 修改采集脚本依赖时，在 `skills/api-recon/scripts` 中执行 `npm ci --ignore-scripts` 和 `npm audit --audit-level=high`。运行时需要系统 Chromium；Puppeteer Core 不下载浏览器。CI 对该依赖树执行同样的安装和审计。
 
 本 fork 使用 `ghcr.io/2217173240/artex` 和本仓库的 GitHub Releases，正式版本及资产以本仓库 Releases 为准。发布流程将正式标签固定到实际 commit，确认它已合入默认分支，并要求该 commit 的 `quality` 成功；所有构建使用这一 commit，发布任务仅能读取缓存。维护者可在同一个已存在标签上手动重试未完成的发布，例如 `gh workflow run release.yml --ref v0.3.18 -f tag=v0.3.18`；工作流触发 commit 必须等于预检验证的标签 commit，已公开 Release 不会被覆盖。
