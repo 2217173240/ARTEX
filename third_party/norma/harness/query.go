@@ -219,7 +219,8 @@ type budgetTracker struct {
 }
 
 type loop struct {
-	ctx context.Context
+	interruptedToolInput *llm.ContentBlock
+	ctx                  context.Context
 	// toolCtx bounds tool execution with the run's MaxDuration deadline, so a tool
 	// that overruns the wall-clock budget is interrupted mid-flight (the model call
 	// stays on ctx — streams are never cut mid-flight). Derived from ctx, so a parent
@@ -344,12 +345,13 @@ func countBoundaries(msgs []llm.Message) int {
 
 func (l *loop) finish(reason TerminalReason, err error, text string) {
 	l.yield(Event{Kind: KindResult, Terminal: &Terminal{
-		Reason:   reason,
-		Err:      err,
-		Usage:    l.usage,
-		Turns:    l.turnCount,
-		Messages: l.messages,
-		Text:     text,
+		InterruptedToolInput: l.interruptedToolInput,
+		Reason:               reason,
+		Err:                  err,
+		Usage:                l.usage,
+		Turns:                l.turnCount,
+		Messages:             l.messages,
+		Text:                 text,
 	}}, nil)
 }
 
@@ -413,12 +415,27 @@ func (l *loop) run() {
 			return
 		}
 		if streamErr != nil {
+			// Earlier blocks may already have run. Persist those exchanges before
+			// terminating, and never replay a turn over their possible effects.
+			if len(asst.Content) > 0 {
+				l.messages = append(l.messages, asst)
+				l.record(asst, usageDelta(usageBefore, l.usage))
+			}
+			if exec != nil && exec.count() > 0 {
+				result := llm.Message{Role: llm.RoleUser, Content: exec.results()}
+				l.messages = append(l.messages, result)
+				l.record(result, llm.Usage{})
+				for _, extra := range exec.extraMessages() {
+					l.messages = append(l.messages, extra)
+					l.record(extra, llm.Usage{})
+				}
+			}
 			if l.ctx.Err() != nil {
 				l.finish(ReasonAbortedStreaming, l.ctx.Err(), "")
 				return
 			}
 			// Reactive recovery from prompt-too-long: one forced AutoCompact, then retry.
-			if l.in.Compactor != nil && l.in.Compactor.IsOverflow(streamErr) && !l.hasAttemptedReactiveCompact {
+			if (exec == nil || exec.count() == 0) && l.in.Compactor != nil && l.in.Compactor.IsOverflow(streamErr) && !l.hasAttemptedReactiveCompact {
 				l.hasAttemptedReactiveCompact = true
 				if msgs, ok := l.in.Compactor.Reactive(l.ctx, l.messages); ok {
 					l.messages = msgs
@@ -777,6 +794,7 @@ func (l *loop) requestMessages() []llm.Message {
 }
 
 func (l *loop) streamAndExecute(schemas []llm.ToolSchema) (asst llm.Message, exec *streamExec, stopReason string, err error, consumerStopped, aborted bool) {
+	l.interruptedToolInput = nil
 	l.maybeInjectTodoReminder()
 	msgs := l.requestMessages()
 	if l.in.SystemReminder != "" {
@@ -794,6 +812,7 @@ func (l *loop) streamAndExecute(schemas []llm.ToolSchema) (asst llm.Message, exe
 		return l.completeAndExecute(req)
 	}
 	exec = newStreamExec(l)
+	defer exec.cancel()
 	acc := llm.NewAccumulator()
 
 	var building bool
@@ -822,6 +841,10 @@ func (l *loop) streamAndExecute(schemas []llm.ToolSchema) (asst llm.Message, exe
 			err = e
 			break
 		}
+		if l.ctx.Err() != nil {
+			err = l.ctx.Err()
+			break
+		}
 		if ev.Type == llm.SEToolInputJSON {
 			if building {
 				curInput.WriteString(ev.Text)
@@ -846,14 +869,33 @@ func (l *loop) streamAndExecute(schemas []llm.ToolSchema) (asst llm.Message, exe
 		}
 		acc.Add(ev)
 	}
-	if !finalizeTool() {
+	if err == nil {
+		err = l.ctx.Err()
+	}
+	if err != nil && building {
+		// JSON validity alone does not complete a tool block. Keep these bytes
+		// for diagnostics only, outside both the executor and replay history.
+		l.interruptedToolInput = &llm.ContentBlock{Type: llm.BlockToolUse, ID: curID, Name: curName, Input: []byte(curInput.String())}
+	} else if err == nil && !finalizeTool() {
 		return asst, exec, "", nil, true, false
 	}
 	l.usage.Add(acc.Usage)
 	asst = acc.Message()
+	if l.interruptedToolInput != nil {
+		// The building block is the last tool in accumulator order. Remove by
+		// position, rather than ID (providers can emit empty or repeated IDs).
+		for i := len(asst.Content) - 1; i >= 0; i-- {
+			if asst.Content[i].Type == llm.BlockToolUse {
+				asst.Content = append(asst.Content[:i], asst.Content[i+1:]...)
+				break
+			}
+		}
+	}
 	stopReason = acc.StopReason
 	if err != nil {
-		return asst, exec, stopReason, err, false, false
+		exec.cancel()
+		cs := !exec.drainSynthetic("model stream interrupted; tool outcome unknown unless a result was already received; do not automatically replay")
+		return asst, exec, stopReason, err, cs, l.ctx.Err() != nil
 	}
 	// Drain tools to completion (or synthesize on abort).
 	cs, ab := exec.finish()
@@ -872,6 +914,7 @@ func (l *loop) streamAndExecute(schemas []llm.ToolSchema) (asst llm.Message, exe
 // emission, and recorder all see identical numbers.
 func (l *loop) completeAndExecute(req llm.CompletionRequest) (asst llm.Message, exec *streamExec, stopReason string, err error, consumerStopped, aborted bool) {
 	exec = newStreamExec(l)
+	defer exec.cancel()
 	msg, sr, usage, cerr := l.deps.CallModelSync(l.ctx, req)
 	if cerr != nil {
 		return asst, exec, "", cerr, false, false

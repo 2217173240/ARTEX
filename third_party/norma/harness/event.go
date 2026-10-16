@@ -21,14 +21,25 @@ const (
 	KindResult     EventKind = "result"      // terminal event (loop finished)
 )
 
+// ToolResultDisposition distinguishes an actual executor result from an
+// interruption receipt. The zero value preserves existing hosts' event behavior.
+type ToolResultDisposition string
+
+const (
+	ToolResultActual      ToolResultDisposition = ""
+	ToolResultInterrupted ToolResultDisposition = "interrupted"
+	ToolResultNotInvoked  ToolResultDisposition = "not_invoked"
+)
+
 // Event is one item in the loop's output stream.
 type Event struct {
-	Kind       EventKind
-	Text       string            // KindText / KindThinking / KindProgress
-	ToolUse    *llm.ContentBlock // KindToolUse
-	ToolResult *llm.ContentBlock // KindToolResult
-	Terminal   *Terminal         // KindResult
-	Usage      *llm.Usage        // KindUsage: cumulative usage after the latest model turn
+	Kind                  EventKind
+	Text                  string                // KindText / KindThinking / KindProgress
+	ToolUse               *llm.ContentBlock     // KindToolUse
+	ToolResult            *llm.ContentBlock     // KindToolResult
+	ToolResultDisposition ToolResultDisposition // KindToolResult: actual vs synthetic receipt
+	Terminal              *Terminal             // KindResult
+	Usage                 *llm.Usage            // KindUsage: cumulative usage after the latest model turn
 }
 
 // TerminalReason explains why the loop stopped.
@@ -64,10 +75,13 @@ const (
 
 // Terminal is the final state of a Query, delivered as the KindResult event.
 type Terminal struct {
-	Reason   TerminalReason
-	Err      error
-	Usage    llm.Usage
-	Turns    int
-	Messages []llm.Message // full conversation snapshot (non-destructive: retains history)
-	Text     string        // the assistant's final text, for convenience
+	// InterruptedToolInput was not submitted to the executor and is diagnostic
+	// only: it must never be replayed as an assistant tool call.
+	InterruptedToolInput *llm.ContentBlock
+	Reason               TerminalReason
+	Err                  error
+	Usage                llm.Usage
+	Turns                int
+	Messages             []llm.Message // full conversation snapshot (non-destructive: retains history)
+	Text                 string        // the assistant's final text, for convenience
 }
