@@ -11,10 +11,12 @@ import (
 	"os"
 	"reflect"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/norma/llm"
 )
@@ -35,6 +37,9 @@ func requestLimiterAPIFixture(t *testing.T) (*Server, *db.DB) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = d.Close() })
+	if err := d.EnsureLLMUsageTable(); err != nil {
+		t.Fatal(err)
+	}
 	m := &Manager{pg: d, dir: t.TempDir(), tasks: map[string]*Task{}}
 	return &Server{m: m}, d
 }
@@ -191,5 +196,183 @@ func TestProfileRequestRateValidationWithoutDatabase(t *testing.T) {
 	s.pgSaveProfile(rec, httptest.NewRequest(http.MethodPost, "/api/llm/profiles", bytes.NewBufferString(`{"name":"fixture","rate_per_minute":-1}`)))
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("invalid rate reached persistence: status=%d", rec.Code)
+	}
+}
+
+func TestStaleApplyLLMRejectsPersistedSnapshot(t *testing.T) {
+	s, d := requestLimiterAPIFixture(t)
+	previousActive, err := d.ActiveProfile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var requests atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(500)
+		io.WriteString(w, `{"error":{"message":"fixture failure"}}`)
+	}))
+	defer upstream.Close()
+	p := &db.LLMProfile{Name: "stale-apply-rate-fixture", Format: "openai", Model: "fixture", BaseURL: upstream.URL, APIKey: "fixture-only-not-a-secret", RatePerMinute: 1, Streaming: true, Retry: db.RetryOverride{Connect: db.RetryRule{Attempts: -1}}}
+	id, err := d.SaveProfile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = d.Exec(`DELETE FROM llm_profiles WHERE id=$1`, id)
+		if previousActive != nil {
+			_ = d.SetActiveProfile(previousActive.ID)
+		}
+	})
+	if err := d.SetActiveProfile(id); err != nil {
+		t.Fatal(err)
+	}
+	// A has loaded a persisted snapshot, then pauses before applyLLM. B saves
+	// and applies a newer snapshot before A enters applyLLM's generation check.
+	staleCfg, ok := s.loadLLMConfig()
+	if !ok {
+		t.Fatal("could not load stale fixture snapshot")
+	}
+	p.ID = id
+	p.MaxTokens = 17
+	if _, err := d.SaveProfile(p); err != nil {
+		t.Fatal(err)
+	}
+	s.invalidateProfileAgents()
+	s.reapplyActiveProfile()
+	if !s.llmOn || s.llmCfg.MaxTokens != 17 {
+		t.Fatal("new persisted snapshot was not applied")
+	}
+	req := llm.CompletionRequest{Messages: []llm.Message{llm.UserText("fixture")}}
+	s.llmDirect.Complete(context.Background(), req)
+	if requests.Load() != 1 {
+		t.Fatal("new persisted provider did not charge its quota")
+	}
+	liveDirect, liveProvider, liveChat, liveCfg := s.llmDirect, s.llmProv, s.chatAgent, s.llmCfg
+	generation := s.provCacheGen
+	err = s.applyLLM(staleCfg)
+	if err == nil || !strings.Contains(err.Error(), "configuration changed") {
+		t.Fatalf("stale persisted snapshot was not rejected: %v", err)
+	}
+	if s.llmDirect != liveDirect || s.llmProv != liveProvider || s.chatAgent != liveChat || s.llmCfg != liveCfg || s.provCacheGen != generation {
+		t.Fatal("stale reapply mutated live state")
+	}
+	if _, exists := s.requestLimiters[0]; exists {
+		t.Fatal("stale persisted snapshot allocated an independent key0 quota")
+	}
+	cached, _, ok := s.providerForProfile(id)
+	if !ok || cached != liveDirect {
+		t.Fatal("stale reapply changed cached provider")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Millisecond)
+	defer cancel()
+	_, _, _, err = s.llmDirect.Complete(ctx, req)
+	if !errors.Is(err, context.DeadlineExceeded) || requests.Load() != 1 {
+		t.Fatalf("stale reapply reset persisted quota: %v, requests=%d", err, requests.Load())
+	}
+}
+
+func TestApplyLLMEnvFallbackWithUnusableActiveProfile(t *testing.T) {
+	s, d := requestLimiterAPIFixture(t)
+	previousActive, err := d.ActiveProfile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &db.LLMProfile{Name: "unkeyed-active-rate-fixture", Format: "openai", Model: "unkeyed", BaseURL: "http://example.invalid", Streaming: true}
+	id, err := d.SaveProfile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = d.Exec(`DELETE FROM llm_profiles WHERE id=$1`, id)
+		if previousActive != nil {
+			_ = d.SetActiveProfile(previousActive.ID)
+		}
+	})
+	if err := d.SetActiveProfile(id); err != nil {
+		t.Fatal(err)
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("provider construction sent a request")
+		w.WriteHeader(500)
+	}))
+	defer upstream.Close()
+	t.Setenv("ARTEX_LLM_PROVIDER", "openai")
+	t.Setenv("ARTEX_LLM_MODEL", "env-fixture")
+	t.Setenv("ARTEX_LLM_BASE_URL", upstream.URL)
+	t.Setenv("ARTEX_LLM_PROXY", "")
+	t.Setenv("OPENAI_API_KEY", "fixture-only-not-a-secret")
+	cfg, ok := agent.FromEnv()
+	if !ok {
+		t.Fatal("synthetic environment config unavailable")
+	}
+	for _, tc := range []struct{ name, key string }{{"empty", ""}, {"whitespace", " \t\n"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			p.ID, p.APIKey = id, tc.key
+			if _, err := d.SaveProfile(p); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.applyLLM(cfg); err != nil {
+				t.Fatalf("unkeyed active profile blocked environment fallback: %v", err)
+			}
+			if !s.llmOn || s.llmCfg != cfg || s.llmDirect == nil || s.requestLimiters[0] == nil || s.provByProfile[id] != nil {
+				t.Fatal("environment fallback did not use nonpersisted global config")
+			}
+		})
+	}
+}
+
+func TestApplyLLMReadErrorDoesNotAllocateGlobalQuota(t *testing.T) {
+	s, d := requestLimiterAPIFixture(t)
+	cfg := agent.ConfigFrom("openai", "live-fixture", "http://127.0.0.1:1", "fixture-only-not-a-secret", "")
+	live := &scriptedLLMProvider{}
+	chat := &agent.ChatAgent{}
+	s.llmOn, s.llmDirect, s.llmProv, s.chatAgent, s.llmCfg = true, live, live, chat, cfg
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// A failed lookup cannot establish that the active profile is absent.
+	err := s.applyLLM(cfg)
+	if err == nil || !strings.Contains(err.Error(), "read active llm profile") {
+		t.Fatalf("active profile lookup failure was not surfaced: %v", err)
+	}
+	if s.requestLimiters[0] != nil || s.llmDirect != live || s.llmProv != live || s.chatAgent != chat || s.llmCfg != cfg || !s.llmOn {
+		t.Fatal("failed active lookup allocated key0 or mutated live provider state")
+	}
+}
+
+func TestApplyLLMMalformedPersistedProviderDoesNotAllocateGlobalQuota(t *testing.T) {
+	s, d := requestLimiterAPIFixture(t)
+	previousActive, err := d.ActiveProfile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &db.LLMProfile{Name: "malformed-provider-rate-fixture", Format: "openai", Model: "fixture", BaseURL: "http://127.0.0.1:1", Proxy: "unsupported://fixture", APIKey: "fixture-only-not-a-secret", Streaming: true}
+	id, err := d.SaveProfile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = d.Exec(`DELETE FROM llm_profiles WHERE id=$1`, id)
+		if previousActive != nil {
+			_ = d.SetActiveProfile(previousActive.ID)
+		}
+	})
+	if err := d.SetActiveProfile(id); err != nil {
+		t.Fatal(err)
+	}
+	cfg, ok := s.loadLLMConfig()
+	if !ok {
+		t.Fatal("could not load malformed fixture config")
+	}
+	liveCfg := agent.ConfigFrom("openai", "live-fixture", "http://127.0.0.1:1", "fixture-only-not-a-secret", "")
+	live := &scriptedLLMProvider{}
+	chat := &agent.ChatAgent{}
+	s.llmOn, s.llmDirect, s.llmProv, s.chatAgent, s.llmCfg = true, live, live, chat, liveCfg
+	err = s.applyLLM(cfg)
+	if err == nil || !strings.Contains(err.Error(), "provider is unavailable") {
+		t.Fatalf("malformed persisted provider was not rejected: %v", err)
+	}
+	if s.requestLimiters[0] != nil || s.llmDirect != live || s.llmProv != live || s.chatAgent != chat || s.llmCfg != liveCfg || !s.llmOn || s.provByProfile[id] != nil {
+		t.Fatal("failed persisted construction allocated key0 or changed live provider/cache")
 	}
 }

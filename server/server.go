@@ -452,9 +452,25 @@ func (s *Server) applyLLM(cfg agent.Config) error {
 	var prov llm.Provider
 	// A persisted active profile must use the same cached provider as task chains
 	// and Agent bindings, otherwise each path owns a separate rate limiter.
-	if active, _ := s.m.pg.ActiveProfile(); active != nil {
-		if activeCfg, ok := s.loadProfileConfig(active.ID); ok && activeCfg == cfg {
-			prov, _, _ = s.providerForProfile(active.ID)
+	active, err := s.m.pg.ActiveProfile()
+	if err != nil {
+		return fmt.Errorf("read active llm profile: %w", err)
+	}
+	if active != nil && strings.TrimSpace(active.APIKey) != "" {
+		if activeCfg, ok := s.loadProfileConfig(active.ID); ok {
+			// A reapply may have loaded cfg before another save completed. It
+			// must not reinterpret that stale persisted snapshot as an env config
+			// and allocate a fresh key0 quota or replace the newer live provider.
+			if activeCfg != cfg {
+				return errors.New("llm configuration changed while building provider")
+			}
+			var available bool
+			prov, _, available = s.providerForProfile(active.ID)
+			if !available || prov == nil {
+				return fmt.Errorf("active llm profile %d provider is unavailable", active.ID)
+			}
+		} else {
+			return fmt.Errorf("active llm profile %d configuration is unavailable", active.ID)
 		}
 	}
 	if prov == nil {
