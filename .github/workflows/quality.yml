@@ -231,6 +231,8 @@ jobs:
         run: |
           npm ci --ignore-scripts --prefix skills/api-recon/scripts
           npm audit --audit-level=high --prefix skills/api-recon/scripts
+      - name: Runtime harvest transport regression tests
+        run: npm test --prefix skills/api-recon/scripts
       - name: Check installer and release helpers
         run: |
           python3 scripts/install_test.py

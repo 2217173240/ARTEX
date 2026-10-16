@@ -295,8 +295,11 @@ coverage 每轮导出：`__API_RECON_LOG__`、`__API_RECON_DETAIL__`、`__API_RE
 
 验证：`window.__API_RECON_PRELOAD__` 存在；业务 path 不回 `/login`。
 
+复制 depth 模板到 `recon/` 时，同时保留相邻的 `runtime_transport.js`、`package.json` 和
+`package-lock.json`；按目标调整 `runtime_harvest.js` 后，用锁文件安装其运行依赖。
+
 ```bash
-cd recon && npm install
+cd recon && npm ci
 node runtime_harvest.js config.json
 ```
 

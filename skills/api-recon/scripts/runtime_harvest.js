@@ -11,7 +11,7 @@
  *   2. interceptor gate-> rewrite the "unauthorized" code field to success
  *   3. content gate   -> stub the menu/permission endpoint with a full-feature payload
  *
- * Requires Node.js >=22.12.0, puppeteer-core, and a system Chromium.
+ * Requires Node.js >=22.12.0, puppeteer-core, undici, and a system Chromium.
  * Install dependencies with: ( cd scripts && npm ci )
  *
  * config.json schema (all fields optional except baseUrl):
@@ -36,6 +36,7 @@
  */
 const fs = require('fs');
 const path = require('path');
+const { browserProxyArgs, createForwarder } = require('./runtime_transport');
 
 let puppeteer;
 try { puppeteer = require('puppeteer-core'); }
@@ -92,18 +93,12 @@ function neutralize(txt, n) {
   const ws = [];            // {url,dir,data}  WebSocket frames
   const sse = new Set();    // SSE (text/event-stream) endpoints
 
-  if (cfg.proxy) {
-    process.env.HTTP_PROXY = cfg.proxy;
-    process.env.HTTPS_PROXY = cfg.proxy;
-  }
-  const launchArgs = ['--no-sandbox', '--disable-dev-shm-usage'];
-  if (cfg.insecureTLS) {
-    // Explicit opt-in applies to this dedicated harvester process, including forwarded fetch requests.
-    process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
-    launchArgs.push('--ignore-certificate-errors');
-  }
-  if (cfg.proxy) launchArgs.push(`--proxy-server=${cfg.proxy}`);
-  const browser = await puppeteer.launch({
+  const launchArgs = ['--no-sandbox', '--disable-dev-shm-usage', ...browserProxyArgs(cfg.proxy)];
+  if (cfg.insecureTLS) launchArgs.push('--ignore-certificate-errors');
+  const transport = createForwarder(cfg);
+  let browser;
+  try {
+  browser = await puppeteer.launch({
     executablePath: cfg.chromium, headless: cfg.headless,
     args: launchArgs
   });
@@ -176,11 +171,12 @@ function neutralize(txt, n) {
     try {
       const headers = Object.assign({}, req.headers());
       if (cfg.cookies) headers.cookie = cfg.cookies.map(c => `${c.name}=${cookieValue(c.value)}`).join('; ');
-      const r = await fetch(u, { method: m, headers, body: (m !== 'GET' && m !== 'HEAD') ? req.postData() : undefined });
+      const r = await transport.fetch(u, { method: m, headers, body: (m !== 'GET' && m !== 'HEAD') ? req.postData() : undefined });
       const t = await r.text();
       if (cfg.captureResponses) { entry.resp = t.slice(0, cfg.respMax); entry.ct = r.headers.get('content-type') || ''; }
       req.respond({ status: 200, contentType: 'application/json', body: neutralize(t, cfg.neutralize) });
     } catch (e) {
+      entry.error = 'forward_failed';
       req.respond({ status: 200, contentType: 'application/json', body: '{"response_code":0,"code":0,"data":{}}' });
     }
   });
@@ -231,5 +227,13 @@ function neutralize(txt, n) {
   if (cfg.captureResponses) console.log(`[+] response bodies captured for ${rec.filter(r => r.resp != null).length}/${rec.length} calls`);
   console.log(`[+] merged unique paths: ${merged.size}  -> api_merged.txt`);
   console.log(`[+] full detail -> runtime_api.json (per-route + bodies + ws frames + sse)`);
-  await browser.close();
-})();
+  } finally {
+    try { if (browser) await browser.close(); }
+    finally { await transport.close(); }
+  }
+})().catch(error => {
+  // Browser/dependency errors can echo launch arguments, including proxy URLs.
+  console.error('[!] ' + (error.code === 'HARVEST_PROXY_CONFIG' ? error.message :
+    'Harvester failed; check config, browser, proxy, and TLS settings.'));
+  process.exitCode = 1;
+});

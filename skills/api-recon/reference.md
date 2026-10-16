@@ -159,7 +159,11 @@ grep -rhoaE '([A-Z_][A-Z0-9_]*):\{name:"[^"]*",link:"/[^"]+"\}' js | head
 - `captureResponses` / `recordWs` 仅 depth 模式有效
 - `waitUntil`：大型 SPA 用 `domcontentloaded`，避免 `networkidle2` 挂起
 - `routeTimeout`：单路由 `page.goto` 超时（毫秒）
-- `proxy`：Puppeteer `--proxy-server`；也可设 `HTTP_PROXY` / `HTTPS_PROXY`
+- `proxy`：浏览器与 Node 转发请求共用 HTTP、HTTPS 或 SOCKS5 代理；也可设 `HTTP_PROXY` / `HTTPS_PROXY`（按此顺序回退）。包括 loopback 地址在内均走该代理，失败不会改为直连；转发失败记录 `error: "forward_failed"` 并沿用空 stub 响应。浏览器不支持安全的代理凭据传递，因此含用户名或密码的代理 URL 会在启动前被拒绝；可使用本地无鉴权代理。SOCKS5 使用 Undici 的实验性支持。
+- `insecureTLS`：默认 `false`，验证目标和 HTTPS 代理证书；仅明确设为 `true` 时，对此 harvester 的浏览器和转发连接放宽验证，不修改全局 TLS 环境变量。
+
+复制 `runtime_harvest.js` 时须一并复制同目录 `runtime_transport.js`、`package.json`、
+`package-lock.json`，在目标目录运行 `npm ci`；仅复制主脚本将缺失转发依赖。
 
 ### B1. 双 stub 模板（role_permissions + permissions/all）
 
