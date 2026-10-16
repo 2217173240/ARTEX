@@ -1,12 +1,29 @@
 # 同源功能集成
 
+2026-10-16 的后续完善以 `fe1a38c9a7abe14a3056867fdd86006e65bfa66d` 为基线，优先采用本地可复现的正确性与网络路由改进：
+
+| 来源与归属 | 本 fork 的适配 |
+| --- | --- |
+| [sehoon123/ARTEX · `bec89a8`](https://github.com/sehoon123/ARTEX/commit/bec89a8f04b9adf6200f99b4df497617e01e3aa2)、[`9ea3cf6`](https://github.com/sehoon123/ARTEX/commit/9ea3cf6c158d260b86721bf58ecc01d3c4b05e69)，作者 **SH Jung / sehoon123**，AGPL-3.0；审阅 source head `3ce884060268d5670e2d3a0429beb24b91380fd2` | 原转发代码仅设置环境变量，合成代理实测未收到请求而目标被直连。使用兼容 Node 22.12 的锁定 Undici 与独立 dispatcher，并要求 Chromium 对回环目标走显式代理；保留默认 TLS 验证和明确的 `insecureTLS` 开关，没有采用源实现的无条件证书跳过。 |
+| [RuoJi6/ARTEX PR #14](https://github.com/RuoJi6/ARTEX/pull/14)，head `6a3d39e969ee6f450194cb7408c4db8f191da3f8`，作者 **ji ruo / RuoJi6**，AGPL-3.0 | 只借鉴无效代理应报错的窄切片。非法代理 URL 在本地更新 fixture 中曾意外直连，现于建立客户端时校验并向两个更新入口传播脱敏错误；不增加独立更新代理设置。 |
+| [RC-CHN/ARTEX · `05a86185`](https://github.com/RC-CHN/ARTEX/commit/05a861856c69ddbbf4b904680ea984ca2757519f)，AGPL-3.0，作者 **RuochenPan / RC-CHN**，补丁范围见 [Norma 补丁记录](../third_party/norma/PATCHES.md) | 合成工具证实流中断后未闭合参数会被修复成 `{}` 并真正执行。丢弃未提交输入，保留已提交调用的结果与对话配对，中断后不继续启动排队工作，不自动重放工具；按当前执行器生命周期适配。实际成功、实际错误、结果未知及未执行使用不同回执，审批与工具钩子共享该轮取消范围。 |
+| [mhtsec/ARTEX #9](https://github.com/mhtsec/ARTEX/issues/9)、[#10](https://github.com/mhtsec/ARTEX/issues/10)、[#11](https://github.com/mhtsec/ARTEX/issues/11)、[#12](https://github.com/mhtsec/ARTEX/issues/12) 的公开问题线索（报告者 **rahul05ranjan**） | 在当前代码逐项复现后独立修复目标 IPv4/端口边界、未知等级排序、UTF-8 文件名截断和证据围栏。问题中旧 server 文件名帮助函数在当前基线不存在，因此只修复仍存在的报告及目标提取路径；未复制未核实的历史实现。 |
+
+上述代码来源的共同初始祖先和 exact-head AGPL 许可证据保留在任务本地监测记录；这些是有界提交与问题审阅，不代表全部 fork 的完整代码审计。代理传输遵循 [Undici ProxyAgent](https://github.com/nodejs/undici/blob/v7.30.1/docs/docs/api/ProxyAgent.md) 与 [Go Transport](https://pkg.go.dev/net/http#Transport) 的契约；证据围栏依据 [CommonMark fenced code blocks](https://spec.commonmark.org/0.31.2/#fenced-code-blocks)。
+
+采集模板需将 `runtime_harvest.js`、`runtime_transport.js`、`package.json` 与锁文件一起复制并执行 `npm ci`。浏览器仅支持无需认证的 HTTP/HTTPS/SOCKS5 代理；携带 userinfo 的代理在启动前明确拒绝，避免把代理凭据发送给目标站点认证挑战。全局环境配置仍按脚本既有优先级选择单个代理，不增加按主机例外或代理失败直连策略。合成 HTTP、HTTPS/CONNECT 和现有 Chromium 回环测试验证本次路由；不代表真实目标授权或生产网络验收。
+
+流中断修复针对明确流错误或取消；没有重新定义正常 EOF 或输出长度截断语义。忽略 context 的工具仍可能继续外部操作，终止回执不能证明副作用撤回。目标提取遇到第一个无效数字地址时拒绝，避免从该地址的端口后缀重新提取另一个域名。
+
+审批模型全错误重试、自主排队取消、独立更新代理设置、额外语言和远程 Runner 继续保留为独立候选，未因出现新提交而自动扩大产品范围。
+
 2026-10-16 适配 [RuoJi6/ARTEX PR #13](https://github.com/RuoJi6/ARTEX/pull/13) 的 HTTP 尝试限流（固定提交 [`bfc5e623`](https://github.com/RuoJi6/ARTEX/commit/bfc5e6236e7197868f2ed8d0598101eb3de7dc0b)，作者 **ji ruo / RuoJi6**，AGPL-3.0）。共同初始祖先为 `0ef8561411dd1757e41ba3c45d1436e1fd3774f1`；围绕当前架构改写，不整包合入源提交。原有 SDK 在逻辑调用前计数，连接和空响应重试不占新额度，分钟令牌桶还会在同一滚动窗口补充额度。现在每次 HTTP 传输准入都检查两个窗口，缓存重建保留同配置的历史；保留现有调用超时、会话头、捕获、额度识别、故障转移与缓存版本保护，不增加 Norma 依赖补丁。
 
 模型页的每秒与每分钟限速同时生效，`0` 关闭对应窗口。例如 `10/s`、`45/min` 表示任意滚动一秒最多 10 次、滚动一分钟最多 45 次 HTTP 尝试，失败尝试和 SDK 重试也计数；不会把未使用额度累积到下一窗口。大于等于 1 的小数向下取整，小于 1 的正数表示延长单次间隔，例如 `0.5/min` 为两分钟一次。配置变更保留已经准入的历史并唤醒等待者；取消等待不预占未来额度，等待时间包含在已有整次调用超时内。无效、非有限或超出可表示范围的值在保存前拒绝。
 
 范围是**同一进程内的同一持久模型配置**，全局环境配置使用独立历史；多个配置即使共用一个上游账号也各自计数，多实例和重启不共享历史。持久配置快照过期、读取或构建失败时，热更新返回错误并保留已有运行状态，不将其重新解释为独立环境配置；没有可用持久配置时保留环境变量启动路径。这不构成所有配置写入和全局安装的完整事务。它限制 HTTP 传输准入，不保证远端到达时间、请求完成并发数或 FIFO 顺序，调整限速不撤回已经准入的请求。为限制高流量下的内存，按小于 10ms 的区间保守合并记录，最多额外等待不足 10ms，每配置约保留 6,002 个时间桶；单进程遇到的配置历史保留到退出。传输遵循 [Go RoundTripper 的并发与请求体关闭约定](https://pkg.go.dev/net/http#RoundTripper)，等待遵循 [context 取消语义](https://pkg.go.dev/context)。本地合成 HTTP 和虚拟时间回归覆盖 45/min、10/s、双窗口、三种协议的流式/非流式及重试、配置重建、取消和过期缓存构建；不以此声称真实上游账号的额度验收。
 
-本轮还核对了 RuoJi6 PR #12 的模型审批重试：已有 SDK 覆盖建连及部分空响应恢复，审批流中断仍有独立恢复空间，但源实现重试全部错误和无效裁决，增加预算、配置和审计成本。缺少实际收益证据时暂缓，不引入新的审批策略。RC-CHN 的排队意图取消属于新增自主规划能力；现有人工任务控制已可移除排队工作，因此暂缓。sehoon123 的 api-recon 代理转发需本地 HTTP/HTTPS 代理复现后再采用；独立更新代理、额外语言及离线工具包也分别保留证据与范围，不将部分提交取样称为全部代码审计。
+本轮还核对了 RuoJi6 PR #12 的模型审批重试：已有 SDK 覆盖建连及部分空响应恢复，审批流中断仍有独立恢复空间，但源实现重试全部错误和无效裁决，增加预算、配置和审计成本。缺少实际收益证据时暂缓，不引入新的审批策略。RC-CHN 的排队意图取消属于新增自主规划能力；现有人工任务控制已可移除排队工作，因此暂缓。sehoon123 的 api-recon 代理转发在该轮暂缓，现已按上面的后续复现与适配处理；独立更新代理、额外语言及离线工具包也分别保留证据与范围，不将部分提交取样称为全部代码审计。
 
 2026-10-15 借鉴 [RuoJi6/ARTEX PR #11](https://github.com/RuoJi6/ARTEX/pull/11) 的五类设置删除确认（固定 head `c6ea8ee6a4d8e430aeb540c0c99c43d98c9fa7dc`，实际作者 **adeljck**，AGPL-3.0），按当前组件和中英文独立改写。对应源提交为 MCP [`e336dba`](https://github.com/adeljck/ARTEX/commit/e336dbaeda505e0a11d1dc4384e400dff18c4ce5)、自定义工具 [`34e1083`](https://github.com/adeljck/ARTEX/commit/34e1083158f0001e59f11d3f1e7086827b836d66)、通知 [`aec6e7b`](https://github.com/adeljck/ARTEX/commit/aec6e7bb0d93c36d59980a1f4fb36a860a1b6ca4)、拦截 [`9d8f49a`](https://github.com/adeljck/ARTEX/commit/9d8f49a120a210b6c822e9c3fed55c9ef874691b)、模型 [`5d954f8`](https://github.com/adeljck/ARTEX/commit/5d954f88fc297c2aa9b28a241fd00d92d9b144a1)。PR base 到 head 的祖先关系已核对；未证明候选与当前 main 的共同祖先，因此不宣称直接 cherry-pick。
 
