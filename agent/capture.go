@@ -111,7 +111,7 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 			}
 			flush()
 			out := blocksText(ev.ToolResult.Content)
-			lastTool.done(ev.ToolResult.ToolUseID)
+			lastTool.done(ev.ToolResult.ToolUseID, ev.ToolResultDisposition, ev.ToolResult.IsError)
 			auditTrace.Complete(ev.ToolResult.ToolUseID, out, ev.ToolResult.IsError)
 			rec(db.Activity{Kind: "tool_result", Tool: toolNames[ev.ToolResult.ToolUseID], ToolUseID: ev.ToolResult.ToolUseID,
 				IsError: ev.ToolResult.IsError, Summary: firstLine(out, 200), Detail: out})

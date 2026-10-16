@@ -4,9 +4,13 @@
   "private": true,
   "description": "Headless runtime API harvester for the api-recon skill",
   "dependencies": {
-    "puppeteer-core": "^25.13.0"
+    "puppeteer-core": "^25.13.0",
+    "undici": "7.30.1"
   },
   "engines": {
     "node": ">=22.12.0"
+  },
+  "scripts": {
+    "test": "node --test test_runtime_transport.cjs"
   }
 }

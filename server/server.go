@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
@@ -1735,8 +1736,8 @@ func (s *Server) updateTaskLLMProfiles(w http.ResponseWriter, r *http.Request) {
 
 var (
 	reURL    = regexp.MustCompile(`https?://[^\s'"]+`)
-	reIPPort = regexp.MustCompile(`\b((?:\d{1,3}\.){3}\d{1,3})(?::(\d{1,5}))?`)
-	reDomain = regexp.MustCompile(`\b((?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,})(?::(\d{1,5}))?`)
+	reIPPort = regexp.MustCompile(`\b((?:\d+\.){3}\d+(?:\.\d+)*)(?::(\d+))?`)
+	reDomain = regexp.MustCompile(`\b((?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,})(?::(\d+))?`)
 )
 
 // parseTarget extracts a target (scheme, host, port) from free text, supporting
@@ -1744,34 +1745,84 @@ var (
 func parseTarget(text string) (scheme, host string, port int, ok bool) {
 	text = strings.TrimSpace(text)
 	if m := reURL.FindString(text); m != "" {
-		if u, err := url.Parse(m); err == nil && u.Hostname() != "" {
-			scheme = strings.ToLower(u.Scheme)
-			host = strings.ToLower(u.Hostname())
-			port = portOr(u.Port(), defaultPort(scheme))
-			return scheme, host, port, true
+		u, err := url.Parse(m)
+		// A free-text URL may end in prose punctuation after an explicit port.
+		// Retry only a failed parse, preserving punctuation in valid URL paths.
+		for err != nil {
+			r, size := utf8.DecodeLastRuneInString(m)
+			if !strings.ContainsRune(".,;!?)]}，。；！？）】》", r) {
+				break
+			}
+			m = m[:len(m)-size]
+			u, err = url.Parse(m)
 		}
+		if err != nil || u.Hostname() == "" || strings.HasSuffix(u.Host, ":") {
+			return "", "", 0, false
+		}
+		scheme = strings.ToLower(u.Scheme)
+		host = strings.ToLower(u.Hostname())
+		// net/url accepts malformed numeric hosts; do not seed them as domains.
+		if strings.Trim(host, "0123456789.") == "" && net.ParseIP(host) == nil {
+			return "", "", 0, false
+		}
+		port = portOr(u.Port(), defaultPort(scheme))
+		if port == 0 {
+			return "", "", 0, false
+		}
+		return scheme, host, port, true
 	}
-	if m := reIPPort.FindStringSubmatch(text); m != nil {
+	if m, complete := completeTargetMatch(reIPPort, text); m != nil {
+		if !complete || net.ParseIP(m[1]) == nil {
+			return "", "", 0, false
+		}
 		host = m[1]
 		port = portOr(m[2], 80)
+		if port == 0 {
+			return "", "", 0, false
+		}
 		return schemeForPort(port), host, port, true
 	}
-	if m := reDomain.FindStringSubmatch(text); m != nil {
+	if m, complete := completeTargetMatch(reDomain, text); m != nil && complete {
 		host = strings.ToLower(m[1])
 		if m[2] == "" {
 			return "https", host, 443, true
 		}
 		port = portOr(m[2], 443)
+		if port == 0 {
+			return "", "", 0, false
+		}
 		return schemeForPort(port), host, port, true
 	}
 	return "", "", 0, false
 }
 
+// completeTargetMatch prevents a host or port prefix from becoming a target.
+// A final period followed by whitespace/end remains ordinary prose punctuation.
+func completeTargetMatch(re *regexp.Regexp, text string) ([]string, bool) {
+	m := re.FindStringSubmatchIndex(text)
+	if m == nil {
+		return nil, false
+	}
+	match := re.FindStringSubmatch(text)
+	if end := m[1]; end < len(text) {
+		c := text[end]
+		if c == ':' || c == '-' || c == '_' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' ||
+			c == '.' && end+1 < len(text) && !strings.ContainsRune(" \t\r\n", rune(text[end+1])) {
+			return match, false
+		}
+	}
+	return match, true
+}
+
+// portOr uses the default only for an omitted port; zero marks an invalid port.
 func portOr(s string, d int) int {
-	if n, err := strconv.Atoi(s); err == nil && n > 0 {
+	if s == "" {
+		return d
+	}
+	if n, err := strconv.Atoi(s); err == nil && n > 0 && n <= 65535 {
 		return n
 	}
-	return d
+	return 0
 }
 func defaultPort(scheme string) int {
 	if scheme == "http" {

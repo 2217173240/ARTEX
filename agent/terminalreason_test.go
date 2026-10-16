@@ -116,7 +116,7 @@ func TestTerminalTextCompletedToolNotBlamed(t *testing.T) {
 	cancel(AbortShutdown)
 	trace := &runTrace{startedAt: time.Now()}
 	trace.start("tu_1", "Read", `{"path":"/etc/hosts"}`)
-	trace.done("tu_1")
+	trace.done("tu_1", harness.ToolResultActual, false)
 	_, detail := terminalText(ctx, &harness.Terminal{Reason: harness.ReasonAbortedStreaming}, trace)
 	if strings.Contains(detail, "未返回结果") || !strings.Contains(detail, "已正常返回") {
 		t.Fatalf("completed tool was blamed:\n%s", detail)
@@ -165,5 +165,32 @@ func TestFirstLineCapsByRuneNotByte(t *testing.T) {
 	}
 	if got := firstLine("头\n尾", 100); got != "头" {
 		t.Fatalf("firstLine did not stop at newline: %q", got)
+	}
+}
+
+func TestTerminalTextDistinguishesToolReceipts(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		disposition harness.ToolResultDisposition
+		isError     bool
+		want        string
+	}{
+		{"success", harness.ToolResultActual, false, "已正常返回"},
+		{"error", harness.ToolResultActual, true, "已返回错误"},
+		{"interrupted", harness.ToolResultInterrupted, true, "执行结果未知"},
+		{"queued", harness.ToolResultNotInvoked, true, "在队列中被中断，未执行"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			trace := &runTrace{}
+			trace.start("call", "probe", `{}`)
+			trace.done("call", tc.disposition, tc.isError)
+			_, detail := terminalText(t.Context(), &harness.Terminal{Reason: harness.ReasonModelError}, trace)
+			if !strings.Contains(detail, tc.want) {
+				t.Fatalf("receipt misrepresented: %s", detail)
+			}
+			if tc.name != "success" && strings.Contains(detail, "已正常返回") {
+				t.Fatal("non-success described as normal return")
+			}
+		})
 	}
 }

@@ -32,8 +32,8 @@ ARTEX fork are covered by the source fork's AGPL-3.0 license, reproduced in
 Local extensions: the send guard preserves its input; tests verify source
 immutability, real localhost Stream/Complete encoding, restore and model-ref
 alignment. `continuity_helpers_test.go` extracts only required upstream test
-helpers; `continuity_wire_test.go` is a local regression. No reasoning/signature,
-provider selection, usage, token sizing or other runtime behavior was upgraded.
+helpers; `continuity_wire_test.go` is a local regression. No reasoning/signature, provider selection or token sizing behavior was upgraded.
+The subsequent bounded interruption repair is documented below.
 
 Additional local safety repair: `llm/openai.go` and `llm/anthropic.go` use
 a single existing slice length for initial capacity instead of adding lengths.
@@ -69,8 +69,53 @@ Root `go test ./...` does not enter nested modules. CI must explicitly run:
 (cd third_party/norma && go test -race -count=1 ./...)
 ```
 
-Maintenance boundary: review only these four production files against the
+Maintenance boundary: review only these eight production files against the
 original hashes. Upgrade by restoring exact official source, reconsidering each
 patch against the new version, and rerunning retained tests and ARTEX tests.
 Remove the replacement once an official release carries equivalent fixes.
 Do not treat this directory as a general independent Norma fork.
+
+
+## Interrupted streaming tool input (round 21)
+
+Adapted from RuochenPan (RC-CHN), commit
+[`05a861856c69ddbbf4b904680ea984ca2757519f`](https://github.com/RC-CHN/ARTEX/commit/05a861856c69ddbbf4b904680ea984ca2757519f),
+2026-10-16, under the same AGPL-3.0 `PATCH-LICENSE` boundary. The original
+v0.4.3 baseline and all original-file hashes above remain unchanged. No newer
+Norma module, application lifecycle or UI patch was imported.
+
+- `harness/query.go` / `event.go`: an error or cancellation does not complete
+  the tool input currently being generated, even when its JSON is valid.
+  Raw input is available only as terminal diagnostics and is absent from
+  executable/replayable history. Previously dispatched calls and receipts are
+  recorded together; reactive overflow recovery is disabled after dispatch
+  to avoid automatically repeating possible effects. Usage and error reasons
+  are retained. Legitimate successful empty arguments still become `{}`.
+- Local adaptations in `harness/streaming.go` / `tools.go`: each executor owns
+  a child tool context, canceled on stream failure or consumer exit; queued
+  tools do not start after cancellation. Actual completed results are retained.
+  Active calls without an observed result receive an explicit **outcome unknown**
+  interruption receipt, while queued calls receive a **not invoked** receipt.
+  `Event.ToolResultDisposition` distinguishes actual, interrupted and not-invoked
+  receipts without parsing their text; ARTEX capture uses it to avoid describing
+  a synthetic receipt or actual error as a successful tool return. Permissions
+  and tool hooks also receive that child context. Late returns cannot overwrite
+  terminal receipts. This does not prove that an external side effect stopped;
+  a tool or callback that ignores context may continue.
+- Additional local adaptations: preserve tool-injected `Extra` guidance, and
+  remove only the last unfinished tool block by position, so an empty/repeated
+  provider call ID cannot erase an earlier dispatched block.
+- `harness/stream_interruption_test.go` uses only synthetic providers/tools.
+  It covers empty/partial/valid-but-unclosed input, provider errors, cancellation,
+  silent cancellation, late events, actual successful results, running/queued/
+  unfinished calls in one turn, late-write protection, recorder and usage,
+  waiting-approval cancellation, no post-dispatch retry or settlement,
+  safe pre-dispatch compaction recovery,
+  successful empty arguments, normal token budget completion, duplicate IDs,
+  and the existing API projection's tool-pair continuity.
+
+The v0.4.3 normalized stream API has no explicit per-tool block-end event.
+This repair retains its existing successful boundary convention (the next
+non-input event or clean iterator end). It does not add provider protocol
+validation for a silent non-canceled EOF or change completed `max_tokens`
+handling. The retained nested-module suite and ARTEX regressions must both run.

@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"context"
 	"sync"
 
 	"github.com/Autumn-27/norma/llm"
@@ -14,6 +15,8 @@ import (
 // blocks every tool queued behind it until it finishes. Results are yielded in
 // arrival order; progress is yielded as soon as it arrives.
 type streamExec struct {
+	ctx    context.Context
+	cancel context.CancelFunc
 	l      *loop
 	mu     sync.Mutex
 	tools  []*tracked
@@ -30,16 +33,18 @@ const (
 )
 
 type tracked struct {
-	block  llm.ContentBlock
-	safe   bool
-	status toolStatus
-	result llm.ContentBlock
-	extra  []llm.Message // messages the tool injects after its result (Result.Extra)
-	prog   []string
+	block       llm.ContentBlock
+	safe        bool
+	status      toolStatus
+	result      llm.ContentBlock
+	disposition ToolResultDisposition
+	extra       []llm.Message // messages the tool injects after its result (Result.Extra)
+	prog        []string
 }
 
 func newStreamExec(l *loop) *streamExec {
-	return &streamExec{l: l, notify: make(chan struct{}, 1)}
+	ctx, cancel := context.WithCancel(l.toolCtx)
+	return &streamExec{l: l, ctx: ctx, cancel: cancel, notify: make(chan struct{}, 1)}
 }
 
 func (e *streamExec) ping() {
@@ -76,6 +81,10 @@ func (e *streamExec) canStartLocked(safe bool) bool {
 func (e *streamExec) processQueue() {
 	e.mu.Lock()
 	var start []*tracked
+	if e.ctx.Err() != nil {
+		e.mu.Unlock()
+		return
+	}
 	for _, t := range e.tools {
 		if t.status != stQueued {
 			continue
@@ -94,18 +103,28 @@ func (e *streamExec) processQueue() {
 }
 
 func (e *streamExec) run(t *tracked) {
-	e.l.sem <- struct{}{} // bound concurrent tool execution
+	select {
+	case e.l.sem <- struct{}{}: // bound concurrent tool execution
+	case <-e.ctx.Done():
+		return
+	}
 	defer func() { <-e.l.sem }()
-	res, extra := e.l.execOne(t.block, func(p tool.ProgressInfo) {
+	res, extra := e.l.execOne(e.ctx, t.block, func(p tool.ProgressInfo) {
 		e.mu.Lock()
-		t.prog = append(t.prog, p.Message)
+		if t.status != stYielded {
+			t.prog = append(t.prog, p.Message)
+		}
 		e.mu.Unlock()
 		e.ping()
 	})
 	e.mu.Lock()
-	t.result = res
-	t.extra = extra
-	t.status = stCompleted
+	// An interrupted receipt is terminal. A late tool result cannot replace
+	// it or restart queued work after the stream has failed.
+	if t.status != stYielded {
+		t.result = res
+		t.extra = extra
+		t.status = stCompleted
+	}
 	e.mu.Unlock()
 	e.ping()
 	e.processQueue() // a slot freed
@@ -127,7 +146,7 @@ func (e *streamExec) drain() bool {
 		if t.status == stCompleted {
 			t.status = stYielded
 			r := t.result
-			evs = append(evs, Event{Kind: KindToolResult, ToolResult: &r})
+			evs = append(evs, Event{Kind: KindToolResult, ToolResult: &r, ToolResultDisposition: t.disposition})
 			continue
 		}
 		// status is queued/executing: a non-safe one preserves FIFO ordering.
@@ -168,7 +187,7 @@ func (e *streamExec) finish() (consumerStopped, aborted bool) {
 		// synthesize interrupted results and report aborted; the turn loop then decides
 		// (parent-cancel → abort, budget-only → wrap-up) via ctx vs toolCtx.
 		if e.l.toolCtx.Err() != nil {
-			return !e.drainSynthetic("tool execution interrupted"), true
+			return !e.drainSynthetic("tool execution interrupted; outcome unknown; do not automatically replay"), true
 		}
 		if !e.pending() {
 			if !e.drain() {
@@ -195,13 +214,19 @@ func (e *streamExec) drainSynthetic(msg string) bool {
 		if t.status == stCompleted {
 			t.status = stYielded
 			r := t.result
-			evs = append(evs, Event{Kind: KindToolResult, ToolResult: &r})
+			evs = append(evs, Event{Kind: KindToolResult, ToolResult: &r, ToolResultDisposition: t.disposition})
 			continue
 		}
+		receipt := msg
+		t.disposition = ToolResultInterrupted
+		if t.status == stQueued {
+			receipt = "tool was not invoked: execution interrupted while queued"
+			t.disposition = ToolResultNotInvoked
+		}
 		t.status = stYielded
-		t.result = llm.ToolResultText(t.block.ID, msg, true)
+		t.result = llm.ToolResultText(t.block.ID, receipt, true)
 		r := t.result
-		evs = append(evs, Event{Kind: KindToolResult, ToolResult: &r})
+		evs = append(evs, Event{Kind: KindToolResult, ToolResult: &r, ToolResultDisposition: t.disposition})
 	}
 	e.mu.Unlock()
 	for _, ev := range evs {

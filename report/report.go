@@ -45,6 +45,14 @@ func parseFinding(n *db.Node) findingView {
 
 var sevRank = map[string]int{"critical": 0, "high": 1, "medium": 2, "low": 3, "": 4}
 
+// Unrecognized severities have the same lowest priority as an empty severity.
+func severityRank(severity string) int {
+	if rank, ok := sevRank[severity]; ok {
+		return rank
+	}
+	return 4
+}
+
 // Markdown renders the report.
 func Markdown(in Input) string {
 	var b strings.Builder
@@ -78,17 +86,36 @@ func Markdown(in Input) string {
 		for _, n := range in.Findings {
 			fs = append(fs, parseFinding(n))
 		}
-		sort.SliceStable(fs, func(i, j int) bool { return sevRank[fs[i].Severity] < sevRank[fs[j].Severity] })
+		sort.SliceStable(fs, func(i, j int) bool { return severityRank(fs[i].Severity) < severityRank(fs[j].Severity) })
 		for i, f := range fs {
 			fmt.Fprintf(&b, "### %d. [%s] %s\n\n", i+1, strings.ToUpper(nz(f.Severity, "info")), nz(f.Name, nz(f.VulnClass, "未分类")))
 			fmt.Fprintf(&b, "%s\n\n", nz(f.Summary, ""))
 			if f.PoC != "" {
-				fmt.Fprintf(&b, "**PoC / 证据：**\n\n```\n%s\n```\n\n", f.PoC)
+				b.WriteString("**PoC / 证据：**\n\n")
+				writeFencedEvidence(&b, f.PoC)
 			}
 		}
 	}
 
 	return b.String()
+}
+
+// Use a fence longer than every backtick run in the evidence, so captured text
+// cannot close the code block and become report structure.
+func writeFencedEvidence(b *strings.Builder, evidence string) {
+	longest, run := 2, 0
+	for i := 0; i < len(evidence); i++ {
+		if evidence[i] == '`' {
+			run++
+			if run > longest {
+				longest = run
+			}
+		} else {
+			run = 0
+		}
+	}
+	fence := strings.Repeat("`", longest+1)
+	fmt.Fprintf(b, "%s\n%s\n%s\n\n", fence, evidence, fence)
 }
 
 func nz(s, d string) string {
