@@ -38,8 +38,8 @@ type Config struct {
 	// optionally with user:pass@ credentials). Empty means direct — it does NOT
 	// fall back to the standard *_PROXY environment variables.
 	Proxy string
-	// RatePerSecond / RatePerMinute cap the shared request rate across ALL agents
-	// using the provider (0 = that window unlimited).
+	// RatePerSecond / RatePerMinute cap HTTP attempts, including retries, across
+	// ALL agents using the provider. See RequestLimiter for rolling semantics.
 	RatePerSecond float64
 	RatePerMinute float64
 	// ContextWindowK is the model's context window in K tokens (user-configured),
@@ -250,20 +250,37 @@ func (c Config) Provider() string {
 	return "anthropic"
 }
 
-// NewProvider builds an llm.Provider from the config. When a rate is set, the
-// limiter lives on the single provider instance — so planner + all workers +
-// main agent (which share this provider) are bounded by one shared rate limit.
+// NewProvider builds a provider with its own HTTP request quota history.
 func (c Config) NewProvider() (llm.Provider, error) {
+	return c.NewProviderWithRequestLimiter(nil)
+}
+
+// NewProviderWithRequestLimiter shares HTTP attempt history across rebuilds.
+// A server retains one limiter per profile. Construction configures that shared
+// limiter, so callers must serialize construction against configuration changes.
+// A nil limiter gives this provider an independent history.
+func (c Config) NewProviderWithRequestLimiter(limiter *RequestLimiter) (llm.Provider, error) {
 	client, err := quotaAwareHTTPClient(c.Proxy, c.SessionHeaderKey)
 	if err != nil {
 		return nil, err
 	}
+	return c.newProvider(client, limiter)
+}
+
+func (c Config) newProvider(client *http.Client, limiter *RequestLimiter) (llm.Provider, error) {
+	if limiter == nil {
+		limiter = &RequestLimiter{}
+	}
+	// The attempt limiter surrounds the existing session/capture/quota transport;
+	// every SDK retry passes through it, and cancelled waiters never reach it.
+	clientCopy := *client
+	clientCopy.Transport = rateLimitedTransport{base: client.Transport, limiter: limiter}
 	lc := llm.Config{
 		Format:     c.Format,
 		BaseURL:    c.BaseURL,
 		APIKey:     c.APIKey,
 		Model:      c.Model,
-		HTTPClient: client,
+		HTTPClient: &clientCopy,
 	}
 	// 思考开关与强度两个字段各自透传(空 = 该字段不发送)。二者解耦:
 	// 可只发 thinking.type、只发 effort、都发、或都不发。
@@ -277,11 +294,13 @@ func (c Config) NewProvider() (llm.Provider, error) {
 	lc.RetryInterval = c.Retry.ConnectInterval
 	lc.EmptyResponseRetries = c.Retry.EmptyAttempts
 	lc.EmptyResponseInterval = c.Retry.EmptyInterval
-	if c.RatePerSecond > 0 || c.RatePerMinute > 0 {
-		lc.RateLimit = &llm.RateLimit{PerSecond: c.RatePerSecond, PerMinute: c.RatePerMinute}
-	}
+	// Norma's logical-call token bucket excludes retries and permits replenished
+	// bursts. The HTTP transport enforces both windows; do not throttle twice.
 	prov, err := llm.NewProvider(lc)
 	if err != nil {
+		return nil, err
+	}
+	if err := limiter.configure(c.RatePerSecond, c.RatePerMinute); err != nil {
 		return nil, err
 	}
 	return wrapCallTimeout(prov, c), nil

@@ -656,7 +656,7 @@ function ProfileSheet({
           </div>
           <p className="-mt-2 text-muted-foreground text-xs">
             {uiText(
-              "限速 0 = 不限，全 Agent 共享。上下文窗口单位 K（千 token），0 = 默认 200K，上限 1000（即 1M）；设太高会导致压缩不触发。",
+              "限速按滚动窗口计算，包含重试；0 = 不限，同一配置的全 Agent 共享。上下文窗口单位 K（千 token），0 = 默认 200K，上限 1000（即 1M）；设太高会导致压缩不触发。",
             )}
           </p>
 
