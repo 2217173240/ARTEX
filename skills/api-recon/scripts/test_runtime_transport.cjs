@@ -64,12 +64,16 @@ async function proxy(t, allowedPorts, secure = false) {
     let url;
     try { url = new URL(req.url); } catch { res.writeHead(400).end(); return; }
     // Chromium background traffic can never escape this synthetic fixture.
-    if (!allowed(url)) { res.writeHead(403).end(); return; }
+    const port = allowedPorts.find(candidate => candidate === Number(url.port));
+    if (url.protocol !== 'http:' || !allowed(url) || port === undefined) { res.writeHead(403).end(); return; }
     requests.push(req.url);
     auth.push(req.headers['proxy-authorization']);
     const headers = { ...req.headers, 'x-fixture-proxy': 'yes' };
     delete headers['proxy-authorization'];
-    const upstream = http.request(url, { method: req.method, headers }, r => {
+    const upstream = http.request({
+      hostname: '127.0.0.1', port, path: url.pathname + url.search,
+      method: req.method, headers
+    }, r => {
       res.writeHead(r.statusCode, r.headers);
       r.pipe(res);
     });
@@ -112,6 +116,8 @@ test('HTTP proxy carries method, headers, body and response; proxy auth stays at
   assert.equal(response.headers.get('content-type'), 'application/json');
   const received = await response.json();
   assert.equal(received.method, 'POST');
+  assert.equal(received.url, '/api/fixture?x=1');
+  assert.equal(received.headers.host, new URL(upstream.url).host);
   assert.equal(received.body, '{"hello":"world"}');
   assert.equal(received.headers['x-fixture'], 'request');
   assert.equal(received.headers['x-fixture-proxy'], 'yes');
@@ -148,6 +154,9 @@ test('HTTPS proxy certificate validates by default and opt-in applies to the pro
 test('direct TLS is strict even with NODE_TLS_REJECT_UNAUTHORIZED=0; opt-in is local', async t => {
   const upstream = await target(t, true);
   const saved = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+  // Security regression only: simulate an inherited insecure setting against a
+  // disposable loopback TLS fixture. The forwarder must still reject it by
+  // default; t.after restores the original environment value for every outcome.
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
   t.after(() => {
     if (saved === undefined) delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
