@@ -1,5 +1,13 @@
 # 同源功能集成
 
+2026-10-16 适配 [RuoJi6/ARTEX PR #13](https://github.com/RuoJi6/ARTEX/pull/13) 的 HTTP 尝试限流（固定提交 [`bfc5e623`](https://github.com/RuoJi6/ARTEX/commit/bfc5e6236e7197868f2ed8d0598101eb3de7dc0b)，作者 **ji ruo / RuoJi6**，AGPL-3.0）。共同初始祖先为 `0ef8561411dd1757e41ba3c45d1436e1fd3774f1`；围绕当前架构改写，不整包合入源提交。原有 SDK 在逻辑调用前计数，连接和空响应重试不占新额度，分钟令牌桶还会在同一滚动窗口补充额度。现在每次 HTTP 传输准入都检查两个窗口，缓存重建保留同配置的历史；保留现有调用超时、会话头、捕获、额度识别、故障转移与缓存版本保护，不增加 Norma 依赖补丁。
+
+模型页的每秒与每分钟限速同时生效，`0` 关闭对应窗口。例如 `10/s`、`45/min` 表示任意滚动一秒最多 10 次、滚动一分钟最多 45 次 HTTP 尝试，失败尝试和 SDK 重试也计数；不会把未使用额度累积到下一窗口。大于等于 1 的小数向下取整，小于 1 的正数表示延长单次间隔，例如 `0.5/min` 为两分钟一次。配置变更保留已经准入的历史并唤醒等待者；取消等待不预占未来额度，等待时间包含在已有整次调用超时内。无效、非有限或超出可表示范围的值在保存前拒绝。
+
+范围是**同一进程内的同一持久模型配置**，全局环境配置使用独立历史；多个配置即使共用一个上游账号也各自计数，多实例和重启不共享历史。它限制 HTTP 传输准入，不保证远端到达时间、请求完成并发数或 FIFO 顺序，调整限速不撤回已经准入的请求。为限制高流量下的内存，按小于 10ms 的区间保守合并记录，最多额外等待不足 10ms，每配置约保留 6,002 个时间桶；单进程遇到的配置历史保留到退出。传输遵循 [Go RoundTripper 的并发与请求体关闭约定](https://pkg.go.dev/net/http#RoundTripper)，等待遵循 [context 取消语义](https://pkg.go.dev/context)。本地合成 HTTP 和虚拟时间回归覆盖 45/min、10/s、双窗口、三种协议的流式/非流式及重试、配置重建、取消和过期缓存构建；不以此声称真实上游账号的额度验收。
+
+本轮还核对了 RuoJi6 PR #12 的模型审批重试：已有 SDK 覆盖建连及部分空响应恢复，审批流中断仍有独立恢复空间，但源实现重试全部错误和无效裁决，增加预算、配置和审计成本。缺少实际收益证据时暂缓，不引入新的审批策略。RC-CHN 的排队意图取消属于新增自主规划能力；现有人工任务控制已可移除排队工作，因此暂缓。sehoon123 的 api-recon 代理转发需本地 HTTP/HTTPS 代理复现后再采用；独立更新代理、额外语言及离线工具包也分别保留证据与范围，不将部分提交取样称为全部代码审计。
+
 2026-10-15 借鉴 [RuoJi6/ARTEX PR #11](https://github.com/RuoJi6/ARTEX/pull/11) 的五类设置删除确认（固定 head `c6ea8ee6a4d8e430aeb540c0c99c43d98c9fa7dc`，实际作者 **adeljck**，AGPL-3.0），按当前组件和中英文独立改写。对应源提交为 MCP [`e336dba`](https://github.com/adeljck/ARTEX/commit/e336dbaeda505e0a11d1dc4384e400dff18c4ce5)、自定义工具 [`34e1083`](https://github.com/adeljck/ARTEX/commit/34e1083158f0001e59f11d3f1e7086827b836d66)、通知 [`aec6e7b`](https://github.com/adeljck/ARTEX/commit/aec6e7bb0d93c36d59980a1f4fb36a860a1b6ca4)、拦截 [`9d8f49a`](https://github.com/adeljck/ARTEX/commit/9d8f49a120a210b6c822e9c3fed55c9ef874691b)、模型 [`5d954f8`](https://github.com/adeljck/ARTEX/commit/5d954f88fc297c2aa9b28a241fd00d92d9b144a1)。PR base 到 head 的祖先关系已核对；未证明候选与当前 main 的共同祖先，因此不宣称直接 cherry-pick。
 
 删除前说明目标和影响：MCP 同时删除 Agent 可见性；通知同时删除投递记录；模型删除可能调整已有任务的配置链和回退；拦截删除影响后续规则匹配。工具配置删除不承诺立即停止已经运行的调用。只有确认才提交，取消与初始焦点采用安全选项，提交中防重入，失败保留可重试对话框；保留默认模型、内置工具及后端保护。复用 [Radix AlertDialog 的受控异步关闭](https://www.radix-ui.com/primitives/docs/components/alert-dialog#close-after-asynchronous-form-submission)和 [WAI-ARIA Alert Dialog 语义](https://www.w3.org/WAI/ARIA/apg/patterns/alertdialog/)，未为开关和保存增加确认，也未新增依赖。

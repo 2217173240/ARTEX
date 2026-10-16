@@ -3747,7 +3747,7 @@
   "限定任务 ID": "Restrict to task ID",
   "限定资产 ID": "Restrict to asset ID",
   "限流（条/分钟）": "Rate limit (records/minute)",
-  "限速 0 = 不限，全 Agent 共享。上下文窗口单位 K（千 token），0 = 默认 200K，上限 1000（即 1M）；设太高会导致压缩不触发。": "Rate limit: 0 = unlimited, shared by all Agents. Context window is in K (thousand tokens): 0 = default 200K, maximum 1000 (1M). Setting it too high prevents compaction from triggering.",
+  "限速按滚动窗口计算，包含重试；0 = 不限，同一配置的全 Agent 共享。上下文窗口单位 K（千 token），0 = 默认 200K，上限 1000（即 1M）；设太高会导致压缩不触发。": "Rate limits use rolling windows and include retries; 0 = unlimited, shared by all Agents using this profile. Context window is in K (thousand tokens): 0 = default 200K, maximum 1000 (1M). Setting it too high prevents compaction from triggering.",
   "需要 sqlmap、python3": "Requires sqlmap and python3",
   "页 · 共": "pages · Total",
   "高危 {v0}": "High {v0}",

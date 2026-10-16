@@ -104,6 +104,9 @@ type Server struct {
 	provCacheMu   sync.Mutex
 	provByProfile map[int64]*provEntry
 	provCacheGen  uint64
+	// Process-local quota history outlives provider/agent caches. Key 0 belongs
+	// to the nonpersisted global config; persisted profiles retain their DB ID.
+	requestLimiters map[int64]*agent.RequestLimiter // guarded by provCacheMu
 
 	// llmHealth is the process-wide circuit-breaker state for LLM failover (轮询).
 	// It deliberately lives OUTSIDE the provider caches: rebuilding the chain
@@ -443,6 +446,9 @@ func maxTokensResolver(cfg agent.Config) func() int {
 // applyLLM (re)builds the planner/worker/main-agent from cfg and installs them on
 // the running engine as the GLOBAL active pair. Safe to call at runtime (UI configures LLM).
 func (s *Server) applyLLM(cfg agent.Config) error {
+	s.provCacheMu.Lock()
+	generation := s.provCacheGen
+	s.provCacheMu.Unlock()
 	var prov llm.Provider
 	// A persisted active profile must use the same cached provider as task chains
 	// and Agent bindings, otherwise each path owns a separate rate limiter.
@@ -453,7 +459,15 @@ func (s *Server) applyLLM(cfg agent.Config) error {
 	}
 	if prov == nil {
 		var err error
-		prov, err = cfg.NewProvider()
+		// Serialize configuration of key 0 against cache invalidation too. A
+		// stale global builder must not reconfigure the shared quota history.
+		s.provCacheMu.Lock()
+		if generation != s.provCacheGen {
+			s.provCacheMu.Unlock()
+			return errors.New("llm configuration changed while building provider")
+		}
+		prov, err = cfg.NewProviderWithRequestLimiter(s.requestLimiterForProfileLocked(0))
+		s.provCacheMu.Unlock()
 		if err != nil {
 			return err
 		}
@@ -588,29 +602,54 @@ func (s *Server) providerForProfile(id int64) (llm.Provider, agent.Config, bool)
 	if !ok {
 		return nil, agent.Config{}, false
 	}
-	prov, err := cfg.NewProvider()
+	profile, _ := s.m.pg.ProfileByID(id)
+	prov, cfg, current, err := s.installProfileProvider(id, generation, cfg, profile)
+	if !current {
+		return s.providerForProfile(id)
+	}
 	if err != nil {
 		log.Printf("[engine] build provider for LLM profile %d failed: %v", id, err)
 		return nil, agent.Config{}, false
 	}
-	// Wrap with recorder, tagged with this profile's name.
-	if p, _ := s.m.pg.ProfileByID(id); p != nil {
-		prov = llmrec.Wrap(prov, s.m.PG(), cfg.Model, p.Name, cfg.ThinkingType, cfg.ReasoningEffort, s.m.LLMRecordEnabled)
-		prov = bindSideProvider(prov, cfg, id, p.Name)
-	}
+	log.Printf("[engine] resolved provider for LLM profile %d (%s / %s)", id, cfg.Provider(), cfg.Model)
+	return prov, cfg, true
+}
+
+// installProfileProvider is the generation-checked construction/installation
+// boundary. Client construction and wrapper creation perform no I/O or callbacks.
+// Keep limiter configuration inside this lock so stale builders cannot change it.
+func (s *Server) installProfileProvider(id int64, generation uint64, cfg agent.Config, profile *db.LLMProfile) (llm.Provider, agent.Config, bool, error) {
 	s.provCacheMu.Lock()
+	defer s.provCacheMu.Unlock()
 	if generation != s.provCacheGen {
-		s.provCacheMu.Unlock()
-		return s.providerForProfile(id)
+		return nil, agent.Config{}, false, nil
 	}
 	if e := s.provByProfile[id]; e != nil { // lost the race → keep the winner
-		prov, cfg = e.prov, e.cfg
-	} else {
-		s.provByProfile[id] = &provEntry{prov: prov, cfg: cfg}
-		log.Printf("[engine] built provider for LLM profile %d (%s / %s)", id, cfg.Provider(), cfg.Model)
+		return e.prov, e.cfg, true, nil
 	}
-	s.provCacheMu.Unlock()
-	return prov, cfg, true
+	prov, err := cfg.NewProviderWithRequestLimiter(s.requestLimiterForProfileLocked(id))
+	if err != nil {
+		return nil, agent.Config{}, true, err
+	}
+	if profile != nil {
+		prov = llmrec.Wrap(prov, s.m.PG(), cfg.Model, profile.Name, cfg.ThinkingType, cfg.ReasoningEffort, s.m.LLMRecordEnabled)
+		prov = bindSideProvider(prov, cfg, id, profile.Name)
+	}
+	if s.provByProfile == nil {
+		s.provByProfile = make(map[int64]*provEntry)
+	}
+	s.provByProfile[id] = &provEntry{prov: prov, cfg: cfg}
+	return prov, cfg, true, nil
+}
+
+func (s *Server) requestLimiterForProfileLocked(id int64) *agent.RequestLimiter {
+	if s.requestLimiters == nil {
+		s.requestLimiters = make(map[int64]*agent.RequestLimiter)
+	}
+	if s.requestLimiters[id] == nil {
+		s.requestLimiters[id] = &agent.RequestLimiter{}
+	}
+	return s.requestLimiters[id]
 }
 
 // chatAgentForProfile returns a ChatAgent built from a specific LLM profile, cached
@@ -1425,10 +1464,15 @@ func (s *Server) setLLM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.invalidateProfileAgents()
-	if _, ok := s.loadLLMConfig(); !ok {
+	loadedCfg, ok := s.loadLLMConfig()
+	if !ok {
 		writeErr(w, 500, "saved provider is unavailable")
 		return
 	}
+	// The legacy request omits fields saveLLMConfig preserves from the profile.
+	// Apply the authoritative reload so global and pinned paths resolve the same
+	// persisted profile and quota history even with nondefault preserved fields.
+	cfg = loadedCfg
 	if err := s.applyLLM(cfg); err != nil {
 		writeErr(w, 400, "provider init failed: "+err.Error())
 		return
