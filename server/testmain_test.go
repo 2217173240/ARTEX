@@ -3,6 +3,7 @@ package server
 import (
 	"database/sql"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/Autumn-27/artex/db"
@@ -13,6 +14,11 @@ import (
 // server test suite so cross-package DELETE cleanup races with db/agent
 // packages are avoided when running `go test ./...`.
 func TestMain(m *testing.M) {
+	// Only acquire the suite lock for an explicit isolated fixture; starting
+	// focused unit tests must not resolve or probe the application's config.
+	if strings.TrimSpace(os.Getenv("ARTEX_PG_DSN")) == "" {
+		os.Exit(m.Run())
+	}
 	dsn, _, err := db.DSN()
 	if err != nil {
 		os.Exit(m.Run())
