@@ -149,6 +149,7 @@ func (s *Server) requireBasicAuth(next http.Handler) http.Handler {
 		username, password, ok := r.BasicAuth()
 		if !ok || len(password) > maxPasswordBytes || username != cfg.Username ||
 			bcrypt.CompareHashAndPassword([]byte(cfg.PasswordHash), []byte(password)) != nil {
+			defer guardRejectedAuthBody(w, r)()
 			w.Header().Set("WWW-Authenticate", `Basic realm="ARTEX", charset="UTF-8"`)
 			writeErr(w, http.StatusUnauthorized, "请先完成 HTTP Basic Auth 验证")
 			return
@@ -156,6 +157,7 @@ func (s *Server) requireBasicAuth(next http.Handler) http.Handler {
 		// Browser API requests already use Authorization: Bearer. A separate
 		// HttpOnly cookie keeps the gate satisfied without replacing that header.
 		if err := s.setBasicAuthCookie(w, r, cfg); err != nil {
+			defer guardRejectedAuthBody(w, r)()
 			writeErr(w, 500, "认证会话生成失败")
 			return
 		}

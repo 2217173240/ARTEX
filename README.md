@@ -341,7 +341,7 @@ server {
 
 - 后端：`go run ./cmd/artex`（不带 `-tags embedui` 则不内嵌前端）
 - 前端：`cd web && npm run dev`（`/api` 反代到后端，带热更新）
-- 测试：`go test ./...`
+- 测试：数据库回归需先显式设置指向一次性隔离库的 `ARTEX_PG_DSN`，再运行 `go test ./...`；完整检查参考 [quality 工作流](.github/workflows/quality.yml) 的逐包新建库验证。纯凭据正文回归可运行 `ARTEX_CONFIG=/dev/null ARTEX_PG_DSN=invalid go test ./server -run '^TestAuthBody'`。
 - Mock 预览（无后端）：`cd web && NEXT_PUBLIC_MOCK=1 npm run dev`
 
 ---

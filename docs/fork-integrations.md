@@ -1,5 +1,11 @@
 # 同源功能集成
 
+2026-10-17 适配 mhtsec/ARTEX 的凭据正文边界：固定提交 [`2d1e156`](https://github.com/mhtsec/ARTEX/commit/2d1e156da4d17e1c48dad457ae62697eb1aef285) 的读取时限与收尾，结合前序 [`2402535`](https://github.com/mhtsec/ARTEX/commit/2402535a9bcef55eb6d7f11fa74d182647ea751c) 的 4 KiB 上限和单 JSON 完整性思路，作者 **mhtsec**，AGPL-3.0。共同初始祖先为 `0ef8561411dd1757e41ba3c45d1436e1fd3774f1`，精确提交的许可证和来源证据保留在任务本地监测记录。
+
+本地合成请求复现了原入口接受超大正文和第二段 JSON、慢速正文持续占用读取的问题。按当前认证架构独立封装三个凭据接口的正文保护：入口立即建立大小与读取时限，完整解码和 EOF 后才恢复连接复用；限流、数据库、身份、跨源与 Basic Auth 的提前拒绝也处理未读正文。保留未知小字段兼容、初始化原子写入、密码 CAS、已有会话撤销和 cookie 契约。实现依据 [Go MaxBytesReader](https://pkg.go.dev/net/http#MaxBytesReader) 与 [ResponseController.SetReadDeadline](https://pkg.go.dev/net/http#ResponseController.SetReadDeadline) 的实际传输语义，验证区分内存 recorder 与真实 HTTP/1、HTTP/2 服务。测试入口只在显式设置隔离 `ARTEX_PG_DSN` 时探测数据库并获取套件锁，纯内存回归避免启动时无条件探测应用配置中的数据库；完整数据库套件仍需显式提供隔离 fixture。
+
+本轮只采用这项有当前代码重叠且可复现的改进；来源的数据库会话重构、远程 Runner/资源库、DrostBench 适配及无当前调度分支重叠的日历修复分别保留为候选。源码元数据枚举、提交抽样与具体差异审阅的范围在本地记录中分别说明。
+
 2026-10-16 的后续完善以 `fe1a38c9a7abe14a3056867fdd86006e65bfa66d` 为基线，优先采用本地可复现的正确性与网络路由改进：
 
 | 来源与归属 | 本 fork 的适配 |

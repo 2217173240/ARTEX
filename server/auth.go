@@ -145,6 +145,7 @@ func extractToken(r *http.Request) string {
 func (s *Server) requireAuth(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !allowBrowserMutation(r) {
+			defer guardRejectedAuthBody(w, r)()
 			writeErr(w, 403, "请求来源不允许")
 			return
 		}
@@ -184,6 +185,8 @@ func (s *Server) authStatus(w http.ResponseWriter, r *http.Request) {
 
 // POST /api/auth/init — sets the password for the first time; rejected if already set.
 func (s *Server) authInit(w http.ResponseWriter, r *http.Request) {
+	body := newAuthBody(w, r, authBodyReadTimeout)
+	defer body.finish()
 	if !s.allowAuthAttempt(w, r) {
 		return
 	}
@@ -204,8 +207,7 @@ func (s *Server) authInit(w http.ResponseWriter, r *http.Request) {
 		Password   string `json:"password"`
 		SetupToken string `json:"setup_token"`
 	}
-	if err := decode(r, &req); err != nil {
-		writeErr(w, 400, "请求格式错误")
+	if !body.decode(&req) {
 		return
 	}
 	if len(s.jwtKey) < 32 || s.setupToken == "" || subtle.ConstantTimeCompare([]byte(req.SetupToken), []byte(s.setupToken)) != 1 {
@@ -250,6 +252,8 @@ func (s *Server) authInit(w http.ResponseWriter, r *http.Request) {
 // token (this route is under /api/auth/* which requireAuth exempts, so the token
 // is validated here) AND the current password.
 func (s *Server) authChangePassword(w http.ResponseWriter, r *http.Request) {
+	body := newAuthBody(w, r, authBodyReadTimeout)
+	defer body.finish()
 	hash, authenticated := s.authenticatedAdminHash(w, r)
 	if !authenticated {
 		return
@@ -259,8 +263,7 @@ func (s *Server) authChangePassword(w http.ResponseWriter, r *http.Request) {
 		OldPassword string `json:"old_password"`
 		NewPassword string `json:"new_password"`
 	}
-	if err := decode(r, &req); err != nil {
-		writeErr(w, 400, "请求格式错误")
+	if !body.decode(&req) {
 		return
 	}
 	if req.NewPassword == "" {
@@ -300,6 +303,8 @@ func (s *Server) authChangePassword(w http.ResponseWriter, r *http.Request) {
 
 // POST /api/auth/login — validates username/password and returns a JWT.
 func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
+	body := newAuthBody(w, r, authBodyReadTimeout)
+	defer body.finish()
 	if !s.allowAuthAttempt(w, r) {
 		return
 	}
@@ -311,8 +316,7 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 		Username string `json:"username"`
 		Password string `json:"password"`
 	}
-	if err := decode(r, &req); err != nil {
-		writeErr(w, 400, "请求格式错误")
+	if !body.decode(&req) {
 		return
 	}
 	if req.Username != "ARTEX" {
