@@ -72,7 +72,7 @@ func (s *Server) addGoal(w http.ResponseWriter, r *http.Request) {
 	s.reviveTask(t)              // 把已完成/暂停的任务拉回运行态继续跑
 	node, _ := t.Store.GetNode(id)
 	if node == nil {
-		writeErr(w, 500, "目标写入后读取失败")
+		writePublicErr(w, 500, "目标写入后读取失败")
 		return
 	}
 	writeJSON(w, 200, goalDTO(node))
@@ -128,7 +128,7 @@ func (s *Server) editGoal(w http.ResponseWriter, r *http.Request) {
 	s.reviveTask(t)                   // 与新增一致:复活任务据新目标重判
 	updated, _ := t.Store.GetNode(gid)
 	if updated == nil {
-		writeErr(w, 500, "目标更新后读取失败")
+		writePublicErr(w, 500, "目标更新后读取失败")
 		return
 	}
 	writeJSON(w, 200, goalDTO(updated))

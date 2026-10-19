@@ -155,7 +155,7 @@ func (s *Server) authenticatedAdminHash(w http.ResponseWriter, r *http.Request) 
 	}
 	hash, _, err := pg.GetSetting(authPassKey)
 	if err != nil {
-		writeErr(w, http.StatusServiceUnavailable, errDataSourceUnavailable)
+		writePublicErr(w, http.StatusServiceUnavailable, errDataSourceUnavailable)
 		return "", false
 	}
 	if !s.verifyAdminJWT(extractToken(r), hash) {
@@ -167,7 +167,7 @@ func (s *Server) authenticatedAdminHash(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) authDatabase(w http.ResponseWriter) *db.DB {
 	if s.m == nil || s.m.pg == nil {
-		writeErr(w, http.StatusServiceUnavailable, errDataSourceUnavailable)
+		writePublicErr(w, http.StatusServiceUnavailable, errDataSourceUnavailable)
 		return nil
 	}
 	return s.m.pg

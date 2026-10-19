@@ -283,7 +283,7 @@ func (s *Server) syncSSRun(w http.ResponseWriter, r *http.Request) {
 	as := s.assetStore()
 	cs := s.companyStore()
 	if as == nil || cs == nil {
-		writeErr(w, 503, "database unavailable")
+		writePublicErr(w, 503, "database unavailable")
 		return
 	}
 	var req ssSyncReq

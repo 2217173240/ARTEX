@@ -109,11 +109,11 @@ func (s *Server) startFindingRetest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if s.resolveChatAgent(&db.Conversation{AgentKey: a.Key}) == nil {
-		writeErr(w, 503, s.chatUnavailableReason())
+		writePublicErr(w, 503, s.chatUnavailableReason())
 		return
 	}
 	if s.ctx.Err() != nil {
-		writeErr(w, 503, "服务正在停止")
+		writePublicErr(w, 503, "服务正在停止")
 		return
 	}
 	retest, conv, created, err := pg.CreateFindingRetest(r.Context(), id, req.Notes)

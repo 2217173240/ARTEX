@@ -210,7 +210,7 @@ func (s *Server) sideProvider(model sidequestion.Model) (llm.Provider, error) {
 func (s *Server) sideParent(w http.ResponseWriter, r *http.Request, kind string) (sidequestion.Parent, bool) {
 	p := sidequestion.Parent{}
 	if s.side == nil || s.m.pg == nil {
-		writeErr(w, 503, "旁路服务不可用")
+		writePublicErr(w, 503, "旁路服务不可用")
 		return p, false
 	}
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -528,7 +528,7 @@ func (s *Server) cancelSideRequest(w http.ResponseWriter, r *http.Request) {
 func (s *Server) sideEvents(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		writeErr(w, 500, "streaming unavailable")
+		writePublicErr(w, 500, "streaming unavailable")
 		return
 	}
 	id := r.PathValue("requestID")

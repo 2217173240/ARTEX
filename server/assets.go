@@ -77,7 +77,7 @@ func (s *Server) companyStore() *db.CompanyStore {
 func (s *Server) listCompanies(w http.ResponseWriter, r *http.Request) {
 	cs := s.companyStore()
 	if cs == nil {
-		writeErr(w, 503, "database unavailable")
+		writePublicErr(w, 503, "database unavailable")
 		return
 	}
 	companies, err := cs.ListCompanies()
@@ -95,7 +95,7 @@ func (s *Server) listCompanies(w http.ResponseWriter, r *http.Request) {
 func (s *Server) createCompany(w http.ResponseWriter, r *http.Request) {
 	cs := s.companyStore()
 	if cs == nil {
-		writeErr(w, 503, "database unavailable")
+		writePublicErr(w, 503, "database unavailable")
 		return
 	}
 	var req struct {
@@ -149,7 +149,7 @@ func (s *Server) createCompany(w http.ResponseWriter, r *http.Request) {
 func (s *Server) getCompany(w http.ResponseWriter, r *http.Request) {
 	cs := s.companyStore()
 	if cs == nil {
-		writeErr(w, 503, "database unavailable")
+		writePublicErr(w, 503, "database unavailable")
 		return
 	}
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -181,7 +181,7 @@ func (s *Server) getCompany(w http.ResponseWriter, r *http.Request) {
 func (s *Server) addCompanyScope(w http.ResponseWriter, r *http.Request) {
 	cs := s.companyStore()
 	if cs == nil {
-		writeErr(w, 503, "database unavailable")
+		writePublicErr(w, 503, "database unavailable")
 		return
 	}
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -247,7 +247,7 @@ func (s *Server) addCompanyScope(w http.ResponseWriter, r *http.Request) {
 func (s *Server) deleteCompany(w http.ResponseWriter, r *http.Request) {
 	cs := s.companyStore()
 	if cs == nil {
-		writeErr(w, 503, "database unavailable")
+		writePublicErr(w, 503, "database unavailable")
 		return
 	}
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -297,7 +297,7 @@ func (s *Server) deleteCompany(w http.ResponseWriter, r *http.Request) {
 func (s *Server) reattribute(w http.ResponseWriter, r *http.Request) {
 	cs := s.companyStore()
 	if cs == nil {
-		writeErr(w, 503, "database unavailable")
+		writePublicErr(w, 503, "database unavailable")
 		return
 	}
 	if err := cs.RecomputeAttribution(); err != nil {
@@ -319,7 +319,7 @@ const (
 func (s *Server) listAssets(w http.ResponseWriter, r *http.Request) {
 	as := s.assetStore()
 	if as == nil {
-		writeErr(w, 503, "database unavailable")
+		writePublicErr(w, 503, "database unavailable")
 		return
 	}
 	q := r.URL.Query()
@@ -396,7 +396,7 @@ func (s *Server) listAssets(w http.ResponseWriter, r *http.Request) {
 func (s *Server) assetCounts(w http.ResponseWriter, r *http.Request) {
 	as := s.assetStore()
 	if as == nil {
-		writeErr(w, 503, "database unavailable")
+		writePublicErr(w, 503, "database unavailable")
 		return
 	}
 	var counts map[string]int
@@ -420,7 +420,7 @@ func (s *Server) assetCounts(w http.ResponseWriter, r *http.Request) {
 func (s *Server) deleteAssets(w http.ResponseWriter, r *http.Request) {
 	as := s.assetStore()
 	if as == nil {
-		writeErr(w, 503, "database unavailable")
+		writePublicErr(w, 503, "database unavailable")
 		return
 	}
 	var req struct {
@@ -449,7 +449,7 @@ func (s *Server) deleteAssets(w http.ResponseWriter, r *http.Request) {
 func (s *Server) insertAssets(w http.ResponseWriter, r *http.Request) {
 	as := s.assetStore()
 	if as == nil {
-		writeErr(w, 503, "database unavailable")
+		writePublicErr(w, 503, "database unavailable")
 		return
 	}
 	var req struct {

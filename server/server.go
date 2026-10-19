@@ -1483,7 +1483,7 @@ func (s *Server) setLLM(w http.ResponseWriter, r *http.Request) {
 	s.invalidateProfileAgents()
 	loadedCfg, ok := s.loadLLMConfig()
 	if !ok {
-		writeErr(w, 500, "saved provider is unavailable")
+		writePublicErr(w, 500, "saved provider is unavailable")
 		return
 	}
 	// The legacy request omits fields saveLLMConfig preserves from the profile.
@@ -1941,7 +1941,7 @@ func (s *Server) taskCoverage(w http.ResponseWriter, r *http.Request) {
 	}
 	as := s.m.Assets()
 	if as == nil {
-		writeErr(w, 503, "asset store 未启用")
+		writePublicErr(w, 503, "asset store 未启用")
 		return
 	}
 	// 资产覆盖度功能关闭 → 短路返回 {enabled:false}，前端据此隐藏覆盖度卡片/进度。
@@ -1969,7 +1969,7 @@ func (s *Server) taskCoverageGraph(w http.ResponseWriter, r *http.Request) {
 	}
 	as := s.m.Assets()
 	if as == nil {
-		writeErr(w, 503, "asset store 未启用")
+		writePublicErr(w, 503, "asset store 未启用")
 		return
 	}
 	taskID, _ := strconv.ParseInt(t.ID, 10, 64)
@@ -2025,7 +2025,7 @@ func (s *Server) taskScopeList(w http.ResponseWriter, r *http.Request) {
 	}
 	as := s.m.Assets()
 	if as == nil {
-		writeErr(w, 503, "asset store 未启用")
+		writePublicErr(w, 503, "asset store 未启用")
 		return
 	}
 	taskID, _ := strconv.ParseInt(t.ID, 10, 64)
@@ -2045,7 +2045,7 @@ func (s *Server) taskScopeAdd(w http.ResponseWriter, r *http.Request) {
 	}
 	as := s.m.Assets()
 	if as == nil {
-		writeErr(w, 503, "asset store 未启用")
+		writePublicErr(w, 503, "asset store 未启用")
 		return
 	}
 	var body struct {
@@ -2074,7 +2074,7 @@ func (s *Server) taskScopeDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	as := s.m.Assets()
 	if as == nil {
-		writeErr(w, 503, "asset store 未启用")
+		writePublicErr(w, 503, "asset store 未启用")
 		return
 	}
 	taskID, _ := strconv.ParseInt(t.ID, 10, 64)
@@ -3107,7 +3107,7 @@ func (s *Server) getLogsHistory(w http.ResponseWriter, r *http.Request) {
 func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		writeErr(w, 500, "streaming unsupported")
+		writePublicErr(w, 500, "streaming unsupported")
 		return
 	}
 	since := int64(atoiDefault(r.URL.Query().Get("since"), 0))
@@ -3163,7 +3163,7 @@ func (s *Server) streamActivity(w http.ResponseWriter, r *http.Request) {
 	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		writeErr(w, 500, "streaming unsupported")
+		writePublicErr(w, 500, "streaming unsupported")
 		return
 	}
 	var intentPtr *int64
@@ -3631,7 +3631,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if s.engine != nil {
 			if err := s.engine.ReconcileWorkers(); err != nil {
-				writeErr(w, 500, "Worker count was saved, but running task pools could not be synchronized. Retry the settings update.")
+				writePublicErr(w, 500, "Worker count was saved, but running task pools could not be synchronized. Retry the settings update.")
 				return
 			}
 		}
@@ -4085,7 +4085,21 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+const internalErrorMessage = "服务内部错误，请稍后重试"
+
+// writeErr keeps unexpected server diagnostics out of HTTP error responses.
+// Client errors retain their existing validation and conflict messages.
 func writeErr(w http.ResponseWriter, code int, msg string) {
+	if code >= 500 && code <= 599 {
+		msg = internalErrorMessage
+	}
+	writeJSON(w, code, map[string]any{"error": msg})
+}
+
+// writePublicErr is for deliberately public, application-authored messages only.
+// Never pass raw errors, upstream bodies, or configuration/user-supplied values.
+// Bounded authored sources such as chatUnavailableReason are safe here.
+func writePublicErr(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, map[string]any{"error": msg})
 }
 

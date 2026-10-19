@@ -158,7 +158,7 @@ func (s *Server) requireBasicAuth(next http.Handler) http.Handler {
 		// HttpOnly cookie keeps the gate satisfied without replacing that header.
 		if err := s.setBasicAuthCookie(w, r, cfg); err != nil {
 			defer guardRejectedAuthBody(w, r)()
-			writeErr(w, 500, "认证会话生成失败")
+			writePublicErr(w, 500, "认证会话生成失败")
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -191,7 +191,7 @@ func (s *Server) saveBasicAuthSettings(w http.ResponseWriter, r *http.Request) {
 	cfg, store := g.cfg, g.store
 	g.mu.RUnlock()
 	if store == nil {
-		writeErr(w, 503, errDataSourceUnavailable)
+		writePublicErr(w, 503, errDataSourceUnavailable)
 		return
 	}
 	if req.Enabled != nil {
@@ -211,7 +211,7 @@ func (s *Server) saveBasicAuthSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 		if err != nil {
-			writeErr(w, 500, "密码加密失败")
+			writePublicErr(w, 500, "密码加密失败")
 			return
 		}
 		cfg.PasswordHash = string(hash)
@@ -226,7 +226,7 @@ func (s *Server) saveBasicAuthSettings(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), basicAuthSaveTimeout)
 	defer cancel()
 	if err != nil || store.SetSettingContext(ctx, basicAuthKey, string(data)) != nil {
-		writeErr(w, 503, "Basic Auth 配置保存失败，请重试")
+		writePublicErr(w, 503, "Basic Auth 配置保存失败，请重试")
 		return
 	}
 	// Hashing, persistence and response output never hold the request mutex.
@@ -238,7 +238,7 @@ func (s *Server) saveBasicAuthSettings(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	// Keep the administrator who just saved the settings in their session.
 	if err := s.setBasicAuthCookie(w, r, cfg); err != nil {
-		writeErr(w, 500, "认证会话生成失败")
+		writePublicErr(w, 500, "认证会话生成失败")
 		return
 	}
 	writeJSON(w, 200, basicAuthPublicSettings(cfg))

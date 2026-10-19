@@ -65,7 +65,7 @@ func (b *authBody) decode(into any) bool {
 	// ResponseRecorder and other non-server writers have no socket deadline.
 	// Real net/http HTTP/1 and HTTP/2 writers support it; wrappers must Unwrap.
 	if b.deadlineErr != nil && !errors.Is(b.deadlineErr, http.ErrNotSupported) {
-		writeErr(b.w, http.StatusServiceUnavailable, "请求读取暂时不可用")
+		writePublicErr(b.w, http.StatusServiceUnavailable, "请求读取暂时不可用")
 		return false
 	}
 	var err error
@@ -99,7 +99,7 @@ func (b *authBody) decode(into any) bool {
 	}
 	if b.deadlineErr == nil {
 		if err := b.controller.SetReadDeadline(time.Time{}); err != nil {
-			writeErr(b.w, http.StatusServiceUnavailable, "请求读取暂时不可用")
+			writePublicErr(b.w, http.StatusServiceUnavailable, "请求读取暂时不可用")
 			return false
 		}
 	}
