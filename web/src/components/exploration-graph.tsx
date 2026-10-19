@@ -484,7 +484,7 @@ function NodeDetailSheet({
 
   return (
     <Sheet open={node !== null} onOpenChange={onOpenChange}>
-      <SheetContent side="right" className="flex w-full flex-col gap-0 p-0 data-[side=right]:sm:max-w-md">
+      <SheetContent side="right" className="flex flex-col gap-0 p-0 data-[side=right]:w-full data-[side=right]:sm:max-w-md">
         {node && meta && Icon && (
           <>
             <SheetHeader className="border-b p-4">

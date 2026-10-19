@@ -8,10 +8,10 @@
 
 ```bash
 make offline-package VERSION=v0.3.20 TARGETARCH=amd64 \
-  POSTGRES_IMAGE=postgres:16.10-alpine@sha256:029660641a0cfc575b14f336ba448fb8a75fd595d42e1fa316b9fb4378742297
+  POSTGRES_IMAGE=postgres:16.15-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
 ```
 
-使用 `TARGETARCH=arm64` 生成另一架构。PostgreSQL 输入必须包含明确的 16.x 版本及完整 index digest；请按部署方的安全维护政策选择版本。上例固定版本用于可复现验收。`OUTPUT` 可指定新输出目录；已有同名交付包会使构建失败并保留原文件。构建失败会清理本次暂存目录，已拉取的镜像留在打包机供再次使用。
+使用 `TARGETARCH=arm64` 生成另一架构。PostgreSQL 输入必须包含明确的 16.x 版本及完整 index digest。默认固定 PostgreSQL 16.15；维护时按[官方版本策略](https://www.postgresql.org/support/versioning/)选择当前 minor，并从[Docker 官方标签元数据](https://hub.docker.com/v2/repositories/library/postgres/tags/16.15-alpine)与 Registry 核对新 digest、目标平台和实际版本后更新固定引用。`OUTPUT` 可指定新输出目录；已有同名交付包会使构建失败并保留原文件。构建失败会清理本次暂存目录，已拉取的镜像留在打包机供再次使用。
 
 `.github/workflows/offline-package.yml` 支持手动指定稳定版本、架构及 PostgreSQL 固定引用，生成 Actions artifacts。它只读取已有公开 Release。尚未发布的当前分支和缺少匹配镜像标签的发布版本会被拒绝。artifact 下载完成后再交付至目标服务器，workflow 不向服务器部署。
 

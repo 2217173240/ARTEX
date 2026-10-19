@@ -32,7 +32,7 @@ on:
         description: Exact PostgreSQL 16 minor tag and immutable index digest
         required: true
         type: string
-        default: postgres:16.10-alpine@sha256:029660641a0cfc575b14f336ba448fb8a75fd595d42e1fa316b9fb4378742297
+        default: postgres:16.15-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
 permissions:
   contents: read
 cache-mode: read
@@ -55,7 +55,7 @@ jobs:
         env:
           VERSION: ${{ inputs.version || 'v0.3.20' }}
           ARCH: ${{ matrix.arch }}
-          POSTGRES_IMAGE: ${{ inputs.postgres || 'postgres:16.10-alpine@sha256:029660641a0cfc575b14f336ba448fb8a75fd595d42e1fa316b9fb4378742297' }}
+          POSTGRES_IMAGE: ${{ inputs.postgres || 'postgres:16.15-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea' }}
           REPOSITORY: ${{ github.repository }}
         run: |
           python3 scripts/build-offline.py --version "$VERSION" --arch "$ARCH" --repository "$REPOSITORY" --postgres "$POSTGRES_IMAGE"

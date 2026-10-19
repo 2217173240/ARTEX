@@ -210,7 +210,7 @@ export function EvidenceTab({ taskId }: { taskId: string }) {
           }
         }}
       >
-        <SheetContent className="w-full overflow-y-auto sm:max-w-xl">
+        <SheetContent className="overflow-y-auto data-[side=right]:w-full data-[side=right]:sm:max-w-xl">
           <SheetHeader>
             <SheetTitle>
               {uiText(kindLabels[currentNode?.type ?? ""] ?? "证据记录")} #{currentNode?.id}
