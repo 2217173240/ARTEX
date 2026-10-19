@@ -51,6 +51,57 @@ export interface TaskCategory {
   updated_at: string;
 }
 
+export interface TaskOutcome {
+  schema_version: number;
+  task_id: number;
+  status: string;
+  category_id: number;
+  source: "live" | "archive";
+  partial: boolean;
+  unavailable: string[];
+  findings: {
+    total: number;
+    pending: number;
+    in_progress: number;
+    confirmed: number;
+    resolved: number;
+    fixed: number;
+    false_positive: number;
+    ignored: number;
+    duplicate: number;
+    risk_accepted: number;
+    open: number;
+    confirmed_total: number;
+    critical: number;
+    high: number;
+    medium: number;
+    low: number;
+    unclassified?: number;
+  };
+  retests: {
+    total: number;
+    pending: number;
+    running: number;
+    completed: number;
+    failed: number;
+    stopped: number;
+    reproduced: number;
+    fixed: number;
+    inconclusive: number;
+  };
+  tokens: {
+    calls: number;
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_tokens: number;
+    cache_write_tokens: number;
+  };
+  tool_calls: number;
+  skill_misses: number;
+  wall_seconds: number | null;
+  scope: Record<"findings" | "tokens" | "retests" | "tools" | "skills" | "time" | "cost", string>;
+}
+
 export interface TaskTemplate {
   id: number;
   name: string;
@@ -406,7 +457,7 @@ export interface Company {
 }
 
 // ---- Exploration graph (per task) ----
-export type ExploreKind = "task" | "begin" | "goal" | "intent" | "fact" | "finding" | "hint" | "digest";
+export type ExploreKind = "task" | "begin" | "goal" | "intent" | "observation" | "validity_gate" | "fact" | "finding" | "hint" | "digest";
 export type GoalState = "open" | "met" | "abandoned";
 export type IntentState = "open" | "running" | "paused" | "done" | "blocked" | "exhausted" | "stopped";
 export type FindingState = "confirmed" | "dismissed";
@@ -424,6 +475,18 @@ export interface TaskNode {
   source_task_id?: string;
   inherited?: boolean;
   delete_reason?: string; // 意图假删除(state='deleted')时的删除原因
+}
+
+export interface TaskEvidencePage {
+  nodes: TaskNode[];
+  next_before?: number;
+  scope: "task_only";
+}
+
+export interface TaskEvidenceDetail {
+  node: TaskNode;
+  nodes: TaskNode[];
+  edges: Edge[];
 }
 
 // 播报板一页:按创建顺序分页的节点 + 这一页涉及的边 + 边另一端的节点(refs,按 id 索引),

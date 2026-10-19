@@ -69,7 +69,7 @@ Root `go test ./...` does not enter nested modules. CI must explicitly run:
 (cd third_party/norma && go test -race -count=1 ./...)
 ```
 
-Maintenance boundary: review only these eight production files against the
+Maintenance boundary: review the production files documented here against the
 original hashes. Upgrade by restoring exact official source, reconsidering each
 patch against the new version, and rerunning retained tests and ARTEX tests.
 Remove the replacement once an official release carries equivalent fixes.
@@ -119,3 +119,53 @@ This repair retains its existing successful boundary convention (the next
 non-input event or clean iterator end). It does not add provider protocol
 validation for a silent non-canceled EOF or change completed `max_tokens`
 handling. The retained nested-module suite and ARTEX regressions must both run.
+
+## Tool output and file/search memory (round 25)
+
+Adapted from RuochenPan (RC-CHN), commit
+[`d2b11ab3674f426a6f9044ce96be40c6736a1a0a`](https://github.com/RC-CHN/ARTEX/commit/d2b11ab3674f426a6f9044ce96be40c6736a1a0a),
+2026-10-19, under AGPL-3.0 in `PATCH-LICENSE`. The original v0.4.3 baseline,
+`UPSTREAM-SHA256.json`, and both license documents remain unchanged. The source
+commit's LICENSE bytes match `PATCH-LICENSE` (SHA-256
+`0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0`).
+
+- `tool/capture_writer.go` / `bash.go`: synchronous Bash captures bounded head
+  and tail while optionally streaming complete output to disk. Output formatting,
+  combined stdout/stderr, exit and timeout reporting follow the existing Capture
+  contract. Incomplete artifacts are removed after write/close failure, and the
+  ordinary truncation notice is returned. Exclusive file creation avoids replacing
+  an existing artifact. Managed background commands keep their existing file/tail
+  behavior.
+- `tool/helpers.go`: spill strings through `io.WriteString`, avoiding a complete
+  byte-slice copy. `CaptureToolOutput` and `harness/tools.go` retain Read's bounded
+  line-pagination allowance and continuation notice through the final runtime cap.
+- `tool/files.go`: independently adapt Read to buffered line traversal, keeping
+  at most one truncated line and one output page. Binary detection still inspects
+  the first 8000 bytes. Offsets, line numbers, trailing empty lines and the 2000-byte
+  per-line cap retain v0.4.3 semantics. A first line larger than a very small output
+  budget is returned whole (within the per-line cap), so the continuation offset
+  advances. Context cancellation is checked between input fragments. Read still
+  uses its existing line offset API; a high offset scans earlier lines and callers
+  must account for concurrent file changes. No version token or byte-offset API
+  is introduced.
+- `tool/search.go`: stream non-multiline counts/file matches without retaining
+  complete files or match-index arrays; ordered multiline spans advance through
+  file lines once; ordered context windows merge directly. Glob patterns compile
+  once per walk. Content/multiline search retains whole-file storage, and a single
+  long line remains uncapped for regular-expression correctness.
+- `tool/ripgrep.go`: retain only the requested page while counting the exact
+  remaining results. Unlimited pages and selected very long lines retain their
+  existing memory requirements. Ripgrep uses the caller's context; cancellation
+  returns to the caller without beginning a Go fallback scan. The Go backend
+  checks cancellation during traversal, line counting and match processing.
+- `tool/ls.go` / `tool/tool.go`: use existing directory order for directory-first
+  listing and a builder for multi-block result flattening.
+
+`tool/performance_test.go` benchmarks actual Read/Go-search calls on a fixed
+8,400,000-byte text file and actual `cat` subprocess output. Baselines were run
+before the production changes. `tool/performance_compatibility_test.go` compares
+real file fixtures with the previous read/search rules and exercises real command
+artifacts, stderr/exit status, timeout/cancellation, disk failure, and installed
+ripgrep pagination/cancellation. These measurements are local ARTEX evidence,
+not a reproduction of the source fork's benchmark results. No source `file_commit`,
+CAS, output-receipt, runner, or application-lifecycle implementation is imported.

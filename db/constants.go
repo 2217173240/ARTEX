@@ -2,13 +2,15 @@ package db
 
 // Exploration node kinds (exploration_nodes.kind).
 const (
-	KindBegin   = "begin"   // DEPRECATED: legacy task root; new tasks seed an origin fact (KindFact + StateOrigin) instead
-	KindGoal    = "goal"    // a task objective
-	KindIntent  = "intent"  // an exploration direction (planner-generated)
-	KindFact    = "fact"    // a worker's exploration result/conclusion (incl. negative results), tied to its intent
-	KindFinding = "finding" // a confirmed vulnerability (report_finding), distinct from a fact
-	KindHint    = "hint"
-	KindDigest  = "digest" // a compressed fold of cold intents/facts (cold-digest-spec §1); lossless — members kept, restorable by id
+	KindBegin        = "begin"   // DEPRECATED: legacy task root; new tasks seed an origin fact (KindFact + StateOrigin) instead
+	KindGoal         = "goal"    // a task objective
+	KindIntent       = "intent"  // an exploration direction (planner-generated)
+	KindFact         = "fact"    // a worker's exploration result/conclusion (incl. negative results), tied to its intent
+	KindFinding      = "finding" // a confirmed vulnerability (report_finding), distinct from a fact
+	KindHint         = "hint"
+	KindDigest       = "digest" // a compressed fold of cold intents/facts (cold-digest-spec §1); lossless — members kept, restorable by id
+	KindObservation  = "observation"
+	KindValidityGate = "validity_gate"
 )
 
 // Digest node states (kind='digest'). A digest is 'active' while it renders in
@@ -37,4 +39,6 @@ const (
 	RelYields      = "yields"
 	RelProves      = "proves"
 	RelCovers      = "covers" // digest --covers--> member (cold-digest-spec §1); source of truth for "which digest folds node X"
+	RelSupports    = "supports"
+	RelQualifies   = "qualifies"
 )

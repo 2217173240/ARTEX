@@ -460,17 +460,23 @@ func applyStampsInPlace(stamps map[int64]*int64, ops []stampOp) {
 // member ids split by kind (restore cache; source of truth is the covers edges),
 // the anchor ids, the generation, and the change-detection signature.
 func digestPayload(body string, b block, nodeByID map[int64]*db.Node, generation int, signature string) map[string]any {
-	var facts, intents []int64
+	var facts, intents, observations, gates []int64
 	for _, m := range b.Members {
-		if n := nodeByID[m]; n != nil && n.Kind == db.KindIntent {
+		n := nodeByID[m]
+		switch {
+		case n != nil && n.Kind == db.KindIntent:
 			intents = append(intents, m)
-		} else {
+		case n != nil && n.Kind == db.KindObservation:
+			observations = append(observations, m)
+		case n != nil && n.Kind == db.KindValidityGate:
+			gates = append(gates, m)
+		default:
 			facts = append(facts, m)
 		}
 	}
 	return map[string]any{
 		"body":       body,
-		"member_ids": map[string]any{"facts": facts, "intents": intents},
+		"member_ids": map[string]any{"facts": facts, "intents": intents, "observations": observations, "validity_gates": gates},
 		"anchor_ids": b.Anchors,
 		"generation": generation,
 		"signature":  signature,
@@ -489,12 +495,16 @@ func digestSigGen(n *db.Node) (string, int) {
 func digestMemberIDs(n *db.Node) []int64 {
 	var p struct {
 		MemberIDs struct {
-			Facts   []int64 `json:"facts"`
-			Intents []int64 `json:"intents"`
+			Facts        []int64 `json:"facts"`
+			Intents      []int64 `json:"intents"`
+			Observations []int64 `json:"observations"`
+			Gates        []int64 `json:"validity_gates"`
 		} `json:"member_ids"`
 	}
 	_ = json.Unmarshal(n.Payload, &p)
-	return append(append([]int64{}, p.MemberIDs.Facts...), p.MemberIDs.Intents...)
+	ids := append(append([]int64{}, p.MemberIDs.Facts...), p.MemberIDs.Intents...)
+	ids = append(ids, p.MemberIDs.Observations...)
+	return append(ids, p.MemberIDs.Gates...)
 }
 
 // --- helpers: compression input + LLM (§4) ---
@@ -542,8 +552,8 @@ func buildCompressionInput(g *coldGraph, b block, nodeByID map[int64]*db.Node) s
 	for _, m := range b.Members {
 		n := nodeByID[m]
 		kind := "fact"
-		if n != nil && n.Kind == db.KindIntent {
-			kind = "intent"
+		if n != nil {
+			kind = n.Kind
 		}
 		state := ""
 		if n != nil {

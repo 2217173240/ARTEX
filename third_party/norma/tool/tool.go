@@ -8,6 +8,7 @@ package tool
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/permission"
@@ -72,13 +73,16 @@ func Errorf(s string) Result {
 
 // Flatten concatenates the text of a result's content blocks.
 func (r Result) Flatten() string {
-	var s string
+	if len(r.Content) == 1 && r.Content[0].Type == llm.BlockText {
+		return r.Content[0].Text
+	}
+	var s strings.Builder
 	for _, b := range r.Content {
 		if b.Type == llm.BlockText {
-			s += b.Text
+			s.WriteString(b.Text)
 		}
 	}
-	return s
+	return s.String()
 }
 
 // CoreTool is a capability the agent can invoke (FR-04.1).

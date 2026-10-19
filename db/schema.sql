@@ -280,6 +280,36 @@ CREATE TABLE IF NOT EXISTS exploration_anchors (
 );
 CREATE INDEX IF NOT EXISTS idx_anchor_asset ON exploration_anchors(asset_id);
 
+-- Structured evidence uses ordinary graph rows, preserving portable archives.
+DO $$ BEGIN
+IF EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='exploration_nodes'::regclass AND conname='ck_node_kind' AND pg_get_constraintdef(oid) NOT LIKE '%observation%') THEN
+ALTER TABLE exploration_nodes DROP CONSTRAINT ck_node_kind;
+ALTER TABLE exploration_nodes ADD CONSTRAINT ck_node_kind CHECK
+    (kind IN ('begin','goal','intent','fact','finding','hint','digest','observation','validity_gate'));
+END IF;
+IF EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='exploration_nodes'::regclass AND conname='ck_node_state' AND pg_get_constraintdef(oid) NOT LIKE '%validity_gate%') THEN
+ALTER TABLE exploration_nodes DROP CONSTRAINT ck_node_state;
+ALTER TABLE exploration_nodes ADD CONSTRAINT ck_node_state CHECK (
+    (kind='begin' AND state='open') OR
+    (kind='intent' AND state IN ('open','running','paused','done','blocked','exhausted','stopped','deleted')) OR
+    (kind='goal' AND state IN ('open','met','abandoned')) OR
+    (kind='fact' AND state IN ('confirmed','dismissed','origin')) OR
+    (kind='finding' AND state IN ('confirmed','dismissed')) OR
+    (kind='hint' AND state IN ('active','consumed')) OR
+    (kind='digest' AND state IN ('active','superseded')) OR
+    (kind='observation' AND state='recorded') OR
+    (kind='validity_gate' AND state IN ('ready_for_review','insufficient','unknown'))
+);
+END IF;
+IF EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='exploration_edges'::regclass AND conname='ck_edge_rel' AND pg_get_constraintdef(oid) NOT LIKE '%qualifies%') THEN
+ALTER TABLE exploration_edges DROP CONSTRAINT ck_edge_rel;
+ALTER TABLE exploration_edges ADD CONSTRAINT ck_edge_rel CHECK
+    (rel IN ('spawns','derived_from','yields','proves','covers','supports','qualifies'));
+END IF;
+END $$;
+CREATE INDEX IF NOT EXISTS idx_observation_snapshot_ref ON exploration_nodes((payload->>'source_id'))
+    WHERE kind='observation' AND payload->>'source_kind'='traffic_snapshot';
+
 -- task_constraints: operator-authored operation constraints (allow/deny) for a task.
 -- Extracted by the goals decomposer at round 0 (from goal/description), editable at
 -- runtime by the main agent + 总览「约束管理」. Injected into the planner/worker system
@@ -546,6 +576,7 @@ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS queued BOOLEAN NOT NULL DEFAULT false
 -- 给 agent 开放 add_task_scope/list_untested_assets;false=全部关闭(见 task_scope.go)。
 -- 存量任务默认 true 保持原行为;company 关联(task_scope kind=company)不受此开关影响。
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS coverage_enabled BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS retest_history_complete BOOLEAN NOT NULL DEFAULT true;
 -- queued_at makes admission FIFO reflect the actual enqueue order rather than the
 -- task creation order. queue_mode distinguishes first bootstrap from resuming an
 -- exploration that already owns goals/history.
@@ -1125,6 +1156,11 @@ CREATE TABLE IF NOT EXISTS finding_retests (
     finished_at TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS idx_finding_retests_history ON finding_retests(finding_id, id DESC);
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS retest_binding JSONB NOT NULL DEFAULT '{}'::jsonb;
+UPDATE conversations c
+SET retest_binding=jsonb_build_object('retest_id',r.id,'finding_id',r.finding_id,'task_id',f.task_id)
+FROM finding_retests r JOIN findings f ON f.id=r.finding_id
+WHERE c.id=r.conversation_id AND c.retest_binding='{}'::jsonb;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_finding_retests_active ON finding_retests(finding_id)
     WHERE status IN ('pending','running');
 

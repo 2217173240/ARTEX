@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
+
+fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+verify() {
+  local digest name actual count=0 seen=' '
+  [[ -f SHA256SUMS && ! -L SHA256SUMS ]] || fail 'Missing checksum inventory'
+  while read -r digest name; do
+    [[ "$digest" =~ ^[a-f0-9]{64}$ ]] || fail 'Invalid checksum'
+    case "$name" in
+      artex.tar|postgres.tar|IMAGES|compose.yaml|manifest.json|.env.example|artex-offline|README.md|LICENSE|THIRD-PARTY-NOTICES.txt) ;;
+      *) fail 'Unexpected checksum path' ;;
+    esac
+    case "$seen" in *" $name "*) fail "Duplicate checksum path: $name";; esac
+    seen="$seen$name "
+    [[ -f "$name" && ! -L "$name" ]] || fail "Missing regular bundle file: $name"
+    if command -v sha256sum >/dev/null; then actual=$(sha256sum -- "$name");
+    else actual=$(shasum -a 256 -- "$name"); fi
+    [[ "${actual%% *}" == "$digest" ]] || fail "Checksum mismatch: $name"
+    count=$((count + 1))
+  done < SHA256SUMS
+  [[ "$count" == 10 ]] || fail 'Incomplete checksum inventory'
+}
+require_docker() {
+  docker info >/dev/null
+  docker compose version >/dev/null
+  local os arch id tag expected manifest count=0 services=' '
+  os=$(docker info --format '{{.OSType}}')
+  arch=$(docker info --format '{{.Architecture}}')
+  case "$arch" in x86_64) arch=amd64;; aarch64) arch=arm64;; esac
+  [[ "$os" == linux ]] || fail 'A Linux Docker engine is required'
+  while read -r id tag expected manifest; do
+    [[ "$id" =~ ^sha256:[a-f0-9]{64}$ && "$manifest" =~ ^sha256:[a-f0-9]{64}$ && "$tag" =~ ^artex-offline-(artex|postgres):[a-zA-Z0-9_.-]+$ && "$expected" =~ ^(amd64|arm64)$ ]] || fail 'Invalid image inventory'
+    local service=${tag%%:*}
+    case "$services" in *" $service "*) fail 'Duplicate image service';; esac
+    services="$services$service "
+    count=$((count + 1))
+    [[ "$arch" == "$expected" ]] || fail "Bundle requires linux/$expected; engine is $os/$arch"
+  done < IMAGES
+  [[ "$count" == 2 ]] || fail 'Image inventory requires ARTEX and PostgreSQL'
+}
+check_images() {
+  local id tag arch manifest actual
+  while read -r id tag arch manifest; do
+    [[ "$id" =~ ^sha256:[a-f0-9]{64}$ && "$tag" =~ ^artex-offline-(artex|postgres):[a-zA-Z0-9_.-]+$ ]] || fail 'Invalid image inventory'
+    actual=$(docker image inspect --format '{{.Id}} {{.Os}} {{.Architecture}}' "$tag")
+    # 经典与 containerd 镜像存储分别公开 config 与 manifest 标识。
+    [[ "$actual" == "$id linux $arch" || "$actual" == "$manifest linux $arch" ]] || fail "Loaded image identity mismatch: $tag"
+  done < IMAGES
+}
+compose() {
+  # 配置变量仅由本目录 .env 提供；忽略调用者的 Compose 与应用变量。
+  env -u POSTGRES_PASSWORD -u ARTEX_PORT -u ARTEX_PROXY_PORT -u COMPOSE_FILE -u COMPOSE_PROJECT_NAME \
+    docker compose --env-file .env --project-directory "$PWD" -p "$(cat .project)" -f compose.yaml "$@"
+}
+check_state() {
+  [[ -f .env && ! -L .env && -f .project && ! -L .project ]] || fail 'Run install first; existing partial state requires manual recovery'
+  [[ "$(cat .project)" =~ ^artex-offline-[a-f0-9]{24}$ ]] || fail 'Invalid project identity'
+  [[ ! -L data && -d data ]] || fail 'data must be a regular directory'
+  chmod 600 .env .project
+  chmod 700 data
+}
+initialize() {
+  [[ ! -L .env && ! -L .project && ! -L data ]] || fail 'State paths must not be symlinks'
+  if [[ ! -e .env ]]; then
+    [[ ! -e data && ! -e .project ]] || fail 'Existing data requires its original .env and .project; restore them before retrying'
+    local password project
+    password=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
+    project=$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')
+    [[ ${#password} == 64 && ${#project} == 24 ]] || fail 'Random generation failed'
+    # noclobber 保留并发安装或已有配置。
+    (set -C; printf 'POSTGRES_PASSWORD=%s\nARTEX_PORT=8787\nARTEX_PROXY_PORT=8788\n' "$password" > .env)
+    (set -C; printf 'artex-offline-%s\n' "$project" > .project)
+  fi
+  [[ -e .project ]] || fail 'Restore the original .project before retrying'
+  mkdir -p data
+  check_state
+}
+command=${1:-help}
+[[ $# -le 1 ]] || fail 'Commands do not accept additional arguments'
+case "$command" in
+  help|--help|-h) printf '%s\n' 'Usage: ./artex-offline {verify|install|start|stop|restart|status|logs}'
+    exit 0;;
+  verify) verify; printf '%s\n' 'Bundle checksums verified'; exit 0;;
+  install|start|stop|restart|status|logs) ;;
+  *) fail 'Unknown command; run ./artex-offline help';;
+esac
+verify
+require_docker
+if [[ "$command" == install ]]; then
+  [[ ! -L .install-lock ]] || fail 'Invalid installation lock'
+  mkdir .install-lock 2>/dev/null || fail 'Installation is locked; if no installer is running, remove .install-lock and retry'
+  trap 'rmdir .install-lock' EXIT
+  docker load --input artex.tar
+  docker load --input postgres.tar
+  check_images
+  initialize
+  compose config --quiet
+  compose up --detach --pull never --wait --wait-timeout 180
+  printf '%s\n' 'Installed. Use the loopback ports configured in .env; preserve .env, .project and data.'
+else
+  check_state
+  case "$command" in
+    start) check_images; compose up --detach --pull never --wait --wait-timeout 180;;
+    stop) compose stop;;
+    restart) check_images; compose restart;;
+    status) compose ps;;
+    logs) compose logs --tail 100;;
+  esac
+fi

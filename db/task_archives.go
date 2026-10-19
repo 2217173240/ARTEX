@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	TaskArchiveFormatVersion       = 3
+	TaskArchiveFormatVersion       = 4
 	TaskArchiveLegacyFormatVersion = 1
 	TaskArchiveLLMRecordsPath      = "database/llm_records.ndjson"
 )
@@ -46,6 +46,7 @@ var (
 	ErrTaskArchiveState          = errors.New("task archive state does not allow this operation")
 	ErrTaskArchiveDeleteBlocked  = errors.New("task archive is required by another archive")
 	ErrTaskArchiveFormatMismatch = errors.New("task archive format is not supported")
+	ErrTaskArchiveRetestActive   = errors.New("任务存在等待或运行中的复测，请先等待结束或停止复测后归档")
 )
 
 // TaskArchive is the compact PostgreSQL record retained while a task is cold.
@@ -244,6 +245,9 @@ WHERE t.id=$1 AND t.deleted_at IS NULL FOR UPDATE OF t`, taskID).Scan(
 	}
 	if !paused && !IsTerminal(status) {
 		return nil, ErrTaskArchiveIneligible
+	}
+	if err := ensureTaskRetestsQuiescent(tx, taskID); err != nil {
+		return nil, err
 	}
 	var dependent int64
 	err = tx.QueryRow(`SELECT child.id FROM task_relations relation
@@ -572,6 +576,9 @@ func (d *DB) snapshotTaskArchive(taskID int64, llmRecords io.Writer) (*TaskArchi
 	if err := validateTaskCaseOwnership(tx, taskID); err != nil {
 		return nil, err
 	}
+	if err := ensureTaskRetestsQuiescent(tx, taskID); err != nil {
+		return nil, err
+	}
 	tables := make(map[string]json.RawMessage)
 	queries := []struct {
 		name  string
@@ -590,6 +597,7 @@ func (d *DB) snapshotTaskArchive(taskID int64, llmRecords io.Writer) (*TaskArchi
 		{"task_llm_profiles", `SELECT * FROM task_llm_profiles WHERE task_id=$1 ORDER BY position`, []any{taskID}},
 		{"task_scope", `SELECT * FROM task_scope WHERE task_id=$1 ORDER BY id`, []any{taskID}},
 		{"findings", `SELECT * FROM findings WHERE task_id=$1 ORDER BY id`, []any{taskID}},
+		{"finding_retests", `SELECT r.* FROM finding_retests r JOIN findings f ON f.id=r.finding_id WHERE f.task_id=$1 ORDER BY r.id`, []any{taskID}},
 		{"finding_notes", `SELECT n.* FROM finding_notes n JOIN findings f ON f.id=n.finding_id WHERE f.task_id=$1 ORDER BY n.id`, []any{taskID}},
 		{"finding_cases", `SELECT * FROM finding_cases WHERE task_id=$1 ORDER BY id`, []any{taskID}},
 		{"finding_case_members", `SELECT m.* FROM finding_case_members m JOIN finding_cases c ON c.id=m.case_id WHERE c.task_id=$1 ORDER BY m.finding_id`, []any{taskID}},
@@ -598,7 +606,7 @@ func (d *DB) snapshotTaskArchive(taskID int64, llmRecords io.Writer) (*TaskArchi
 		{"finding_case_blocks", `SELECT b.* FROM finding_case_blocks b JOIN findings f ON f.id=b.left_id WHERE f.task_id=$1 ORDER BY b.left_id,b.right_id`, []any{taskID}},
 		{"finding_case_review_runs", `SELECT * FROM finding_case_review_runs WHERE task_id=$1 ORDER BY conversation_id`, []any{taskID}},
 		{"finding_traffic_bindings", `SELECT b.* FROM finding_traffic_bindings b JOIN findings f ON f.id=b.finding_id WHERE f.task_id=$1 ORDER BY b.finding_id,b.position,b.id`, []any{taskID}},
-		{"traffic_evidence_snapshots", `SELECT s.* FROM traffic_evidence_snapshots s WHERE EXISTS(SELECT 1 FROM finding_traffic_bindings b JOIN findings f ON f.id=b.finding_id WHERE b.snapshot_id=s.id AND f.task_id=$1) ORDER BY s.id`, []any{taskID}},
+		{"traffic_evidence_snapshots", taskEvidenceSnapshotsSQL, []any{taskID}},
 		{"llm_records", `SELECT * FROM llm_records WHERE COALESCE(task_id,'')=$1 ORDER BY id`, []any{strconv.FormatInt(taskID, 10)}},
 		{"llm_usage", `SELECT * FROM llm_usage WHERE COALESCE(task_id,'')=$1 OR exploration_id=$2 ORDER BY id`, []any{strconv.FormatInt(taskID, 10), expID}},
 		{"skill_usage", `SELECT * FROM skill_usage WHERE task_id=$1 OR exploration_id=$2 ORDER BY id`, []any{taskID, expID}},
@@ -723,6 +731,11 @@ AND NOT EXISTS (
 
 func taskArchiveAggregates(tx *sql.Tx, taskID, expID int64) (map[string]any, error) {
 	stats := map[string]any{}
+	outcome, err := liveTaskOutcome(context.Background(), tx, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot task outcome: %w", err)
+	}
+	stats["outcome"] = outcome
 	var calls, input, output, cacheRead, cacheWrite int64
 	if err := tx.QueryRow(`SELECT count(*),COALESCE(sum(input_tokens),0),COALESCE(sum(output_tokens),0),
 COALESCE(sum(cache_read),0),COALESCE(sum(cache_write),0)

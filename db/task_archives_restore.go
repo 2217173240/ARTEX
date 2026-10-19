@@ -50,6 +50,9 @@ WHERE archive.id=$1 FOR UPDATE OF archive,task`, archiveID).Scan(&taskID, &expID
 	if state != Archiving || taskID != snapshot.TaskID || expID != snapshot.ExplorationID {
 		return fmt.Errorf("%w: archive snapshot identity/state mismatch", ErrTaskArchiveState)
 	}
+	if err := ensureTaskRetestsQuiescent(tx, taskID); err != nil {
+		return err
+	}
 	var dependent int64
 	err = tx.QueryRow(`SELECT child.id FROM task_relations relation
 JOIN tasks child ON child.id=relation.task_id AND child.deleted_at IS NULL
@@ -223,6 +226,11 @@ WHERE archive.id=$1 FOR UPDATE OF archive,task`, archiveID).Scan(&taskID, &expID
 		return nil, fmt.Errorf("restore task row: expected one row: %w", err)
 	}
 	taskRow := taskRows[0]
+	if _, present := snapshot.Tables["finding_retests"]; !present {
+		taskRow["retest_history_complete"] = false
+	} else if taskRow["retest_history_complete"] == nil {
+		taskRow["retest_history_complete"] = true
+	}
 	categoryID, _ := jsonInt64(taskRow["category_id"])
 	if categoryID > 0 && !rowExists(tx, "task_categories", categoryID) {
 		taskRow["category_id"] = nil
@@ -287,6 +295,11 @@ WHERE archive.id=$1 FOR UPDATE OF archive,task`, archiveID).Scan(&taskID, &expID
 			return nil, fmt.Errorf("restore %s: %w", table, err)
 		}
 	}
+	if retestWarnings, err := restoreFindingRetestsTx(tx, snapshot); err != nil {
+		return nil, fmt.Errorf("restore finding retests: %w", err)
+	} else {
+		warnings = append(warnings, retestWarnings...)
+	}
 	if err := restoreFindingNotesTx(tx, snapshot); err != nil {
 		return nil, fmt.Errorf("restore finding notes: %w", err)
 	}
@@ -350,6 +363,7 @@ func restoreTaskStub(tx *sql.Tx, row map[string]any, taskID, remaining int64) er
  llm_chain_revision=archived.llm_chain_revision,company_id=archived.company_id,parent_ref=archived.parent_ref,
  timeout_seconds=archived.timeout_seconds,plan_heartbeat_seconds=archived.plan_heartbeat_seconds,
  coverage_enabled=archived.coverage_enabled,pinned_at=archived.pinned_at,first_run_at=archived.first_run_at,
+ retest_history_complete=archived.retest_history_complete,
  deadline_at=CASE WHEN archived.paused AND $3>0 THEN now()+make_interval(secs=>$3::double precision)
                   ELSE archived.deadline_at END,
  deleted_at=NULL,archived_at=NULL,completed_at=archived.completed_at,

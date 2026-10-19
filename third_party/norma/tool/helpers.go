@@ -2,6 +2,7 @@ package tool
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -74,14 +75,37 @@ func CaptureOnce(tc *ToolContext, s string) string {
 	return Capture(tc, s)
 }
 
+// CaptureToolOutput 保留 Read 的整行分页结果和续读提示。
+func CaptureToolOutput(name string, tc *ToolContext, s string) string {
+	if name == "Read" {
+		copyTC := ToolContext{}
+		if tc != nil {
+			copyTC = *tc
+		}
+		copyTC.MaxOutputChars = maxOut(tc) + readOutputBonus + maxLineLen + 384
+		return CaptureOnce(&copyTC, s)
+	}
+	return CaptureOnce(tc, s)
+}
+
 func spillOutput(dir, s string) (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
 	name := fmt.Sprintf("output-%d-%d.txt", time.Now().Unix(), spillSeq.Add(1))
 	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte(s), 0o644); err != nil {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
 		return "", err
+	}
+	_, err = io.WriteString(f, s)
+	closeErr := f.Close()
+	if err != nil || closeErr != nil {
+		_ = os.Remove(path)
+		if err != nil {
+			return "", err
+		}
+		return "", closeErr
 	}
 	return path, nil
 }

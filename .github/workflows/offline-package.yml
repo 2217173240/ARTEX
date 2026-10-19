@@ -1,0 +1,74 @@
+name: offline-package
+on:
+  pull_request:
+    paths:
+      - .github/workflows/offline-package.yml
+      - scripts/build-offline.py
+      - scripts/artex-offline
+      - scripts/test_offline_lifecycle.py
+      - docs/offline-deployment.md
+      - Makefile
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/offline-package.yml
+      - scripts/build-offline.py
+      - scripts/artex-offline
+      - scripts/test_offline_lifecycle.py
+      - docs/offline-deployment.md
+      - Makefile
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Existing public stable release, such as v0.3.20
+        required: true
+        type: string
+      architecture:
+        description: Target architecture
+        type: choice
+        options: [both, amd64, arm64]
+        default: both
+      postgres:
+        description: Exact PostgreSQL 16 minor tag and immutable index digest
+        required: true
+        type: string
+        default: postgres:16.10-alpine@sha256:029660641a0cfc575b14f336ba448fb8a75fd595d42e1fa316b9fb4378742297
+permissions:
+  contents: read
+cache-mode: read
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {arch: amd64, runner: ubuntu-24.04}
+          - {arch: arm64, runner: ubuntu-24.04-arm}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Build package from published release identity
+        if: github.event_name != 'workflow_dispatch' || inputs.architecture == 'both' || inputs.architecture == matrix.arch
+        env:
+          VERSION: ${{ inputs.version || 'v0.3.20' }}
+          ARCH: ${{ matrix.arch }}
+          POSTGRES_IMAGE: ${{ inputs.postgres || 'postgres:16.10-alpine@sha256:029660641a0cfc575b14f336ba448fb8a75fd595d42e1fa316b9fb4378742297' }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          python3 scripts/build-offline.py --version "$VERSION" --arch "$ARCH" --repository "$REPOSITORY" --postgres "$POSTGRES_IMAGE"
+      - name: Install and reinstall in a network-disabled Docker engine
+        if: github.event_name != 'workflow_dispatch' || inputs.architecture == 'both' || inputs.architecture == matrix.arch
+        env:
+          VERSION: ${{ inputs.version || 'v0.3.20' }}
+          ARCH: ${{ matrix.arch }}
+        run: python3 scripts/test_offline_lifecycle.py "dist/offline/artex-$VERSION-linux-$ARCH-offline.tar.gz"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: github.event_name != 'workflow_dispatch' || inputs.architecture == 'both' || inputs.architecture == matrix.arch
+        with:
+          name: offline-${{ inputs.version || 'v0.3.20' }}-${{ matrix.arch }}
+          path: dist/offline/*.tar.gz*
+          if-no-files-found: error
+          retention-days: ${{ github.event_name == 'workflow_dispatch' && 14 || 1 }}
