@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -113,8 +114,13 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 			out := blocksText(ev.ToolResult.Content)
 			lastTool.done(ev.ToolResult.ToolUseID, ev.ToolResultDisposition, ev.ToolResult.IsError)
 			auditTrace.Complete(ev.ToolResult.ToolUseID, out, ev.ToolResult.IsError)
+			disposition := string(ev.ToolResultDisposition)
+			if ev.ToolResultDisposition == harness.ToolResultActual {
+				disposition = "actual"
+			}
+			metadata, _ := json.Marshal(map[string]any{"execution_provenance": "runtime", "result_disposition": disposition, "output_scope": "saved_tool_result"})
 			rec(db.Activity{Kind: "tool_result", Tool: toolNames[ev.ToolResult.ToolUseID], ToolUseID: ev.ToolResult.ToolUseID,
-				IsError: ev.ToolResult.IsError, Summary: firstLine(out, 200), Detail: out})
+				IsError: ev.ToolResult.IsError, Summary: firstLine(out, 200), Detail: out, Metadata: metadata})
 		case harness.KindText:
 			if strings.TrimSpace(ev.Text) != "" {
 				hasUsableOutput = true

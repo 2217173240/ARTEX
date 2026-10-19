@@ -112,7 +112,7 @@ func (l *loop) execOne(toolCtx context.Context, use llm.ContentBlock, emitProgre
 	// (the failure mode that motivated this net). CaptureOnce is idempotent:
 	// output a tool already spilled/truncated carries a marker and is left
 	// untouched, so this never double-truncates or double-spills.
-	res = capOutput(tc, res)
+	res = capOutput(use.Name, tc, res)
 
 	if l.in.Hooks != nil {
 		raw, _ := json.Marshal(res.Flatten())
@@ -130,10 +130,10 @@ func (l *loop) execOne(toolCtx context.Context, use llm.ContentBlock, emitProgre
 // output cap (tool.CaptureOnce). Non-text blocks pass through untouched. It is
 // the one place that guarantees no tool's output — however constructed — can
 // blow past the context budget.
-func capOutput(tc *tool.ToolContext, res tool.Result) tool.Result {
+func capOutput(name string, tc *tool.ToolContext, res tool.Result) tool.Result {
 	for i, b := range res.Content {
 		if b.Type == llm.BlockText {
-			res.Content[i].Text = tool.CaptureOnce(tc, b.Text)
+			res.Content[i].Text = tool.CaptureToolOutput(name, tc, b.Text)
 		}
 	}
 	return res

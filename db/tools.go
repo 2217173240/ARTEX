@@ -1,9 +1,66 @@
 package db
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 )
+
+// MergeToolSchemaProperties adds optional code-defined parameters to an already
+// seeded built-in. User descriptions, defaults, required fields and bindings
+// remain authoritative; existing property definitions are preserved verbatim.
+func (d *DB) MergeToolSchemaProperties(key string, properties map[string]any) error {
+	tx, err := d.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var raw []byte
+	err = tx.QueryRow(`SELECT schema FROM tools WHERE key=$1 AND system AND kind='builtin' FOR UPDATE`, key).Scan(&raw)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var schema map[string]any
+	if err = decoder.Decode(&schema); err != nil {
+		return err
+	}
+	if schema == nil {
+		return fmt.Errorf("tool %s schema must be an object", key)
+	}
+	props := map[string]any{}
+	if value, exists := schema["properties"]; exists {
+		var ok bool
+		props, ok = value.(map[string]any)
+		if !ok {
+			return fmt.Errorf("tool %s schema properties must be an object", key)
+		}
+	}
+	changed := false
+	for name, value := range properties {
+		if _, exists := props[name]; !exists {
+			props[name] = value
+			changed = true
+		}
+	}
+	if !changed {
+		return tx.Commit()
+	}
+	schema["properties"] = props
+	raw, err = json.Marshal(schema)
+	if err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`UPDATE tools SET schema=$2,updated_at=now() WHERE key=$1`, key, string(raw)); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
 
 // Tool is one row of the built-in tool catalog. key + handler live in code; this
 // row carries only the page-editable surface: description, parameter schema

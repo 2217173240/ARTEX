@@ -94,7 +94,9 @@ func isLiveIntent(n cgNode) bool {
 
 // foldableKind reports whether a node kind is eligible for folding at all (§2:
 // only fact and settled intent; finding/goal/hint/begin/digest never fold).
-func foldableKind(k string) bool { return k == db.KindIntent || k == db.KindFact }
+func foldableKind(k string) bool {
+	return k == db.KindIntent || k == db.KindFact || k == db.KindObservation || k == db.KindValidityGate
+}
 
 // hotSet computes the hot nodes (§2 rule 1+2): a node is hot iff it can reach a
 // live intent by going downstream (it is an ancestor of a live intent), OR it is

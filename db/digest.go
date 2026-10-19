@@ -33,7 +33,7 @@ func (s *ExplorationStore) RoundNo() (int64, error) {
 // debounce and to know which stamps to set/clear this round.
 func (s *ExplorationStore) ColdStamps() (map[int64]*int64, error) {
 	rows, err := s.db.Query(`SELECT id, cold_since_round FROM exploration_nodes
-		WHERE exploration_id=$1 AND kind IN ('intent','fact')`, s.expID)
+		WHERE exploration_id=$1 AND kind IN ('intent','fact','observation','validity_gate')`, s.expID)
 	if err != nil {
 		return nil, err
 	}

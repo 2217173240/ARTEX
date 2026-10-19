@@ -381,7 +381,7 @@ function FindingDetailInner() {
 
         {/* 链路图：从任务初始节点回溯到本漏洞节点的攻击链路 */}
         <TabsContent value="lineage" className="mt-0">
-          <FindingLineageView findingId={finding.id} />
+          <FindingLineageView findingId={finding.id} taskId={finding.task_id} />
         </TabsContent>
       </div>
     </Tabs>

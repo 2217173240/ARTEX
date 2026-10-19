@@ -141,18 +141,22 @@ type EnrichTrigger interface {
 // findings under "facts" (record_fact → Facts, insert_assets → Assets,
 // report_finding → Findings; each element of a batch counts once).
 type WriteCounts struct {
-	Facts    int
-	Assets   int
-	Findings int
+	Facts          int
+	Assets         int
+	Findings       int
+	Observations   int
+	Qualifications int
 }
 
 // Total is every node persisted this run, regardless of kind — the
 // "explored but persisted nothing" signal (Total == 0).
-func (w WriteCounts) Total() int { return w.Facts + w.Assets + w.Findings }
+func (w WriteCounts) Total() int {
+	return w.Facts + w.Assets + w.Findings + w.Observations + w.Qualifications
+}
 
 // String renders the per-kind breakdown for logs, e.g. "事实1 资产25 漏洞0".
 func (w WriteCounts) String() string {
-	return fmt.Sprintf("事实%d 资产%d 漏洞%d", w.Facts, w.Assets, w.Findings)
+	return fmt.Sprintf("事实%d 资产%d 漏洞%d 观察%d 资格%d", w.Facts, w.Assets, w.Findings, w.Observations, w.Qualifications)
 }
 
 // Writes reports what this run wrote back, split by node kind (so the engine can
@@ -491,6 +495,31 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 		recentFacts = append(recentFacts, m)
 	}
 	out["recent_facts"] = recentFacts
+	evidenceTotals, evidenceErr := t.ts.Stats()
+	if evidenceErr != nil {
+		out["evidence_error"] = evidenceErr.Error()
+	}
+	for _, kind := range []string{db.KindObservation, db.KindValidityGate} {
+		nodes, err := t.ts.ListByKind(kind, 1000)
+		if err != nil {
+			out["evidence_error"] = err.Error()
+			continue
+		}
+		if evidenceErr == nil {
+			out[kind+"_total"] = evidenceTotals[kind]
+		}
+		entries := make([]map[string]any, 0, 20)
+		for _, node := range nodes {
+			if hidden(node.ID) {
+				continue
+			}
+			entries = append(entries, compactNode(node))
+			if len(entries) == 20 {
+				break
+			}
+		}
+		out["recent_"+kind] = entries
+	}
 	// recent_done_intents：非折叠的已结束意图里最新的一窗（≤N，recentDone 已按 id 降序）。
 	// 更早的看 done_intents_total 计数 + node_detail(id)。
 	const recentDoneCap = 12
@@ -874,7 +903,15 @@ func inheritedIntentSummaryState(state string) bool {
 func compactNode(n *db.Node) map[string]any {
 	var p map[string]any
 	_ = json.Unmarshal(n.Payload, &p)
-	m := map[string]any{"id": n.ID, "state": n.State, "summary": p["summary"]}
+	m := map[string]any{"id": n.ID, "kind": n.Kind, "state": n.State, "summary": p["summary"]}
+	for _, key := range []string{"qualification", "semantic_status", "conclusion_kind", "source_kind", "capture_status", "source_time", "observation_ids", "audit_id"} {
+		if value, ok := p[key]; ok {
+			m[key] = value
+		}
+	}
+	if n.Kind == db.KindFact && n.State != db.StateOrigin && p["qualification"] == nil {
+		m["qualification"] = "legacy_unchecked"
+	}
 	if n.Inherited {
 		inheritedMap(m, n.SourceTaskID)
 	}
@@ -1304,29 +1341,37 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 // must NOT be stuffed into the asset graph via upsert_asset.
 // factItem 是 record_fact 批量/单条的一条事实。
 type factItem struct {
-	Summary    string            `json:"summary"`
-	Detail     string            `json:"detail"`
-	Evidence   string            `json:"evidence"`   // 一行关键证据（命令+关键输出行），支撑结论、便于事后核对
-	Confidence string            `json:"confidence"` // observed（直接看到）| inferred（据现象推断）
-	IntentID   json.RawMessage   `json:"intent_id"`
-	AssetIDs   []json.RawMessage `json:"asset_ids"`
+	Summary        string            `json:"summary"`
+	Detail         string            `json:"detail"`
+	Evidence       string            `json:"evidence"`   // 一行关键证据（命令+关键输出行），支撑结论、便于事后核对
+	Confidence     string            `json:"confidence"` // observed（直接看到）| inferred（据现象推断）
+	IntentID       json.RawMessage   `json:"intent_id"`
+	AssetIDs       []json.RawMessage `json:"asset_ids"`
+	ObservationIDs []json.RawMessage `json:"observation_ids"`
+	ConclusionKind string            `json:"conclusion_kind"`
+	ContextKey     string            `json:"context_key"`
+	AuditID        json.RawMessage   `json:"audit_id"`
 }
 
 // recordOneFact 写一条 fact 节点并连到意图（intent→yields→fact）。defaultIntent 为
 // 批量时的默认意图（本条未给 intent_id 时用）。
 func (t *ToolSet) recordOneFact(it factItem, defaultIntent int64) (int64, error) {
+	return t.recordOneFactContext(context.Background(), it, defaultIntent)
+}
+
+func (t *ToolSet) recordOneFactContext(ctx context.Context, it factItem, defaultIntent int64) (int64, error) {
 	if strings.TrimSpace(it.Summary) == "" {
 		return 0, fmt.Errorf("summary 不能为空")
 	}
-	payload := map[string]any{"summary": it.Summary}
-	if it.Detail != "" {
-		payload["detail"] = it.Detail
+	observations, err := evidenceIDs(it.ObservationIDs)
+	if err != nil {
+		return 0, err
 	}
-	if e := strings.TrimSpace(it.Evidence); e != "" {
-		payload["evidence"] = e
+	if len(it.AuditID) > 0 && pid(it.AuditID) <= 0 {
+		return 0, fmt.Errorf("audit_id 必须是有效的正整数")
 	}
-	if c := strings.TrimSpace(it.Confidence); c != "" {
-		payload["confidence"] = c
+	if len(it.IntentID) > 0 && pid(it.IntentID) <= 0 {
+		return 0, fmt.Errorf("intent_id 必须是有效的正整数")
 	}
 	intent := pid(it.IntentID)
 	if intent <= 0 {
@@ -1338,20 +1383,19 @@ func (t *ToolSet) recordOneFact(it factItem, defaultIntent int64) (int64, error)
 			return 0, fmt.Errorf("intent_id 必须是本任务的意图（关联任务意图只读）")
 		}
 	}
-	// a fact is its OWN node kind (distinct from a vuln finding).
-	id, err := t.ts.AddNode(db.KindFact, payload, 5, "confirmed", t.worker, pidList(it.AssetIDs))
+	id, err := t.ts.RecordFactWithEvidence(ctx, db.FactEvidenceInput{
+		QualificationInput: db.QualificationInput{TaskID: t.taskID, IntentID: intent, Summary: it.Summary, Detail: it.Detail, ConclusionKind: it.ConclusionKind, ContextKey: it.ContextKey, ObservationIDs: observations, Worker: t.worker},
+		AuditID:            pid(it.AuditID), Evidence: it.Evidence, Confidence: it.Confidence, AssetIDs: pidList(it.AssetIDs),
+	})
 	if err != nil {
 		return 0, err
-	}
-	if intent > 0 {
-		_ = t.ts.Link(intent, db.RelYields, id) // chain: intent -> fact
 	}
 	t.writes.Facts++
 	return id, nil
 }
 
 func (t *ToolSet) recordFact() actool.CoreTool {
-	return t.writeExpTool("record_fact", "把探索【事实/结论】写入探索图，连到产生它的意图（intent_id）。用于记录探索结果——包括指纹/枚举等【正向结论】，和'端口关闭'/'参数不可注入'/'未发现登录入口'等【否定结论】。\n"+
+	return t.writeExpTool("record_fact", "把探索【事实/结论】写入探索图，连到产生它的意图（intent_id）。结构化证据先record_observation，再audit_fact_validity，最后使用完全相同的summary/detail/conclusion_kind/context_key/observation_ids和audit_id记录结论。observation类型须满足来源资格；不足时保存inconclusive。资格仅核查来源，不确认业务语义；旧调用标legacy_unchecked。用于记录指纹/枚举等探索结果。\n"+
 		"⚠️一次探索的多个观察要【汇总成一条事实】，不要拆成多条，可以合并成一条事实的就尽量用一条事实表示：summary=对本次结论的总结性一句话，detail=相关细节（可含多个具体项）。例：指纹意图→一条事实 {summary:'识别了 X 站点的技术栈与响应特征', detail:'nginx 1.25 / Vue3 / 200 / title=.. / body_len=..'}，而不是状态码、指纹、标题各记一条。一条意图通常只产出一条事实，拆太碎会让图谱无限膨胀。\n"+
 		"★facts 数组用于一次写多条【彼此不同】的结论（每条可省略 intent_id，默认用顶层 intent_id）。返回 ids 数组，与 facts 等长同序。\n"+
 		"⚠️只写你在工具输出里【真实看到】的结论，不要脑补。evidence 与 confidence 用来防止不准确的结论污染图谱：\n"+
@@ -1359,31 +1403,43 @@ func (t *ToolSet) recordFact() actool.CoreTool {
 		"  · confidence=observed（输出里直接看到）| inferred（据现象推断）。\n"+
 		"  · **否定类结论**（不可注入/端口关闭/未发现入口等）只写\"观察 + 试探性读法\"——陈述你实际看到什么，方向是否放弃由规划者综合全局定；务必给 evidence，手段没穷尽或证据弱（含只探一次、看起来像）标 inferred，确已穷尽且直接看到才标 observed。",
 		obj(map[string]any{
-			"facts":      map[string]any{"type": "array", "description": "【有多条不同结论时用】事实数组，元素字段同下方顶层字段（summary/detail/evidence/confidence/intent_id/asset_ids）；省略 intent_id 则用顶层 intent_id。返回 ids 与本数组等长、同序。", "items": map[string]any{"type": "object"}},
-			"summary":    str("对本次探索结论的【总结性一句话】（是对 detail 的概括）"),
-			"intent_id":  idp("产生本事实的意图 id（你领到的意图；批量时作为各条默认）"),
-			"detail":     str("本事实的相关细节：把这次探索的多个观察事实都写进这里"),
-			"evidence":   str("【一行】关键证据：命令 + 最能证明结论的那一两行输出。务必简洁，不要粘大段输出（细节放 detail）。"),
-			"confidence": str("observed（输出里直接看到）| inferred（据现象推断）。否定结论务必如实标注。"),
-			"asset_ids":  map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "相关资产 id（可选，0/1/多个）：该事实涉及哪些资产"},
+			"facts":           map[string]any{"type": "array", "description": "【有多条不同结论时用】事实数组，元素字段同下方顶层字段（summary/detail/evidence/confidence/intent_id/asset_ids）；省略 intent_id 则用顶层 intent_id。返回 ids 与本数组等长、同序。", "items": map[string]any{"type": "object"}},
+			"summary":         str("对本次探索结论的【总结性一句话】（是对 detail 的概括）"),
+			"intent_id":       idp("产生本事实的意图 id（你领到的意图；批量时作为各条默认）"),
+			"detail":          str("本事实的相关细节：把这次探索的多个观察事实都写进这里"),
+			"evidence":        str("【一行】关键证据：命令 + 最能证明结论的那一两行输出。务必简洁，不要粘大段输出（细节放 detail）。"),
+			"confidence":      str("observed（输出里直接看到）| inferred（据现象推断）。否定结论务必如实标注。"),
+			"observation_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "结构化原始观察ID；提供时必须有与本summary/detail/context匹配的audit_id"},
+			"conclusion_kind": str("observation/inference/negative/inconclusive/security_claim；业务否定与安全判断缺少语义判定器时拒绝，使用inconclusive"),
+			"context_key":     str("与原始观察、审计一致的目标/身份/对象/用途"),
+			"audit_id":        idp("audit_fact_validity返回的节点id，绑定本claim及观察版本；一次使用"),
+			"asset_ids":       map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "相关资产 id（可选，0/1/多个）：该事实涉及哪些资产"},
 		}),
-		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
 				Facts    []factItem `json:"facts"`
 				factItem            // 单条模式 + 批量默认 intent_id
 			}
-			_ = json.Unmarshal(in, &a)
+			if err := json.Unmarshal(in, &a); err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
+			if len(a.factItem.IntentID) > 0 && pid(a.factItem.IntentID) <= 0 {
+				return actool.Errorf("intent_id 必须是有效的正整数"), nil
+			}
 			batch := len(a.Facts) > 0
 			items := a.Facts
 			if !batch {
 				items = []factItem{a.factItem}
 			}
 			defaultIntent := pid(a.factItem.IntentID) // 顶层 intent_id = 批量默认
+			if defaultIntent <= 0 {
+				defaultIntent = t.ownerNode
+			}
 
 			ids := make([]int64, len(items))
 			errs := map[string]string{}
 			for i, it := range items {
-				id, err := t.recordOneFact(it, defaultIntent)
+				id, err := t.recordOneFactContext(ctx, it, defaultIntent)
 				if err != nil {
 					errs[strconv.Itoa(i)] = err.Error()
 					continue
@@ -2033,6 +2089,7 @@ func (t *ToolSet) listWorkerTraces() actool.CoreTool {
 func (t *ToolSet) PlannerTools() []actool.CoreTool {
 	return []actool.CoreTool{
 		t.graphOverview(), t.listFindings(), t.listFacts(), t.nodeDetail(),
+		t.listObservations(), t.auditFactValidity(),
 		// cold-digest §6.1: restore folded cold nodes (digest body → members → detail).
 		t.expandDigest(),
 		t.getWorkerOutput(), t.getWorkerTrace(), t.searchAllWorkerTraces(), t.listGoals(), t.addIntent(), t.proveGoal(), t.goalMet(),

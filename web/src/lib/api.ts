@@ -98,6 +98,9 @@ import type {
   TaskGoal,
   TaskLLMResolutions,
   TaskNode,
+  TaskOutcome,
+  TaskEvidencePage,
+  TaskEvidenceDetail,
   TaskScopeRow,
   TaskTemplate,
   TokenTotal,
@@ -279,6 +282,26 @@ export const api = {
     get<{ tasks: Task[]; active: string }>("/tasks").then((r) => ({ tasks: arr(r.tasks), active: r.active ?? "" })),
   rerunBlockedAll: () => post<BlockedRecoveryResult>("/tasks/rerun-blocked-all", {}),
   task: (id: string) => get<Task>(`/tasks/${encodeURIComponent(id)}`),
+  taskOutcome: (id: string) => get<TaskOutcome>(`/tasks/${encodeURIComponent(id)}/outcome`),
+  taskEvidence: (id: string, query: { kind?: string; q?: string; before?: number } = {}) => {
+    const params = new URLSearchParams({ limit: "50" });
+    if (query.kind) params.set("kind", query.kind);
+    if (query.q) params.set("q", query.q);
+    if (query.before) params.set("before", String(query.before));
+    return get<TaskEvidencePage>(`/tasks/${encodeURIComponent(id)}/evidence?${params}`);
+  },
+  taskEvidenceDetail: (id: string, nodeId: string) => get<TaskEvidenceDetail>(`/tasks/${encodeURIComponent(id)}/evidence/${encodeURIComponent(nodeId)}`),
+  taskEvidenceBody: (id: string, nodeId: string, side: "request" | "response", offset = 0) =>
+    get<EvidenceBodyPreview>(`/tasks/${encodeURIComponent(id)}/evidence/${encodeURIComponent(nodeId)}/body?side=${side}&offset=${offset}&length=65536`),
+  downloadTaskEvidenceBody: async (id: string, nodeId: string, side: "request" | "response") => {
+    const response = await request(`/tasks/${encodeURIComponent(id)}/evidence/${encodeURIComponent(nodeId)}/body?side=${side}&download=1`);
+    const url = URL.createObjectURL(await response.blob());
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `observation-${nodeId}-${side}.bin`;
+    anchor.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  },
   createTask: (input: {
     name?: string;
     categoryId?: number;

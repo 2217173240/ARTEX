@@ -7,6 +7,14 @@ import (
 	"fmt"
 )
 
+// Observation references are created only after task ownership and CAS identity
+// checks, under findingEvidenceLockKey. Their payload survives graph archives.
+const taskEvidenceSnapshotsSQL = `SELECT s.* FROM traffic_evidence_snapshots s WHERE
+EXISTS(SELECT 1 FROM finding_traffic_bindings b JOIN findings f ON f.id=b.finding_id WHERE b.snapshot_id=s.id AND f.task_id=$1)
+OR EXISTS(SELECT 1 FROM exploration_nodes n JOIN tasks t ON t.exploration_id=n.exploration_id
+ WHERE t.id=$1 AND n.kind='observation' AND n.payload->>'source_kind'='traffic_snapshot'
+ AND n.payload->>'source_id'=s.id) ORDER BY s.id`
+
 func ArchiveEvidenceSnapshots(snapshot *TaskArchiveSnapshot) ([]TrafficEvidenceSnapshot, error) {
 	var out []TrafficEvidenceSnapshot
 	if rawRowCount(snapshot.Tables["traffic_evidence_snapshots"]) == 0 {
@@ -66,7 +74,71 @@ func restoreFindingTrafficTx(tx *sql.Tx, snapshot *TaskArchiveSnapshot) error {
 		}
 		_, err = tx.Exec(`UPDATE traffic_evidence_snapshots s SET unreferenced_at=NULL WHERE EXISTS(SELECT 1 FROM finding_traffic_bindings b WHERE b.snapshot_id=s.id)`)
 	}
-	return err
+	// Pure observation references must also be closed over this package's CAS
+	// snapshots; a JSON source ID never authorizes another task's live snapshot.
+	nodes, err := decodeArchiveRows(snapshot.Tables["exploration_nodes"])
+	if err != nil {
+		return err
+	}
+	for _, node := range nodes {
+		if node["kind"] != KindObservation {
+			continue
+		}
+		payload, ok := node["payload"].(map[string]any)
+		if !ok {
+			return errors.New("invalid archived observation payload")
+		}
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			return err
+		}
+		var observation ObservationPayload
+		if err = json.Unmarshal(raw, &observation); err != nil {
+			return err
+		}
+		if observation.SourceHash != evidenceHash(observation.SourceSnapshot) {
+			return errors.New("archived observation source hash mismatch")
+		}
+		var localIntent bool
+		if err = tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM exploration_nodes WHERE id=$1 AND exploration_id=$2 AND kind='intent')`, observation.IntentID, snapshot.ExplorationID).Scan(&localIntent); err != nil {
+			return err
+		}
+		if !localIntent {
+			return errors.New("archived observation references intent outside task")
+		}
+		if payload["source_kind"] != "traffic_snapshot" {
+			continue
+		}
+		id, _ := payload["source_id"].(string)
+		if !allowed[id] {
+			return errors.New("archived observation references snapshot outside package")
+		}
+		var captured TrafficEvidenceSnapshot
+		if err = json.Unmarshal(observation.SourceSnapshot, &captured); err != nil {
+			return err
+		}
+		if captured.ID != id || TrafficSnapshotID(captured) != id {
+			return errors.New("archived observation snapshot identity mismatch")
+		}
+		var owned bool
+		nodeID, ok := jsonInt64(node["id"])
+		if !ok {
+			return errors.New("invalid archived observation id")
+		}
+		if err = tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM exploration_nodes WHERE id=$1 AND exploration_id=$2 AND kind='observation')`, nodeID, snapshot.ExplorationID).Scan(&owned); err != nil {
+			return err
+		}
+		if !owned {
+			return errors.New("archived observation task mismatch")
+		}
+		if _, err = tx.Exec(`UPDATE traffic_evidence_snapshots SET unreferenced_at=NULL WHERE id=$1`, id); err != nil {
+			return err
+		}
+	}
+	if err != nil {
+		return err
+	}
+	return validateArchivedEvidence(snapshot)
 }
 
 func normalizeArchivedFindingVersions(raw json.RawMessage) (json.RawMessage, error) {

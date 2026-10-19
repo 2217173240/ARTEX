@@ -12,6 +12,7 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   CompassIcon,
+  EyeIcon,
   FlagIcon,
   FlaskConicalIcon,
   LayersIcon,
@@ -20,6 +21,7 @@ import {
   PauseIcon,
   PlayIcon,
   SearchIcon,
+  ShieldCheckIcon,
   TargetIcon,
 } from "lucide-react";
 
@@ -74,6 +76,18 @@ const KIND_META: Record<string, KindMeta> = {
     dot: "bg-amber-500",
     chip: "bg-amber-500/15 text-amber-600 dark:text-amber-400",
   },
+  observation: {
+    label: "观察记录",
+    icon: EyeIcon,
+    dot: "bg-cyan-500",
+    chip: "bg-cyan-500/15 text-cyan-600 dark:text-cyan-400",
+  },
+  validity_gate: {
+    label: "证据资格核验",
+    icon: ShieldCheckIcon,
+    dot: "bg-lime-600",
+    chip: "bg-lime-500/15 text-lime-700 dark:text-lime-400",
+  },
   finding: {
     label: "漏洞",
     icon: BugIcon,
@@ -95,7 +109,7 @@ const KIND_META: Record<string, KindMeta> = {
 };
 
 // 可筛选的类型。起点(fact/state=origin)不单独列,它跟着「事实」一起过滤。
-const FILTER_KINDS: ExploreKind[] = ["goal", "intent", "fact", "finding", "hint", "digest"];
+const FILTER_KINDS: ExploreKind[] = ["goal", "intent", "observation", "validity_gate", "fact", "finding", "hint", "digest"];
 
 const REL_LABEL: Record<string, string> = {
   spawns: "派生",
@@ -103,6 +117,8 @@ const REL_LABEL: Record<string, string> = {
   yields: "产出",
   proves: "证明",
   covers: "压缩",
+  supports: "支持",
+  qualifies: "核验资格",
 };
 
 // goal / intent 的状态语义由全局 status 表提供(StatusBadge);其余类型的状态只在
@@ -138,6 +154,8 @@ const SUMMARY_FIELDS: Record<string, string[]> = {
   goal: ["text"],
   intent: ["summary"],
   fact: ["summary"],
+  observation: ["summary"],
+  validity_gate: ["summary"],
   finding: ["name", "summary"],
   hint: ["text", "summary"],
   digest: ["body", "summary"],

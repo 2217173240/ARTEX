@@ -220,6 +220,19 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 		if err := pg.SeedTool(s.Key, s.Desc, schema, agents); err != nil {
 			log.Printf("[tools] seed %s 失败: %v", s.Key, err)
 		}
+		if s.Key == "record_fact" {
+			// 仅补齐新增可选字段；已有字段、提示、绑定与停用选择继续保留。
+			properties, _ := s.Schema["properties"].(map[string]any)
+			added := make(map[string]any, 4)
+			for _, key := range []string{"observation_ids", "conclusion_kind", "context_key", "audit_id"} {
+				if property, ok := properties[key]; ok {
+					added[key] = property
+				}
+			}
+			if err := pg.MergeToolSchemaProperties(s.Key, added); err != nil {
+				log.Printf("[tools] merge optional evidence fields: %v", err)
+			}
+		}
 	}
 	// Seed the traffic host tools so they're bindable per-agent like built-ins.
 	// Default binding = worker (preserves prior behavior). Their runtime availability

@@ -10,7 +10,7 @@ import type { Edge, TaskNode } from "@/lib/types";
 // FindingLineageView renders the exploration sub-graph from the task's initial
 // node down to this finding's node — the same 攻击链路图 canvas as the task graph,
 // scoped to just this finding's lineage.
-export function FindingLineageView({ findingId }: { findingId: string }) {
+export function FindingLineageView({ findingId, taskId }: { findingId: string; taskId?: string }) {
   const { t: uiText } = useI18n();
   const [nodes, setNodes] = React.useState<TaskNode[]>([]);
   const [edges, setEdges] = React.useState<Edge[]>([]);
@@ -48,6 +48,7 @@ export function FindingLineageView({ findingId }: { findingId: string }) {
     <ExplorationGraph
       nodes={nodes}
       edges={edges}
+      taskId={taskId}
       className="h-[68vh]"
       emptyHint={loaded ? uiText("无链路") : uiText("加载中…")}
     />

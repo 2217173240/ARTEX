@@ -1,0 +1,35 @@
+# 可追溯观察与结论
+
+任务详情「证据记录」可按类型和关键词检索观察、资格记录与事实。在同一抽屉中展开关联记录并返回；原始记录不因图压缩而删除。
+
+## 记录与使用
+
+1. 使用 `record_observation` 记录本意图的观察。来源可以是已有工具结果、已绑定本任务的流量快照，或明确标记的模型录入。
+2. 使用 `audit_fact_validity` 为具体结论生成资格记录。填写准确的 summary、detail、conclusion_kind、context_key 和 observation_ids。
+3. 使用 `record_fact` 提交同一组内容以及 audit_id。服务器重新核对结论、上下文、观察版本和新鲜度，原子保存关联边；资格记录只能绑定一次结论。
+
+来源时间、类别和哈希由服务器解析。运行时明确记录的 actual 工具结果可以成为捕获来源；中断和未执行回执不能成为捕获证据。历史无运行时标记的输出保留未独立核验状态。工具输出仅保存实际已有内容，可能已经截断，不代表完整进程输出。
+
+流量观察复用现有独立 CAS 快照，不重新访问目标。初次引用要求快照已绑定本任务的 finding；观察创建后，即使解绑 finding，正文仍由观察保活，并随任务归档、恢复。正文可分页预览或按原始字节下载，读取时校验哈希和长度。
+
+## 资格的含义
+
+资格检查覆盖已保存来源记录的完整性、同任务和意图归属、声明的上下文一致性及来源时间。默认新鲜度为实际来源时间起 24 小时；重新登记不能延长该时间。
+
+`ready_for_review` 表示这些检查通过。它不证明身份、对象存在、业务结论或漏洞真实性。`context_key` 是声明的上下文，服务器只能核对声明一致；CAS 正文是否仍可读取，在正文读取时独立校验。
+
+来源不足时保存 `inconclusive` 或 `inference` 并保留 `insufficient` / `unknown`。新结构化契约中的 `observation` 必须达到 `ready_for_review`；没有专用可判定依据时，不接受确定性的 `negative` / `security_claim`。既有未传结构化字段的 `record_fact` 保持兼容，显示 `legacy_unchecked`。
+
+现有 `report_finding`、finding 的人工处置、case 归并与复测结论保持原有职责及 `traffic_refs` 接口。本次新增的 observation→资格→fact 链不自动把 finding 标为已确认，也不替代已有流量证据与报告版本检查。
+
+## 查询与数据保留
+
+- `GET /api/tasks/{id}/evidence`：按 `kind`、`q`、`limit`、`before` 查询当前任务。
+- `GET /api/tasks/{id}/evidence/{nodeID}`：节点及相邻关系；不把其他任务记录混入本任务列表。
+- `GET /api/tasks/{id}/evidence/{nodeID}/body`：流量观察的 request / response 正文；支持分页及 `download=1`。
+
+接口沿用管理员认证。冷归档证据需先还原任务后查看，结果汇总仍可直接读取。新增节点进入数据库冷却、压缩、展开和归档闭环；活跃意图的直接子节点保持可见。归档恢复核对引用闭包，跨包、跨任务或哈希不匹配的引用整体失败。
+
+该能力不提供操作系统执行沙箱，也不保证自动识别全部错误结论。
+
+思路来源：[jkl2825/artex-evidence-gate](https://github.com/jkl2825/artex-evidence-gate/commit/6603fb51d5e2c4894d9a858c8fb1cf8348c1731a)，作者 jkl2825，AGPL-3.0。来源为独立导入历史，共同 Git 祖先未证实；当前实现为按本仓库架构的独立适配，没有复制来源整套 HTTP 执行、planner 或 thread 模型。

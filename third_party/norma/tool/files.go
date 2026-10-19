@@ -1,11 +1,14 @@
 package tool
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -34,7 +37,7 @@ func NewRead() CoreTool {
 
 const maxLineLen = 2000
 
-func runRead(_ context.Context, input json.RawMessage, tc *ToolContext) (Result, error) {
+func runRead(ctx context.Context, input json.RawMessage, tc *ToolContext) (Result, error) {
 	var in struct {
 		FilePath string `json:"file_path"`
 		Offset   int    `json:"offset"`
@@ -51,39 +54,78 @@ func runRead(_ context.Context, input json.RawMessage, tc *ToolContext) (Result,
 	if info.IsDir() {
 		return Errorf(fmt.Sprintf("Error: %s is a directory, not a file. Use LS or Glob to list its contents.", in.FilePath)), nil
 	}
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return Errorf(fmt.Sprintf("Error reading %s: %v", in.FilePath, err)), nil
 	}
-	if isBinary(data) {
-		return Text(fmt.Sprintf("[binary file %s not shown — %d bytes]", in.FilePath, len(data))), nil
+	defer f.Close()
+	reader := bufio.NewReaderSize(f, 32<<10)
+	sample, err := reader.Peek(8000)
+	if err != nil && err != io.EOF {
+		return Result{}, err
 	}
-	lines := strings.Split(string(data), "\n")
+	if isBinary(sample) {
+		return Text(fmt.Sprintf("[binary file %s not shown — %d bytes]", in.FilePath, info.Size())), nil
+	}
 	start := 0
 	if in.Offset > 0 {
 		start = in.Offset - 1
-	}
-	if start > len(lines) {
-		start = len(lines)
 	}
 	limit := in.Limit
 	if limit <= 0 {
 		limit = 2000
 	}
-	end := start + limit
-	if end > len(lines) {
-		end = len(lines)
-	}
 	var b strings.Builder
-	for i := start; i < end; i++ {
-		line := lines[i]
-		if len(line) > maxLineLen {
-			line = line[:maxLineLen] + "… [line truncated]"
+	emitted := 0
+	var line []byte
+	for lineNo := 0; emitted < limit; lineNo++ {
+		line = line[:0]
+		lineBytes := 0
+		eof := false
+		for {
+			if err := ctx.Err(); err != nil {
+				return Result{}, err
+			}
+			part, readErr := reader.ReadSlice('\n')
+			text := part
+			if readErr == nil {
+				text = part[:len(part)-1]
+			}
+			lineBytes += len(text)
+			if lineNo >= start && len(line) < maxLineLen {
+				line = append(line, text[:min(len(text), maxLineLen-len(line))]...)
+			}
+			if readErr == bufio.ErrBufferFull {
+				continue
+			}
+			if readErr != nil && readErr != io.EOF {
+				return Result{}, readErr
+			}
+			eof = readErr == io.EOF
+			break
 		}
-		fmt.Fprintf(&b, "%6d\t%s\n", i+1, line)
+		if lineNo >= start {
+			var digits [32]byte
+			number := strconv.AppendInt(digits[:0], int64(lineNo)+1, 10)
+			b.WriteString("      "[:max(0, 6-len(number))])
+			b.Write(number)
+			b.WriteByte('\t')
+			b.Write(line)
+			if lineBytes > maxLineLen {
+				b.WriteString("… [line truncated]")
+			}
+			b.WriteByte('\n')
+			emitted++
+		}
+		if eof {
+			break
+		}
+		if b.Len() > maxOut(tc)+readOutputBonus {
+			break
+		}
 	}
 	if b.Len() == 0 {
-		if len(data) == 0 {
+		if info.Size() == 0 {
 			return Text("(file is empty)"), nil
 		}
 		return Text("(no lines in the requested range)"), nil
@@ -113,14 +155,18 @@ func readCapture(tc *ToolContext, s string, start int) string {
 }
 
 // headWithinBudget returns the largest whole-line prefix of s within max bytes and
-// the number of lines it contains. Falls back to a hard cut if a single line
-// already exceeds the budget (no newline within reach).
+// the number of lines it contains. An oversized first formatted line is returned
+// whole so the next offset advances; Read bounds that line with maxLineLen.
 func headWithinBudget(s string, max int) (string, int) {
 	if len(s) <= max {
 		return s, strings.Count(s, "\n")
 	}
 	cut := strings.LastIndexByte(s[:max], '\n')
 	if cut < 0 {
+		// 第一行有固定截断上限；完整返回它，确保续读 offset 能够前进。
+		if end := strings.IndexByte(s, '\n'); end >= 0 {
+			return s[:end+1], 1
+		}
 		return s[:max], 0
 	}
 	head := s[:cut+1]

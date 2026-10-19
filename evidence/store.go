@@ -347,11 +347,13 @@ func (s *Store) WithInstalledSnapshots(ctx context.Context, snapshots []db.Traff
 func (s *Store) Collect(ctx context.Context, now time.Time) error {
 	return s.DB.WithEvidenceTx(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.Exec(`UPDATE traffic_evidence_snapshots s SET unreferenced_at=$1
-WHERE unreferenced_at IS NULL AND NOT EXISTS(SELECT 1 FROM finding_traffic_bindings b WHERE b.snapshot_id=s.id)`, now); err != nil {
+WHERE unreferenced_at IS NULL AND NOT EXISTS(SELECT 1 FROM finding_traffic_bindings b WHERE b.snapshot_id=s.id)
+AND NOT EXISTS(SELECT 1 FROM exploration_nodes n WHERE n.kind='observation' AND n.payload->>'source_kind'='traffic_snapshot' AND n.payload->>'source_id'=s.id)`, now); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(`DELETE FROM traffic_evidence_snapshots s WHERE unreferenced_at<$1
-AND NOT EXISTS(SELECT 1 FROM finding_traffic_bindings b WHERE b.snapshot_id=s.id)`, now.Add(-24*time.Hour)); err != nil {
+AND NOT EXISTS(SELECT 1 FROM finding_traffic_bindings b WHERE b.snapshot_id=s.id)
+AND NOT EXISTS(SELECT 1 FROM exploration_nodes n WHERE n.kind='observation' AND n.payload->>'source_kind'='traffic_snapshot' AND n.payload->>'source_id'=s.id)`, now.Add(-24*time.Hour)); err != nil {
 			return err
 		}
 		rows, err := tx.Query(`SELECT req_hash FROM traffic_evidence_snapshots UNION SELECT resp_hash FROM traffic_evidence_snapshots`)

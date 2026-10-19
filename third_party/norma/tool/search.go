@@ -1,9 +1,12 @@
 package tool
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -55,6 +58,7 @@ func runGlob(_ context.Context, input json.RawMessage, tc *ToolContext) (Result,
 		mod  int64
 	}
 	var matches []match
+	matchPath := compileGlob(in.Pattern)
 	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
@@ -69,7 +73,7 @@ func runGlob(_ context.Context, input json.RawMessage, tc *ToolContext) (Result,
 		if rerr != nil {
 			rel = p
 		}
-		if matchGlob(in.Pattern, rel) {
+		if matchPath(rel) {
 			var mod int64
 			if info, e := d.Info(); e == nil {
 				mod = info.ModTime().UnixNano()
@@ -91,14 +95,22 @@ func runGlob(_ context.Context, input json.RawMessage, tc *ToolContext) (Result,
 }
 
 func matchGlob(pattern, path string) bool {
+	return compileGlob(pattern)(path)
+}
+
+func compileGlob(pattern string) func(string) bool {
 	pattern = filepath.ToSlash(pattern)
-	path = filepath.ToSlash(path)
-	if !strings.Contains(pattern, "/") {
-		if ok, _ := filepath.Match(pattern, filepath.Base(path)); ok {
-			return true
+	segments := strings.Split(pattern, "/")
+	baseOnly := !strings.Contains(pattern, "/")
+	return func(path string) bool {
+		path = filepath.ToSlash(path)
+		if baseOnly {
+			if ok, _ := filepath.Match(pattern, filepath.Base(path)); ok {
+				return true
+			}
 		}
+		return globSegments(segments, strings.Split(path, "/"))
 	}
-	return globSegments(strings.Split(pattern, "/"), strings.Split(path, "/"))
 }
 
 func globSegments(pat, name []string) bool {
@@ -166,7 +178,7 @@ func NewGrep() CoreTool {
 	})
 }
 
-func runGrep(_ context.Context, input json.RawMessage, tc *ToolContext) (Result, error) {
+func runGrep(ctx context.Context, input json.RawMessage, tc *ToolContext) (Result, error) {
 	var in struct {
 		Pattern    string `json:"pattern"`
 		Path       string `json:"path"`
@@ -223,19 +235,22 @@ func runGrep(_ context.Context, input json.RawMessage, tc *ToolContext) (Result,
 
 	// Prefer the ripgrep binary when available; fall back to the Go walk below.
 	if rg := RipgrepPath(); rg != "" {
-		if res, ok := runWithRipgrep(rg, ripgrepReq{
+		if res, ok := runWithRipgrep(ctx, rg, ripgrepReq{
 			pattern: in.Pattern, glob: in.Glob, typ: in.Type, mode: mode,
 			ignoreCase: in.IgnoreCase, multiline: in.Multiline, showLines: showLines,
 			before: before, after: after, root: root, headLimit: in.HeadLimit, offset: in.Offset,
 		}, tc); ok {
 			return res, nil
 		}
+		if ctx.Err() != nil {
+			return Result{}, ctx.Err()
+		}
 	}
 
 	typeGlobs := rgTypeGlobs(in.Type)
 	var results []grepHit
 	scan := func(p, base string) {
-		fh := scanFile(p, base, re, mode, showLines, in.Multiline, before, after)
+		fh := scanFileContext(ctx, p, base, re, mode, showLines, in.Multiline, before, after)
 		if fh != nil {
 			results = append(results, *fh)
 		}
@@ -246,6 +261,9 @@ func runGrep(_ context.Context, input json.RawMessage, tc *ToolContext) (Result,
 	}
 	if info.IsDir() {
 		_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			if err != nil {
 				return nil
 			}
@@ -269,6 +287,9 @@ func runGrep(_ context.Context, input json.RawMessage, tc *ToolContext) (Result,
 		})
 	} else {
 		scan(root, filepath.Dir(root))
+	}
+	if ctx.Err() != nil {
+		return Result{}, ctx.Err()
 	}
 	if len(results) == 0 {
 		return Text("No matches found"), nil
@@ -380,13 +401,27 @@ type grepHit struct {
 }
 
 func scanFile(path, base string, re *regexp.Regexp, mode string, showLines, multiline bool, before, after int) *grepHit {
-	data, err := os.ReadFile(path)
-	if err != nil || isBinary(data) {
-		return nil
-	}
+	return scanFileContext(context.Background(), path, base, re, mode, showLines, multiline, before, after)
+}
+
+func scanFileContext(ctx context.Context, path, base string, re *regexp.Regexp, mode string, showLines, multiline bool, before, after int) *grepHit {
 	rel := path
 	if r, e := filepath.Rel(base, path); e == nil {
 		rel = r
+	}
+	if !multiline && mode != "content" {
+		count := scanLineCount(ctx, path, re)
+		if count == 0 {
+			return nil
+		}
+		return &grepHit{path: rel, count: count}
+	}
+	if ctx.Err() != nil {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || isBinary(data) {
+		return nil
 	}
 	lines := strings.Split(string(data), "\n")
 	if n := len(lines); n > 0 && lines[n-1] == "" {
@@ -403,13 +438,17 @@ func scanFile(path, base string, re *regexp.Regexp, mode string, showLines, mult
 			off += len(ln) + 1 // + newline
 		}
 		hit := make([]bool, len(lines))
+		first := 0
 		for _, loc := range re.FindAllIndex(data, -1) {
+			if ctx.Err() != nil {
+				return nil
+			}
 			s, e := loc[0], loc[1]
-			for i := range lines {
-				ls, le := lineStart[i], lineStart[i]+len(lines[i])
-				if s <= le && e > ls {
-					hit[i] = true
-				}
+			for first < len(lines) && lineStart[first]+len(lines[first]) < s {
+				first++
+			}
+			for i := first; i < len(lines) && lineStart[i] < e; i++ {
+				hit[i] = true
 			}
 		}
 		for i, h := range hit {
@@ -419,6 +458,9 @@ func scanFile(path, base string, re *regexp.Regexp, mode string, showLines, mult
 		}
 	} else {
 		for i, ln := range lines {
+			if ctx.Err() != nil {
+				return nil
+			}
 			if re.MatchString(ln) {
 				matches = append(matches, i)
 			}
@@ -432,13 +474,13 @@ func scanFile(path, base string, re *regexp.Regexp, mode string, showLines, mult
 		return res
 	}
 
-	isMatch := make(map[int]bool, len(matches))
+	isMatch := make([]bool, len(lines))
 	for _, m := range matches {
 		isMatch[m] = true
 	}
 	// Collect the set of line indices to print (matches plus context), in order.
 	var order []int
-	seen := map[int]bool{}
+	last := -1
 	for _, m := range matches {
 		lo, hi := m-before, m+after
 		if lo < 0 {
@@ -447,14 +489,11 @@ func scanFile(path, base string, re *regexp.Regexp, mode string, showLines, mult
 		if hi >= len(lines) {
 			hi = len(lines) - 1
 		}
-		for j := lo; j <= hi; j++ {
-			if !seen[j] {
-				seen[j] = true
-				order = append(order, j)
-			}
+		for j := max(lo, last+1); j <= hi; j++ {
+			order = append(order, j)
+			last = j
 		}
 	}
-	sort.Ints(order)
 
 	hasContext := before > 0 || after > 0
 	prev := -2
@@ -474,4 +513,44 @@ func scanFile(path, base string, re *regexp.Regexp, mode string, showLines, mult
 		prev = j
 	}
 	return res
+}
+
+// 按行计数保留正则和二进制检查语义；超长单行仍然允许完整匹配。
+func scanLineCount(ctx context.Context, path string, re *regexp.Regexp) int {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0
+	}
+	defer f.Close()
+	r := bufio.NewReaderSize(f, 32<<10)
+	sample, err := r.Peek(8000)
+	if (err != nil && err != io.EOF) || isBinary(sample) {
+		return 0
+	}
+	count := 0
+	var long []byte
+	for {
+		if ctx.Err() != nil {
+			return 0
+		}
+		line, err := r.ReadSlice('\n')
+		if err == bufio.ErrBufferFull {
+			long = append(long, line...)
+			continue
+		}
+		if err != nil && err != io.EOF {
+			return 0
+		}
+		if len(long) > 0 {
+			long = append(long, line...)
+			line = long
+		}
+		if len(line) > 0 && re.Match(bytes.TrimSuffix(line, []byte{'\n'})) {
+			count++
+		}
+		long = long[:0]
+		if err == io.EOF {
+			return count
+		}
+	}
 }

@@ -80,6 +80,13 @@ func (d *DB) CreateFindingRetest(ctx context.Context, findingID int64, notes str
 		return nil, nil, false, err
 	}
 	defer tx.Rollback()
+	// 与归档排队共用 task→finding 锁序，排队后不再创建快照之外的复测记录。
+	if err := LockFindingEvidenceTx(tx, findingID, nil); err != nil {
+		if errors.Is(err, ErrFindingNotFound) {
+			return nil, nil, false, sql.ErrNoRows
+		}
+		return nil, nil, false, err
+	}
 	var title string
 	var snapshot []byte
 	err = tx.QueryRowContext(ctx, `SELECT COALESCE(NULLIF(f.name,''), NULLIF(f.vulnclass,''), '未分类'),
@@ -97,6 +104,10 @@ func (d *DB) CreateFindingRetest(ctx context.Context, findingID int64, notes str
 	if r != nil {
 		return r, nil, false, nil
 	}
+	var sourceTaskID sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `SELECT task_id FROM findings WHERE id=$1`, findingID).Scan(&sourceTaskID); err != nil {
+		return nil, nil, false, err
+	}
 	// Keep the title within the same limit as ordinary conversations.
 	if runes := []rune(title); len(runes) > 100 {
 		title = string(runes[:100])
@@ -109,6 +120,10 @@ func (d *DB) CreateFindingRetest(ctx context.Context, findingID int64, notes str
 	r, err = scanRetest(tx.QueryRowContext(ctx, `INSERT INTO finding_retests(finding_id,conversation_id,notes,snapshot) VALUES ($1,$2,$3,$4) RETURNING `+retestCols,
 		findingID, c.ID, strings.TrimSpace(notes), snapshot))
 	if err != nil {
+		return nil, nil, false, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE conversations SET retest_binding=jsonb_build_object(
+ 'retest_id',$2::bigint,'finding_id',$3::bigint,'task_id',$4::bigint) WHERE id=$1`, c.ID, r.ID, findingID, sourceTaskID); err != nil {
 		return nil, nil, false, err
 	}
 	msg := r.InitialMessage()
@@ -216,14 +231,35 @@ func (d *DB) FinishFindingRetest(id int64, status, reason string) error {
 		return err
 	}
 	defer tx.Rollback()
-	// Lock the finding before the retest, matching creation and cascading deletion.
+	// task→finding→retest 与创建及归档保持相同顺序。终止仍可解除旧归档的活动占用。
+	var taskID sql.NullInt64
+	err = tx.QueryRow(`SELECT f.task_id FROM findings f WHERE f.id=(SELECT finding_id FROM finding_retests WHERE id=$1)`, id).Scan(&taskID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if taskID.Valid {
+		var lockedTaskID int64
+		if err := tx.QueryRow(`SELECT id FROM tasks WHERE id=$1 FOR UPDATE`, taskID.Int64).Scan(&lockedTaskID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil
+			}
+			return err
+		}
+	}
 	var findingID int64
-	err = tx.QueryRow(`SELECT f.id FROM findings f WHERE f.id=(SELECT finding_id FROM finding_retests WHERE id=$1) FOR UPDATE OF f`, id).Scan(&findingID)
+	var lockedSource sql.NullInt64
+	err = tx.QueryRow(`SELECT f.id,f.task_id FROM findings f WHERE f.id=(SELECT finding_id FROM finding_retests WHERE id=$1) FOR UPDATE OF f`, id).Scan(&findingID, &lockedSource)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil // Finding/retest already deleted.
 	}
 	if err != nil {
 		return err
+	}
+	if lockedSource != taskID {
+		return errors.New("finding task changed during retest completion")
 	}
 	var finalStatus, verdict string
 	err = tx.QueryRow(`UPDATE finding_retests SET

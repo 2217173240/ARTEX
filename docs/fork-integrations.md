@@ -1,5 +1,18 @@
 # 同源功能集成
 
+2026-10-19 以 `7856b4b5853ad227da41b77188635508479c8a08` 为基线，继续适配四项有明确使用价值的能力：
+
+| 来源与归属 | 当前采用范围 |
+| --- | --- |
+| [RC-CHN/ARTEX · `d2b11ab`](https://github.com/RC-CHN/ARTEX/commit/d2b11ab3674f426a6f9044ce96be40c6736a1a0a)，作者 **RuochenPan / RC-CHN**，AGPL-3.0 | 固定 Norma v0.4.3 上独立适配流式命令输出、分页读取、搜索分配和取消处理。原始 upstream 哈希与补丁许可保留；未引入来源的文件 CAS、远程 Runner 或整套应用。具体兼容边界见 [Norma 补丁记录](../third_party/norma/PATCHES.md)。 |
+| [BaaRai/ARTEX PR #102](https://github.com/BaaRai/ARTEX/pull/102)，head `283348ef8573da36db79e699b9ac0e5324953a91`，作者 **BaaRai**，AGPL-3.0 | 按当前账本、任务归属和归档模型实现任务结果卡及 UI。继续完善真实复测历史的归档恢复、运行竞态与会话归属；没有把来源的 benchmark 声明当作已验证收益。计量范围见[任务结果说明](task-outcomes.md)。 |
+| [jkl2825/artex-evidence-gate · `6603fb51`](https://github.com/jkl2825/artex-evidence-gate/commit/6603fb51d5e2c4894d9a858c8fb1cf8348c1731a)，作者 **jkl2825**，AGPL-3.0 | 独立实现 observation→资格记录→fact 的可追溯链，接入现有执行记录与 CAS 流量快照、检索、展开、冷压缩和归档。资格限定来源记录完整性，业务语义保持未知；不移植来源的通用 HTTP 执行器、baseline 复用或 thread/planner 架构。来源为独立导入根，未证明共同 Git 祖先。见[证据说明](evidence-provenance.md)。 |
+| [RuoJi6/ARTEX PR #17](https://github.com/RuoJi6/ARTEX/pull/17)，head `c594efd2b14bfda4e2c067896879e57e618a8830`，作者 **adeljck**，AGPL-3.0 | 借鉴离线包思路，按本 fork 已验证发布镜像、OCI 身份、私有输入排除和现有构建入口独立实现。来源 PR 关闭且未合并；本 fork 的实际双架构验收分别记录，不继承来源自述。见[离线部署说明](offline-deployment.md)。 |
+
+性能对比使用真实固定文件与命令，结果仅适用于记录的场景。任务、来源、语义和归档的新边界使用隔离 PostgreSQL 验证；离线安装使用无外网、空镜像仓库的真实 Docker 环境。新功能无需先被描述为已有缺陷，采用依据是明确收益、架构契合及可验证的维护成本。
+
+采用时保留来源作者与许可；改写部分及本 fork 的兼容、安全和恢复完善另行说明。原有来源监测的事件游标没有因本次功能集成而推进，元数据枚举仍不代表全部源码审计。
+
 2026-10-19 借鉴 [ylh440104/ARTEX · `04569b54`](https://github.com/ylh440104/ARTEX/commit/04569b54bc5fcd419bdefb3da2e2136f2f7ff8c5) 的错误响应防护线索，作者 **ylh440104**，精确提交许可证为 AGPL-3.0。来源是导入快照，未能核实共同 Git 祖先；保留具体提交和许可证证据，没有整体复制历史。
 
 改动前，认证后的文件、数据库和网络错误可经统一写入器直接返回内部诊断。按 [OWASP 错误处理指引](https://cheatsheetseries.owasp.org/cheatsheets/Error_Handling_Cheat_Sheet.html) 独立实现：意外的 5xx 返回固定通用文本，保留状态码、JSON `error` 字段和普通 4xx 提示；明确编写的配置恢复、服务可用性及部分完成说明使用单独的公开消息入口，不传入原始错误。另在模型代理校验源头移除完整 URL 回显，保留既有代理类型及路由行为。没有采用来源的正则脱敏和 panic 包装器；这不是所有响应、日志或流式消息的通用凭据清理。纯合成回归及固定 HEAD 的 CI 用于验证本轮边界，不代表已发生匿名凭据泄露。

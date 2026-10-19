@@ -22,9 +22,21 @@ import {
   useNodesState,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { Bug, Compass, Flag, FlaskConical, Layers, Lightbulb, type LucideIcon, Target } from "lucide-react";
+import {
+  Bug,
+  Compass,
+  Eye,
+  Flag,
+  FlaskConical,
+  Layers,
+  Lightbulb,
+  type LucideIcon,
+  ShieldCheck,
+  Target,
+} from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { EvidenceNodeDetails } from "@/components/evidence-node-details";
 import { Badge } from "@/components/ui/badge";
 import { StatusBadge } from "@/components/status-badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -37,6 +49,8 @@ export const relLabel: Record<string, string> = {
   derived_from: "意图链",
   yields: "产出",
   proves: "证明",
+  supports: "支持",
+  qualifies: "核验资格",
 };
 
 export const relColor: Record<string, string> = {
@@ -44,6 +58,8 @@ export const relColor: Record<string, string> = {
   derived_from: "#6366f1",
   yields: "#f59e0b",
   proves: "#ef4444",
+  supports: "#06b6d4",
+  qualifies: "#84cc16",
 };
 
 type TypeMeta = {
@@ -97,6 +113,20 @@ const typeMeta: Record<ExploreKind, TypeMeta> = {
     chip: "bg-amber-500/15 text-amber-600 dark:text-amber-400",
     hex: "#f59e0b",
   },
+  observation: {
+    label: "观察记录",
+    icon: Eye,
+    iconBg: "bg-cyan-500",
+    chip: "bg-cyan-500/15 text-cyan-600 dark:text-cyan-400",
+    hex: "#06b6d4",
+  },
+  validity_gate: {
+    label: "证据资格核验",
+    icon: ShieldCheck,
+    iconBg: "bg-lime-600",
+    chip: "bg-lime-500/15 text-lime-700 dark:text-lime-400",
+    hex: "#84cc16",
+  },
   finding: {
     label: "漏洞",
     icon: Bug,
@@ -129,6 +159,8 @@ const summaryFields: Record<ExploreKind, string[]> = {
   hint: [],
   intent: ["summary"],
   fact: ["summary"],
+  observation: ["summary"],
+  validity_gate: ["summary"],
   finding: ["name", "summary"],
   digest: ["body"],
 };
@@ -348,7 +380,7 @@ function ExploreNode({ data, selected }: NodeProps<ExploreRFNode>) {
             <Icon className="size-3.5 text-white" />
           </span>
           <span className="grow truncate text-[13px] font-semibold text-neutral-700 dark:text-neutral-100">
-            {meta.label}
+            {uiText(meta.label)}
           </span>
           {isLive && (
             <span className="relative flex size-2 shrink-0">
@@ -368,7 +400,7 @@ function ExploreNode({ data, selected }: NodeProps<ExploreRFNode>) {
           )}
         </div>
         <div className="line-clamp-3 px-3 pb-2 text-[13px] leading-snug text-neutral-500 dark:text-neutral-400">
-          {nodeSummary(n) || meta.label}
+          {nodeSummary(n) || uiText(meta.label)}
         </div>
         <div className="flex items-center justify-between gap-2 px-3 pb-2.5">
           {n.inherited && n.source_task_id ? (
@@ -388,7 +420,7 @@ function ExploreNode({ data, selected }: NodeProps<ExploreRFNode>) {
               className="px-1.5 py-0 text-[10px]"
             />
           ) : (
-            <span className="text-[10px] text-neutral-400 dark:text-neutral-500">{meta.label}</span>
+            <span className="text-[10px] text-neutral-400 dark:text-neutral-500">{uiText(meta.label)}</span>
           )}
           <span className="shrink-0 font-mono text-[10px] text-neutral-400 dark:text-neutral-500">#{n.id}</span>
         </div>
@@ -418,18 +450,29 @@ function NodeDetailSheet({
   nodesById,
   onSelect,
   onOpenChange,
+  edges,
+  taskId,
 }: {
   node: TaskNode | null;
   nodesById: Map<string, TaskNode>;
   onSelect: (n: TaskNode) => void;
   onOpenChange: (open: boolean) => void;
+  edges: Edge[];
+  taskId?: string;
 }) {
   const { t: uiText } = useI18n();
   const [copied, setCopied] = React.useState(false);
   const meta = node ? (typeMeta[viewKind(node)] ?? typeMeta.intent) : null;
   const Icon = meta?.icon;
   const raw = node ? JSON.stringify(node, null, 2) : "";
-  const memberIds = node ? digestMemberIds(node) : [];
+  const memberIds = node
+    ? Array.from(
+        new Set([
+          ...digestMemberIds(node),
+          ...edges.filter((edge) => edge.rel === "covers" && edge.src === node.id).map((edge) => edge.dst),
+        ]),
+      )
+    : [];
   const members = memberIds.map((id) => nodesById.get(id)).filter((m): m is TaskNode => !!m);
 
   const copy = () => {
@@ -441,7 +484,7 @@ function NodeDetailSheet({
 
   return (
     <Sheet open={node !== null} onOpenChange={onOpenChange}>
-      <SheetContent side="right" className="flex w-full flex-col gap-0 p-0 data-[side=right]:sm:max-w-md">
+      <SheetContent side="right" className="flex flex-col gap-0 p-0 data-[side=right]:w-full data-[side=right]:sm:max-w-md">
         {node && meta && Icon && (
           <>
             <SheetHeader className="border-b p-4">
@@ -452,7 +495,7 @@ function NodeDetailSheet({
                   <Icon className="size-4 text-white" />
                 </span>
                 <div className="min-w-0">
-                  <SheetTitle className="leading-tight">{meta.label}</SheetTitle>
+                  <SheetTitle className="leading-tight">{uiText(meta.label)}</SheetTitle>
                   <span className="text-muted-foreground font-mono text-xs">{node.id}</span>
                 </div>
                 {node.inherited && node.source_task_id && (
@@ -468,7 +511,7 @@ function NodeDetailSheet({
               <div className="flex w-full min-w-0 flex-col gap-4 p-4">
                 <section>
                   <h4 className="text-muted-foreground mb-1 text-xs font-medium">{uiText("属性")}</h4>
-                  <DetailRow label={uiText("类型")}>{meta.label}</DetailRow>
+                  <DetailRow label={uiText("类型")}>{uiText(meta.label)}</DetailRow>
                   <DetailRow label={uiText("状态")}>
                     {node.type === "goal" || node.type === "intent" ? (
                       <StatusBadge
@@ -497,6 +540,8 @@ function NodeDetailSheet({
                   )}
                   <DetailRow label={uiText("时间")}>{new Date(node.ts).toLocaleString("zh-CN")}</DetailRow>
                 </section>
+
+                <EvidenceNodeDetails node={node} nodesById={nodesById} onSelect={onSelect} taskId={taskId} />
 
                 {node.type === "digest" && (
                   <>
@@ -534,10 +579,10 @@ function NodeDetailSheet({
                               </span>
                               <span className="min-w-0 flex-1">
                                 <span className="text-foreground line-clamp-2 text-xs leading-snug">
-                                  {nodeSummary(m) || mMeta.label}
+                                  {nodeSummary(m) || uiText(mMeta.label)}
                                 </span>
                                 <span className="text-muted-foreground block font-mono text-[10px]">
-                                  {mMeta.label} · #{m.id}
+                                  {uiText(mMeta.label)} · #{m.id}
                                 </span>
                               </span>
                             </button>
@@ -584,10 +629,12 @@ function ExplorationGraphInner({
   nodes,
   edges,
   emptyHint: emptyHintProp,
+  taskId,
 }: {
   nodes: TaskNode[];
   edges: Edge[];
   emptyHint?: string;
+  taskId?: string;
 }) {
   const { t: uiText } = useI18n();
   const emptyHint = emptyHintProp ?? uiText("暂无探索数据");
@@ -626,7 +673,7 @@ function ExplorationGraphInner({
           id: `e${i}-${e.src}-${e.dst}`,
           source: e.src,
           target: e.dst,
-          label: relLabel[e.rel] ?? e.rel,
+          label: uiText(relLabel[e.rel] ?? e.rel),
           type: "default",
           animated,
           labelShowBg: false,
@@ -636,7 +683,7 @@ function ExplorationGraphInner({
         } satisfies RFEdge;
       }),
     );
-  }, [viewNodes, viewEdges, nodesById, setRfNodes, setRfEdges]);
+  }, [viewNodes, viewEdges, nodesById, setRfNodes, setRfEdges, uiText]);
 
   return (
     <>
@@ -678,10 +725,22 @@ function ExplorationGraphInner({
           nodeBorderRadius={4}
         />
         <Panel position="top-left">
-          <div className="bg-card/95 flex flex-col gap-2.5 rounded-lg border p-3 text-xs shadow-sm backdrop-blur">
+          <div className="bg-card/95 flex max-w-[min(36rem,calc(100vw-6rem))] flex-col gap-2.5 rounded-lg border p-3 text-xs shadow-sm backdrop-blur">
             {isEmpty && <span className="text-muted-foreground">{emptyHint}</span>}
             <div className="flex flex-wrap gap-x-3 gap-y-1.5">
-              {(["begin", "goal", "intent", "fact", "finding", "hint", "digest"] as ExploreKind[]).map((k) => {
+              {(
+                [
+                  "begin",
+                  "goal",
+                  "intent",
+                  "observation",
+                  "validity_gate",
+                  "fact",
+                  "finding",
+                  "hint",
+                  "digest",
+                ] as ExploreKind[]
+              ).map((k) => {
                 const m = typeMeta[k];
                 const Icon = m.icon;
                 return (
@@ -689,7 +748,7 @@ function ExplorationGraphInner({
                     <span className={cn("flex size-4 items-center justify-center rounded", m.iconBg)}>
                       <Icon className="size-2.5 text-white" />
                     </span>
-                    {m.label}
+                    {uiText(m.label)}
                   </span>
                 );
               })}
@@ -698,7 +757,7 @@ function ExplorationGraphInner({
               {Object.entries(relLabel).map(([k, v]) => (
                 <span key={k} className="inline-flex items-center gap-1.5">
                   <span className="h-0.5 w-4 rounded-full" style={{ backgroundColor: relColor[k] }} />
-                  {v}
+                  {uiText(v)}
                 </span>
               ))}
             </div>
@@ -708,6 +767,8 @@ function ExplorationGraphInner({
       <NodeDetailSheet
         node={selected}
         nodesById={nodesById}
+        edges={edges}
+        taskId={taskId}
         onSelect={setSelected}
         onOpenChange={(o) => !o && setSelected(null)}
       />
@@ -722,16 +783,18 @@ export function ExplorationGraph({
   edges,
   className,
   emptyHint,
+  taskId,
 }: {
   nodes: TaskNode[];
   edges: Edge[];
   className?: string;
   emptyHint?: string;
+  taskId?: string;
 }) {
   return (
     <div className={cn("w-full overflow-hidden rounded-xl", className)}>
       <ReactFlowProvider>
-        <ExplorationGraphInner nodes={nodes} edges={edges} emptyHint={emptyHint} />
+        <ExplorationGraphInner nodes={nodes} edges={edges} emptyHint={emptyHint} taskId={taskId} />
       </ReactFlowProvider>
     </div>
   );

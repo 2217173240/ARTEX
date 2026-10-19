@@ -48,6 +48,7 @@ import { AssetInterceptRulesEditor } from "@/components/asset-intercept-rules-ed
 import { StatusBadge } from "@/components/status-badge";
 import { TablePagination } from "@/components/table-pagination";
 import { TaskLLMProfileChain } from "@/components/task-llm-profile-chain";
+import { TaskOutcomeDialog } from "@/components/task-outcome-dialog";
 import { TaskTemplateControls } from "@/components/task-template-controls";
 import {
   AlertDialog,
@@ -2139,6 +2140,7 @@ function TaskArchivesPanel({ onChanged }: { onChanged: () => void }) {
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-0.5">
+                        <TaskOutcomeDialog taskId={String(archive.task_id)} taskName={archive.task_name || archive.task_description} />
                         {ARCHIVE_FAILED_STATES.has(archive.state) && (
                           <Button
                             size="icon"
