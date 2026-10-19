@@ -1,5 +1,9 @@
 # 同源功能集成
 
+2026-10-19 借鉴 [ylh440104/ARTEX · `04569b54`](https://github.com/ylh440104/ARTEX/commit/04569b54bc5fcd419bdefb3da2e2136f2f7ff8c5) 的错误响应防护线索，作者 **ylh440104**，精确提交许可证为 AGPL-3.0。来源是导入快照，未能核实共同 Git 祖先；保留具体提交和许可证证据，没有整体复制历史。
+
+改动前，认证后的文件、数据库和网络错误可经统一写入器直接返回内部诊断。按 [OWASP 错误处理指引](https://cheatsheetseries.owasp.org/cheatsheets/Error_Handling_Cheat_Sheet.html) 独立实现：意外的 5xx 返回固定通用文本，保留状态码、JSON `error` 字段和普通 4xx 提示；明确编写的配置恢复、服务可用性及部分完成说明使用单独的公开消息入口，不传入原始错误。另在模型代理校验源头移除完整 URL 回显，保留既有代理类型及路由行为。没有采用来源的正则脱敏和 panic 包装器；这不是所有响应、日志或流式消息的通用凭据清理。纯合成回归及固定 HEAD 的 CI 用于验证本轮边界，不代表已发生匿名凭据泄露。
+
 2026-10-17 适配 mhtsec/ARTEX 的凭据正文边界：固定提交 [`2d1e156`](https://github.com/mhtsec/ARTEX/commit/2d1e156da4d17e1c48dad457ae62697eb1aef285) 的读取时限与收尾，结合前序 [`2402535`](https://github.com/mhtsec/ARTEX/commit/2402535a9bcef55eb6d7f11fa74d182647ea751c) 的 4 KiB 上限和单 JSON 完整性思路，作者 **mhtsec**，AGPL-3.0。共同初始祖先为 `0ef8561411dd1757e41ba3c45d1436e1fd3774f1`，精确提交的许可证和来源证据保留在任务本地监测记录。
 
 本地合成请求复现了原入口接受超大正文和第二段 JSON、慢速正文持续占用读取的问题。按当前认证架构独立封装三个凭据接口的正文保护：入口立即建立大小与读取时限，完整解码和 EOF 后才恢复连接复用；限流、数据库、身份、跨源与 Basic Auth 的提前拒绝也处理未读正文。保留未知小字段兼容、初始化原子写入、密码 CAS、已有会话撤销和 cookie 契约。实现依据 [Go MaxBytesReader](https://pkg.go.dev/net/http#MaxBytesReader) 与 [ResponseController.SetReadDeadline](https://pkg.go.dev/net/http#ResponseController.SetReadDeadline) 的实际传输语义，验证区分内存 recorder 与真实 HTTP/1、HTTP/2 服务。测试入口只在显式设置隔离 `ARTEX_PG_DSN` 时探测数据库并获取套件锁，纯内存回归避免启动时无条件探测应用配置中的数据库；完整数据库套件仍需显式提供隔离 fixture。

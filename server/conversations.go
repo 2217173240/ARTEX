@@ -412,7 +412,7 @@ func (s *Server) pgSendConversationMessage(w http.ResponseWriter, r *http.Reques
 	// conversation that picked a valid LLM is not rejected just because no global
 	// config is active.
 	if s.resolveChatAgent(c) == nil {
-		writeErr(w, 503, s.chatUnavailableReason())
+		writePublicErr(w, 503, s.chatUnavailableReason())
 		return
 	}
 

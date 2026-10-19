@@ -177,7 +177,7 @@ func (s *Server) authStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	hash, _, err := pg.GetSetting(authPassKey)
 	if err != nil {
-		writeErr(w, 503, errDataSourceUnavailable)
+		writePublicErr(w, 503, errDataSourceUnavailable)
 		return
 	}
 	writeJSON(w, 200, map[string]any{"initialized": hash != "", "setup_token_required": hash == ""})
@@ -196,7 +196,7 @@ func (s *Server) authInit(w http.ResponseWriter, r *http.Request) {
 	}
 	existing, _, err := pg.GetSetting(authPassKey)
 	if err != nil {
-		writeErr(w, 503, errDataSourceUnavailable)
+		writePublicErr(w, 503, errDataSourceUnavailable)
 		return
 	}
 	if existing != "" {
@@ -224,7 +224,7 @@ func (s *Server) authInit(w http.ResponseWriter, r *http.Request) {
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
-		writeErr(w, 500, "密码加密失败")
+		writePublicErr(w, 500, "密码加密失败")
 		return
 	}
 	// 用 INSERT ... ON CONFLICT DO NOTHING 而不是 upsert：上面那次 GetSetting 只是
@@ -241,7 +241,7 @@ func (s *Server) authInit(w http.ResponseWriter, r *http.Request) {
 	}
 	tok, err := s.signAdminJWT(string(hash))
 	if err != nil {
-		writeErr(w, 500, "token 生成失败")
+		writePublicErr(w, 500, "token 生成失败")
 		return
 	}
 	setAuthCookie(w, r, tok, int(jwtTTL.Seconds()))
@@ -280,7 +280,7 @@ func (s *Server) authChangePassword(w http.ResponseWriter, r *http.Request) {
 	}
 	newHash, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
 	if err != nil {
-		writeErr(w, 500, "密码加密失败")
+		writePublicErr(w, 500, "密码加密失败")
 		return
 	}
 	updated, err := pg.CompareAndSetSetting(authPassKey, hash, string(newHash))
@@ -294,7 +294,7 @@ func (s *Server) authChangePassword(w http.ResponseWriter, r *http.Request) {
 	}
 	tok, err := s.signAdminJWT(string(newHash))
 	if err != nil {
-		writeErr(w, 500, "token 生成失败")
+		writePublicErr(w, 500, "token 生成失败")
 		return
 	}
 	setAuthCookie(w, r, tok, int(jwtTTL.Seconds()))
@@ -325,7 +325,7 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	hash, ok, err := pg.GetSetting(authPassKey)
 	if err != nil {
-		writeErr(w, 503, errDataSourceUnavailable)
+		writePublicErr(w, 503, errDataSourceUnavailable)
 		return
 	}
 	if !ok || hash == "" {
@@ -338,7 +338,7 @@ func (s *Server) authLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	tok, err := s.signAdminJWT(hash)
 	if err != nil {
-		writeErr(w, 500, "token 生成失败")
+		writePublicErr(w, 500, "token 生成失败")
 		return
 	}
 	setAuthCookie(w, r, tok, int(jwtTTL.Seconds()))

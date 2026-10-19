@@ -69,7 +69,7 @@ var reAgentKey = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 // pgReady returns the PG handle, or writes 503 and returns nil if unavailable.
 func (s *Server) pg(w http.ResponseWriter) *db.DB {
 	if s.m.pg == nil {
-		writeErr(w, 503, "管理后台数据源(PostgreSQL)未连接")
+		writePublicErr(w, 503, "管理后台数据源(PostgreSQL)未连接")
 		return nil
 	}
 	return s.m.pg
@@ -924,7 +924,7 @@ func (s *Server) pgRefreshMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.discoverAndCacheMCP(ctx, target); err != nil {
-		writeErr(w, 502, "工具发现失败，请检查授权和服务器配置")
+		writePublicErr(w, 502, "工具发现失败，请检查授权和服务器配置")
 		return
 	}
 	tools, _ := pg.MCPToolsDetailed(id)
@@ -2343,6 +2343,6 @@ func writeMCPError(w http.ResponseWriter, err error) {
 	case errors.Is(err, db.ErrMCPInvalid):
 		writeErr(w, 400, err.Error())
 	default:
-		writeErr(w, 503, "MCP storage unavailable; retry after reloading")
+		writePublicErr(w, 503, "MCP storage unavailable; retry after reloading")
 	}
 }

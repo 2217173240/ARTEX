@@ -10,6 +10,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -430,14 +431,15 @@ func quotaAwareHTTPClient(proxy, sessionHeaderKey string) (*http.Client, error) 
 	} else {
 		proxyURL, err := url.Parse(proxy)
 		if err != nil {
-			return nil, fmt.Errorf("llm: invalid proxy %q: %w", proxy, err)
+			// Parse errors may include userinfo or query values from the URL.
+			return nil, errors.New("llm: invalid proxy URL (use a valid http://, https:// or socks5:// URL)")
 		}
 		switch proxyURL.Scheme {
 		case "http", "https", "socks5":
 		case "":
-			return nil, fmt.Errorf("llm: proxy %q missing scheme (use http://, https:// or socks5://)", proxy)
+			return nil, errors.New("llm: proxy URL missing scheme (use http://, https:// or socks5://)")
 		default:
-			return nil, fmt.Errorf("llm: unsupported proxy scheme %q (use http, https or socks5)", proxyURL.Scheme)
+			return nil, errors.New("llm: unsupported proxy scheme (use http, https or socks5)")
 		}
 		transport.Proxy = http.ProxyURL(proxyURL)
 	}
