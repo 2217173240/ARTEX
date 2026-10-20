@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 )
 
@@ -340,8 +341,12 @@ func TestPrivateMarkerReadersSeeCompleteJSON(t *testing.T) {
 			if err == nil {
 				err = json.Unmarshal(b, &m)
 			}
-			if err != nil || m.From != "1.0.0" || m.To != "2.0.0" {
-				result <- fmt.Errorf("reader saw incomplete marker: %q %v", b, err)
+			if err != nil {
+				result <- fmt.Errorf("reader could not read marker: %w", err)
+				return
+			}
+			if m.From != "1.0.0" || m.To != "2.0.0" {
+				result <- fmt.Errorf("reader saw incomplete marker: %q", b)
 				return
 			}
 		}
@@ -350,10 +355,10 @@ func TestPrivateMarkerReadersSeeCompleteJSON(t *testing.T) {
 	for i := 0; i < 50; i++ {
 		if err := writeMarker(path, marker{From: "1.0.0", To: "2.0.0", Attempts: i}); err != nil {
 			close(done)
-			if readErr := <-result; readErr != nil {
+			if readErr := <-result; readErr != nil && !isWindowsMetadataSharingError(readErr) {
 				t.Fatal(readErr)
 			}
-			if runtime.GOOS != "windows" || !errors.Is(err, os.ErrPermission) {
+			if !isWindowsMetadataSharingError(err) {
 				t.Fatal(err)
 			}
 			// Windows 读句柄未共享删除权限时，替换失败须保全上一份完整内容。
@@ -366,8 +371,11 @@ func TestPrivateMarkerReadersSeeCompleteJSON(t *testing.T) {
 		last = readAll(t, path)
 	}
 	close(done)
-	if err := <-result; err != nil {
+	if err := <-result; err != nil && !isWindowsMetadataSharingError(err) {
 		t.Fatal(err)
+	}
+	if readAll(t, path) != last {
+		t.Fatal("metadata changed after writer and reader finished")
 	}
 	assertNoMetadataIntermediates(t, path)
 }
@@ -385,7 +393,7 @@ func TestPrivateMarkerReplacementWithOpenReader(t *testing.T) {
 	defer f.Close()
 	err = writeMarker(path, marker{From: "1.0.0", To: "2.0.0", Attempts: 1})
 	if runtime.GOOS == "windows" {
-		if !errors.Is(err, os.ErrPermission) {
+		if !isWindowsMetadataSharingError(err) {
 			t.Fatalf("replacement with Windows reader err=%v, want permission error", err)
 		}
 		if readAll(t, path) != previous {
@@ -401,6 +409,11 @@ func TestPrivateMarkerReplacementWithOpenReader(t *testing.T) {
 		t.Fatalf("open reader did not retain complete previous marker: %v", err)
 	}
 	assertNoMetadataIntermediates(t, path)
+}
+
+func isWindowsMetadataSharingError(err error) bool {
+	// Win32 ERROR_ACCESS_DENIED=5、ERROR_SHARING_VIOLATION=32。
+	return runtime.GOOS == "windows" && (errors.Is(err, syscall.Errno(5)) || errors.Is(err, syscall.Errno(32)))
 }
 
 func assertNoMetadataIntermediates(t *testing.T, path string) {

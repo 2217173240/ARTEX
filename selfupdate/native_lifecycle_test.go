@@ -277,7 +277,7 @@ func TestNativePortableLifecycle(t *testing.T) {
 func TestSmokeEnvironmentNative(t *testing.T) {
 	dir := t.TempDir()
 	bin := buildNativeHelper(t, dir, "1.0.0")
-	for _, key := range []string{"ARTEX_HOME", "ARTEX_CONFIG", "ARTEX_TEST_SECRET", "LD_PRELOAD", "DYLD_INSERT_LIBRARIES", "GODEBUG"} {
+	for _, key := range []string{"ARTEX_HOME", "ARTEX_CONFIG", "ARTEX_TEST_SECRET", "LD_PRELOAD", "DYLD_INSERT_LIBRARIES", "GODEBUG", "PROCESSOR_ARCHITECTURE"} {
 		t.Setenv(key, "selfupdate-harmless-canary")
 	}
 	t.Setenv(smokeEnv, "parent-marker")
@@ -313,6 +313,14 @@ func TestSmokeEnvironmentNative(t *testing.T) {
 		key, value, _ := strings.Cut(entry, "=")
 		if runtime.GOOS == "windows" {
 			key = strings.ToUpper(key)
+		}
+		if runtime.GOOS == "windows" && key == "PROCESSOR_ARCHITECTURE" {
+			// Windows 子进程可包含该架构键；值须匹配原生架构，不能继承父进程 canary。
+			expected := map[string]string{"amd64": "AMD64", "arm64": "ARM64"}[runtime.GOARCH]
+			if expected == "" || value != expected {
+				t.Fatalf("Windows PROCESSOR_ARCHITECTURE=%q does not match GOARCH=%s", value, runtime.GOARCH)
+			}
+			continue
 		}
 		if !allowed[key] {
 			t.Fatalf("child environment contains unexpected key %q", key)
