@@ -345,7 +345,12 @@ func TestExtractBinaryFindsNestedEntry(t *testing.T) {
 	f.Close()
 
 	dst := filepath.Join(dir, "out")
-	if err := extractBinary(zipPath, dst); err != nil {
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o755)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	if err := extractBinary(zipPath, out); err != nil {
 		t.Fatalf("extractBinary: %v", err)
 	}
 	if got := readAll(t, dst); !strings.Contains(got, "exit 0") {
@@ -373,7 +378,12 @@ func TestExtractBinaryMissingEntry(t *testing.T) {
 	_ = zw.Close()
 	f.Close()
 
-	if err := extractBinary(zipPath, filepath.Join(dir, "out")); err == nil {
+	out, err := os.Create(filepath.Join(dir, "out"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	if err := extractBinary(zipPath, out); err == nil {
 		t.Fatal("包内没有可执行文件时应报错")
 	}
 }

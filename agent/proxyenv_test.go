@@ -5,9 +5,15 @@ import (
 	"testing"
 )
 
-func TestProxyEnvEmptyIsNil(t *testing.T) {
-	if env := proxyEnv("", ""); env != nil {
-		t.Fatalf("proxyEnv(\"\", \"\") = %v, want nil (direct)", env)
+func TestProxyEnvEmptyMasksServerSecrets(t *testing.T) {
+	env := proxyEnv("", "")
+	if len(env) != 5 {
+		t.Fatalf("direct environment masks = %v", env)
+	}
+	for _, entry := range env {
+		if !strings.HasSuffix(entry, "=") {
+			t.Fatalf("mask contains a value: %s", entry)
+		}
 	}
 }
 

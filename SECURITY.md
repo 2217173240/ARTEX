@@ -30,6 +30,8 @@ MCP 保存与授权分离。普通管理保存以及 Agent 的 `create_mcp` / `u
 
 这项授权约束覆盖应用的 MCP 管理与调用通道。被授权的高权限 Auto 仍具有其他命令、自定义工具等执行能力；若进程能访问管理凭据、数据库或宿主机资源，它可以绕过应用层配置权限。因此这不构成进程沙箱、跨租户隔离或完整的提示注入防护。部署应将控制面的凭据与不可信执行环境隔离，按实际任务限制网络和凭据范围；仅向可信操作员提供管理访问。参考 [OWASP Excessive Agency](https://genai.owasp.org/llmrisk/llm062025-excessive-agency/) 的最小权限与服务端授权建议。
 
+可执行工具（Bash、后台命令、Monitor、交互 shell、自定义 command/Python）及 stdio MCP 默认不传递宿主 `ARTEX_PG_DSN`、`ANTHROPIC_API_KEY`、`OPENAI_API_KEY`、`ARTEX_LLM_BASE_URL`、`ARTEX_LLM_PROXY` 的秘密值。工具环境覆盖在默认屏蔽之后应用；操作员明确配置同名值时仍传递，stdio MCP 继续要求批准对应配置版本。HTTP/SSE MCP 的配置环境字段表示请求头，保持其认证语义。父进程保留配置与动态超时读取；PATH、HOME、会话代理和证书继续可用。此策略减少隐式继承，不隐藏变量名称，也不覆盖未知环境秘密、固定用途 ripgrep/npm、启动器向后端传递配置或同账户文件访问。秘密应只提供给需要它的组件，参考 [OWASP 秘密管理指引](https://cheatsheetseries.owasp.org/cheatsheets/Secrets_Management_Cheat_Sheet.html)。
+
 浏览器会话使用服务端签发的 HttpOnly、SameSite=Lax cookie，HTTPS 部署还设置 Secure；前端不持久化 JWT，也不将其放入 SSE URL。旧版浏览器会话升级后需要重新登录一次。命令行客户端继续使用 Bearer 认证。反向代理应保留外部 Host 并覆盖 `X-Forwarded-Proto`；Next 本机代理的转发 Host 只在后端确认连接来自 loopback 时采用。开发环境保留同一 localhost/私有 IP 上的前端 3000 或 5173 → 后端 8787 连接。
 
 首次设置管理员密码需要本机初始化令牌。启动日志只提供 `setup.token` 的位置，令牌与 `jwt.key` 默认保存在共享工作区外的实例目录；POSIX 文件权限为 0600，Windows 继承用户实例目录的 ACL。公开状态接口不返回令牌，已设置密码后拒绝初始化重放；数据库故障仍拒绝操作，首次写入仍由数据库唯一约束控制。已有密钥和冲突文件不会被自动覆盖。
@@ -43,6 +45,8 @@ MCP 保存与授权分离。普通管理保存以及 Agent 的 `create_mcp` / `u
 可选 HTTP Basic Auth 默认关闭，在管理员系统设置中启用；密码以 bcrypt 哈希保存在数据库中。通过验证后使用独立的 12 小时 HttpOnly、SameSite=Strict cookie，HTTPS 下设 Secure；管理员 cookie 和配置写入的 CSRF 检查继续生效。健康检查和 API 预检保持公开。Next 开发代理仅向同源地址或明确的 loopback HTTP 后端发送访问验证凭据，不跟随重定向。
 
 发布更新源固定为 `2217173240/ARTEX`，下载使用 HTTPS 和 Release 校验和。更新器仅在全局代理为空时直连；非空无效配置在网络访问、缓存读取或启动更新任务前返回脱敏错误，代理故障不切换为直连。容器镜像为 `ghcr.io/2217173240/artex`；Release 的 `IMAGE_DIGEST` 可用于固定镜像清单。源码安装脚本安全引用输入、编码连接串并限制新配置权限；已有配置保持原样，手动编辑时仍需正确引用 `.env` 值和编码 DSN。
+
+便携更新的压缩 ZIP 上限为 128 MiB，声明的正数资产长度同时构成读取上限；解压二进制另有 512 MiB 上限。发布检查同步限制 ZIP 预算。下载和解压使用可执行文件同目录的独占随机暂存文件；摘要与启动标记以 0600 临时文件完整写入、同步并关闭后替换。smoke 子进程只接收所需路径、用户目录、临时目录及 smoke 标记。已有待应用二进制时需先重启完成更新，再发起下一次更新。安装目录应仅允许可信账户写入；这项文件处理不提供多进程共享目录事务、完整断电持久性或进程隔离。Release 校验和用于完整性核对，其信任依赖同一发布渠道。
 
 运行时采集使用专用传输，默认验证目标及代理的 TLS；配置代理时，浏览器的回环目标和 Node 转发也通过该代理，失败不回退直连。浏览器采集不支持需要认证的代理，启动前拒绝携带凭据的代理 URL，不将代理凭据用于目标认证。授权的自签名目标可在采集配置中显式设置 `insecureTLS: true`，只对本次独立采集进程生效。`enrich.ProbeSite` 的证书跳过属于自签名目标/录制代理的探测能力，所发请求不携带配置密钥。审阅 CodeQL 时保留这些功能边界；确认的误报应逐条记录校验位置和理由。
 

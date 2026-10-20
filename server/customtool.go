@@ -19,6 +19,7 @@ import (
 
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/internal/httpsecurity"
+	"github.com/Autumn-27/artex/internal/processenv"
 	"github.com/Autumn-27/norma/permission"
 	actool "github.com/Autumn-27/norma/tool"
 )
@@ -344,7 +345,12 @@ func (s *Server) runCommandTool(ctx context.Context, execRaw json.RawMessage, pa
 		ctx, cancel = context.WithTimeout(ctx, timeoutOr(spec.TimeoutMs, 120000))
 		defer cancel()
 	}
-	return actool.NewBash().Call(ctx, bashIn, tc)
+	childContext := actool.ToolContext{}
+	if tc != nil {
+		childContext = *tc
+	}
+	childContext.Env = processenv.ToolOverrides(childContext.Env)
+	return actool.NewBash().Call(ctx, bashIn, &childContext)
 }
 
 // ---------- script(仅 Python):临时文件 + stdin JSON + env ----------
@@ -399,8 +405,8 @@ func execPython(ctx context.Context, interp, key, code string, params map[string
 	c := exec.CommandContext(runCtx, interp, tmp)
 	configurePythonProcess(c)
 	c.Dir = workDir
-	c.Env = append(os.Environ(), sessionEnv...) // 会话代理 env
-	for k, v := range params {                  // 标量参数镜像成 TOOL_<NAME>
+	c.Env = append(processenv.Inherited(os.Environ()), sessionEnv...) // 明确会话配置优先
+	for k, v := range params {                                        // 标量参数镜像成 TOOL_<NAME>
 		if sv, ok := scalarStr(v); ok {
 			c.Env = append(c.Env, "TOOL_"+strings.ToUpper(k)+"="+sv)
 		}

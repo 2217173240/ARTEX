@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -156,7 +157,12 @@ func TestNewClientFetchLatestAndAssetsThroughProxy(t *testing.T) {
 	if err != nil || sums[asset.Name] != wantSum {
 		t.Fatalf("proxied checksum fetch: sums=%v err=%v", sums, err)
 	}
-	gotSum, err := download(t.Context(), client, asset, filepath.Join(t.TempDir(), "download.part"), func(Phase, int, string) {})
+	downloadFile, err := os.Create(filepath.Join(t.TempDir(), "download.part"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer downloadFile.Close()
+	gotSum, err := download(t.Context(), client, asset, downloadFile, maxZIPSize, func(Phase, int, string) {})
 	if err != nil || gotSum != sums[asset.Name] {
 		t.Fatalf("proxied asset download: checksum=%v err=%v", gotSum, err)
 	}

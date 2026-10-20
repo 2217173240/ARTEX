@@ -12,6 +12,7 @@ import (
 
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/intercept"
+	"github.com/Autumn-27/artex/internal/processenv"
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/harness"
 	"github.com/Autumn-27/norma/llm"
@@ -200,10 +201,10 @@ func (w *Worker) SetWebSearch(o WebSearchOpts) { w.webSearch = o }
 // GIT_SSL_CAINFO→git, NODE_EXTRA_CA_CERTS→node; NODE_USE_ENV_PROXY makes Node 24+
 // honor the proxy vars. ALL_PROXY is set too so a socks5 egress proxy (which curl
 // only reads from ALL_PROXY, not HTTP(S)_PROXY) works in the capture-off path.
-// Empty proxyAddr → nil (direct, unchanged env).
+// 空代理仍应用服务器秘密的默认 mask。
 func proxyEnv(proxyAddr, caCert string) []string {
 	if proxyAddr == "" {
-		return nil
+		return processenv.ToolOverrides(nil)
 	}
 	env := []string{
 		"HTTP_PROXY=" + proxyAddr, "HTTPS_PROXY=" + proxyAddr,
@@ -220,7 +221,7 @@ func proxyEnv(proxyAddr, caCert string) []string {
 			"NODE_EXTRA_CA_CERTS="+caCert,
 		)
 	}
-	return env
+	return processenv.ToolOverrides(env)
 }
 
 // workerDefaultTmpl is the built-in EDITABLE body (段 [A]) of the worker system

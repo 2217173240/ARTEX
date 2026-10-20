@@ -41,6 +41,22 @@ class NativeAssetsTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 assets.validate_remote(altered, '0.3.18')
 
+    def test_portable_zip_budget_rejects_oversized_local_file_and_draft(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root)
+            for name in assets.expected('0.3.18'):
+                (directory / name).write_bytes(name.encode())
+            oversized = directory / 'artex-0.3.18-darwin-amd64.zip'
+            with oversized.open('r+b') as stream:
+                stream.truncate(assets.MAX_PORTABLE_ZIP_BYTES + 1)
+            with self.assertRaisesRegex(ValueError, 'budget'):
+                assets.validate_local(directory, '0.3.18', True)
+            document = {'isDraft': True, 'assets': [
+                {'name': path.name, 'size': path.stat().st_size} for path in directory.iterdir()
+            ] + [{'name': 'SHA256SUMS', 'size': 1}]}
+            with self.assertRaisesRegex(ValueError, 'budget'):
+                assets.validate_remote(document, '0.3.18')
+
     def test_tar_preserves_payload_and_executable_mode(self):
         with tempfile.TemporaryDirectory() as root:
             source, target = Path(root) / 'portable.zip', Path(root) / 'portable.tar.gz'

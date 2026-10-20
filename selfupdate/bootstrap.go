@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 
@@ -196,7 +197,7 @@ func smokeTest(bin string) error {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, bin, "-h")
-	cmd.Env = append(os.Environ(), smokeEnv+"=1")
+	cmd.Env = smokeEnvironment(os.Environ(), runtime.GOOS)
 	out, err := cmd.CombinedOutput()
 	if ctx.Err() != nil {
 		return errors.New("冒烟测试超时（新二进制无响应）")
@@ -209,6 +210,25 @@ func smokeTest(bin string) error {
 		return fmt.Errorf("冒烟测试失败: %v: %s", err, snippet)
 	}
 	return nil
+}
+
+// smokeEnvironment 仅传递启动帮助命令所需环境；不提供文件或网络访问隔离。
+func smokeEnvironment(parent []string, goos string) []string {
+	allowed := []string{"PATH", "HOME", "TMPDIR", "TEMP", "TMP", "SystemRoot", "USERPROFILE"}
+	out := make([]string, 0, len(allowed)+1)
+	for _, entry := range parent {
+		key, _, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		for _, required := range allowed {
+			if key == required || (goos == "windows" && strings.EqualFold(key, required)) {
+				out = append(out, entry)
+				break
+			}
+		}
+	}
+	return append(out, smokeEnv+"=1")
 }
 
 // swap 把当前二进制换成暂存的新版本。

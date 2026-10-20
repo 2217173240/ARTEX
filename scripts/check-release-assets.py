@@ -6,6 +6,9 @@ import json
 from pathlib import Path
 import re
 
+# 与 selfupdate/stage.go 的压缩下载预算一致；现有发布 ZIP 约 15 MiB。
+MAX_PORTABLE_ZIP_BYTES = 128 * 1024 * 1024
+
 
 def expected(version):
     if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', version):
@@ -27,6 +30,8 @@ def validate_local(directory, version, write=False):
         path = directory / name
         if path.stat().st_size == 0:
             raise ValueError(f'Empty asset: {name}')
+        if name.endswith('.zip') and path.stat().st_size > MAX_PORTABLE_ZIP_BYTES:
+            raise ValueError(f'Portable ZIP exceeds self-update budget: {name}')
         lines.append(f'{hashlib.sha256(path.read_bytes()).hexdigest()}  {name}\n')
     checksums = ''.join(lines)
     if write:
@@ -45,6 +50,8 @@ def validate_remote(document, version):
         raise ValueError('Published draft has incomplete or unexpected assets')
     if any(a['size'] <= 0 for a in assets):
         raise ValueError('Published draft has empty assets')
+    if any(a['name'].endswith('.zip') and a['size'] > MAX_PORTABLE_ZIP_BYTES for a in assets):
+        raise ValueError('Published draft has a portable ZIP exceeding the self-update budget')
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
