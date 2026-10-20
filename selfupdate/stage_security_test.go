@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -212,6 +213,7 @@ func TestStageCancellationCleanup(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
+	cancellationObserved := make(chan struct{})
 	name := AssetName("v99.0.0", runtime.GOOS, runtime.GOARCH)
 	s := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, sumsAsset) {
@@ -221,6 +223,9 @@ func TestStageCancellationCleanup(t *testing.T) {
 		_, _ = w.Write(bytes.Repeat([]byte("x"), 4096))
 		w.(http.Flusher).Flush()
 		cancel()
+		// 保持响应未结束，直到真实连接观察到取消，避免正常 EOF 与取消竞争。
+		<-r.Context().Done()
+		close(cancellationObserved)
 	}))
 	defer s.Close()
 	rel := &Release{TagName: "v99.0.0", Assets: []Asset{
@@ -228,9 +233,10 @@ func TestStageCancellationCleanup(t *testing.T) {
 		{Name: sumsAsset, URL: "https://github.com/" + sumsAsset},
 	}}
 	err := stageAt(ctx, localTLSClient(t, s), rel, "1.0.0", nil, p, maxZIPSize)
-	if err == nil || !strings.Contains(err.Error(), "context canceled") {
+	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled download err=%v", err)
 	}
+	<-cancellationObserved
 	entries, err := os.ReadDir(p.Dir)
 	if err != nil || len(entries) != 1 || readAll(t, p.Current) != "current-canary" {
 		t.Fatalf("canceled Stage changed installation: %v %v", entries, err)
@@ -340,15 +346,67 @@ func TestPrivateMarkerReadersSeeCompleteJSON(t *testing.T) {
 			}
 		}
 	}()
+	last := readAll(t, path)
 	for i := 0; i < 50; i++ {
 		if err := writeMarker(path, marker{From: "1.0.0", To: "2.0.0", Attempts: i}); err != nil {
 			close(done)
-			<-result
-			t.Fatal(err)
+			if readErr := <-result; readErr != nil {
+				t.Fatal(readErr)
+			}
+			if runtime.GOOS != "windows" || !errors.Is(err, os.ErrPermission) {
+				t.Fatal(err)
+			}
+			// Windows 读句柄未共享删除权限时，替换失败须保全上一份完整内容。
+			if readAll(t, path) != last {
+				t.Fatal("failed metadata replacement changed previous marker")
+			}
+			assertNoMetadataIntermediates(t, path)
+			return
 		}
+		last = readAll(t, path)
 	}
 	close(done)
 	if err := <-result; err != nil {
 		t.Fatal(err)
+	}
+	assertNoMetadataIntermediates(t, path)
+}
+
+func TestPrivateMarkerReplacementWithOpenReader(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "marker.json")
+	if err := writeMarker(path, marker{From: "1.0.0", To: "2.0.0"}); err != nil {
+		t.Fatal(err)
+	}
+	previous := readAll(t, path)
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	err = writeMarker(path, marker{From: "1.0.0", To: "2.0.0", Attempts: 1})
+	if runtime.GOOS == "windows" {
+		if !errors.Is(err, os.ErrPermission) {
+			t.Fatalf("replacement with Windows reader err=%v, want permission error", err)
+		}
+		if readAll(t, path) != previous {
+			t.Fatal("blocked metadata replacement changed previous marker")
+		}
+	} else if err != nil {
+		t.Fatal(err)
+	} else if m, ok := readMarker(path); !ok || m.Attempts != 1 {
+		t.Fatalf("replacement marker=%+v readable=%v", m, ok)
+	}
+	opened, err := io.ReadAll(f)
+	if err != nil || string(opened) != previous {
+		t.Fatalf("open reader did not retain complete previous marker: %v", err)
+	}
+	assertNoMetadataIntermediates(t, path)
+}
+
+func assertNoMetadataIntermediates(t *testing.T, path string) {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(filepath.Dir(path), ".artex-update-meta-*"))
+	if err != nil || len(matches) != 0 {
+		t.Fatalf("metadata intermediates remain: %v %v", matches, err)
 	}
 }

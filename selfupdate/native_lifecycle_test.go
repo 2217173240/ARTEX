@@ -290,24 +290,37 @@ func TestSmokeEnvironmentNative(t *testing.T) {
 	if err := json.Unmarshal([]byte(readAll(t, filepath.Join(dir, "smoke-environment.json"))), &env); err != nil {
 		t.Fatal(err)
 	}
-	want := smokeEnvironment(before, runtime.GOOS)
+	projection := exec.Command(bin, "-h")
+	projection.Env = smokeEnvironment(before, runtime.GOOS)
+	want := map[string]string{}
+	for _, entry := range projection.Environ() {
+		key, value, _ := strings.Cut(entry, "=")
+		if runtime.GOOS == "windows" {
+			key = strings.ToUpper(key)
+		}
+		want[key] = value
+	}
+	allowed := map[string]bool{
+		"PATH": true, "HOME": true, "TMPDIR": true, "TEMP": true,
+		"TMP": true, "SystemRoot": true, "USERPROFILE": true, smokeEnv: true,
+	}
+	if runtime.GOOS == "windows" {
+		delete(allowed, "SystemRoot")
+		allowed["SYSTEMROOT"] = true
+	}
 	actual := map[string]string{}
 	for _, entry := range env {
 		key, value, _ := strings.Cut(entry, "=")
 		if runtime.GOOS == "windows" {
 			key = strings.ToUpper(key)
 		}
+		if !allowed[key] {
+			t.Fatalf("child environment contains unexpected key %q", key)
+		}
 		actual[key] = value
 	}
-	if len(actual) != len(want) {
-		t.Fatalf("unexpected child environment key count: got=%d want=%d", len(actual), len(want))
-	}
-	for _, entry := range want {
-		key, value, _ := strings.Cut(entry, "=")
-		if runtime.GOOS == "windows" {
-			key = strings.ToUpper(key)
-		}
-		if actual[key] != value {
+	for key, value := range want {
+		if got, exists := actual[key]; !exists || got != value {
 			t.Fatalf("child environment changed allowed key %s", key)
 		}
 	}
