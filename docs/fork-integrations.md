@@ -149,3 +149,11 @@
 - 借鉴 RC-CHN [`c65a1cdd`](https://github.com/RC-CHN/ARTEX/commit/c65a1cdd10ad3109cd60d3ca4ee9cf608c2584da)，新增 Nuclei/Vulnx 可选工作流与只读诊断，准确区分情报候选、模板覆盖和验证发现。没有复制预装镜像声明、启动播种、自动下载或强制默认启用；沿用当前技能分发与用户修改/删除保留规则。使用说明见 [可选安全工具](security-tools.md)。
 
 远程 Runner/预热涉及当前依赖尚无的 ExecutionRuntime、租约与文件一致性，需要独立部署和真实容器验收；本轮不加入不可用骨架。公司全量知识共享没有替代现有显式、直接、实时过滤删除来源的只读继承。完整资源配额、默认公司共享及分布式执行没有实现，也不以这次回归作为它们已完成的证据。
+
+## 服务器环境、便携更新与账本查询：2026-10-20
+
+- 依据 LRTK-CODER 的 [`a83040df`](https://github.com/LRTK-CODER/ARTEX/commit/a83040df135f70d61f303250909596fa88195010)（PR171）适配可执行工具与 stdio MCP 的已知服务器秘密默认屏蔽。复用现有 BashEnv/Env，Monitor 补传现有会话环境；Python 在执行边界过滤继承值，stdio 默认值先于明确配置合并。父进程保留动态 provider、超时与启动配置，HTTP/SSE 认证头维持现有合同。具体名称、明确覆盖和权限边界见 [安全策略](../SECURITY.md)。
+- 依据同一作者的 [`84c05557`](https://github.com/LRTK-CODER/ARTEX/commit/84c055578145ab72fcf7a5ee3417b148d79c85d2)（PR161）适配 ZIP 流式上限、独占暂存文件、完整 metadata 替换与最小 smoke 环境。当前最大 v0.4.0 ZIP 约 15 MiB，压缩预算定为 128 MiB；保留 512 MiB 解压预算、HTTPS/代理、校验和、managed 安装限制与 Windows 文件命名。已有待应用版本先完成重启，暂存文件清理限定本次拥有的路径。文件访问使用 [Go CreateTemp](https://pkg.go.dev/os#CreateTemp)，读取边界使用 [io.LimitReader](https://pkg.go.dev/io#LimitReader)；跨文件发布沿用单进程顺序合同。
+- 依据 lin9527ya 的 [`c6fddb17`](https://github.com/lin9527ya/BLADE/commit/c6fddb174682e2a00c4d5a7e57d664a0412b9976) 适配非空任务的 token 聚合和记录筛选。复用 usage 已有索引，在旧表补列后建立 records 的非 NULL 任务索引；保留 DB 空串同时匹配 NULL/空串的合同、字面值 `0`、独立复测与历史 usage 留存。真实 PG16 受控 fixture 的查询计划确认可使用索引，结果等价；实际部署收益取决于数据量与分布。索引创建采用既有启动迁移方式，大型账本升级应预留建索引时间和磁盘空间，参考 [PostgreSQL 部分索引](https://www.postgresql.org/docs/16/indexes-partial.html)。
+
+三项来源均为 AGPL-3.0，并具有 initial `0ef85614` 的共同祖先；lin 仓库以同一 repository ID 从 ARTEX 改名为 BLADE。采用为适合当前架构的有限行为适配，保留上述作者归属；本地独立 TLS、文件、子进程与 PostgreSQL fixture 验证仅覆盖各自受控合同。

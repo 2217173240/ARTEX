@@ -83,12 +83,17 @@ VALUES (NULLIF($1,''),$2,NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),$6,$7,$8,$9,$
 // Accurate even with per-agent model bindings, pool rotation/failover, and
 // interrupted runs, since every call (success or error) is metered.
 func (d *DB) TokenByModel(taskID string) ([]ModelTokenStat, error) {
+	where := `task_id = $1`
+	if taskID == "" {
+		// 空任务查询保留历史 NULL 和空字符串的合并语义。
+		where = `COALESCE(task_id,'') = $1`
+	}
 	rows, err := d.Query(`
 SELECT COALESCE(NULLIF(model,''),'(unknown)') AS model, COUNT(*) AS calls,
        COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
        COALESCE(SUM(cache_read),0), COALESCE(SUM(cache_write),0)
 FROM llm_usage
-WHERE COALESCE(task_id,'') = $1
+WHERE `+where+`
 GROUP BY model
 ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC, model`, taskID)
 	if err != nil {

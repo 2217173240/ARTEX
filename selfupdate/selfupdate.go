@@ -102,7 +102,29 @@ func writeMarker(path string, m marker) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, b, 0o644)
+	return writeFilePrivate(path, b)
+}
+
+// writeFilePrivate 完整写入并关闭同目录私有文件后替换目标，不跟随目标 symlink。
+func writeFilePrivate(path string, b []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(path), ".artex-update-meta-*")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = f.Close()
+		_ = os.Remove(f.Name())
+	}()
+	if _, err := f.Write(b); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), path)
 }
 
 // cleanStaged 清掉暂存件。换装成功、校验失败、用户取消都走它，避免残留的

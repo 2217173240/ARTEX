@@ -169,3 +169,11 @@ artifacts, stderr/exit status, timeout/cancellation, disk failure, and installed
 ripgrep pagination/cancellation. These measurements are local ARTEX evidence,
 not a reproduction of the source fork's benchmark results. No source `file_commit`,
 CAS, output-receipt, runner, or application-lifecycle implementation is imported.
+
+## Monitor process environment (round 26)
+
+Local ARTEX adaptation: `tool/monitor.go` forwards the existing `ToolContext.Env`
+to `SpawnSpec.Env`, matching Bash and interactive shell environment propagation.
+ARTEX defines its default server-secret masks in the host package; Norma retains
+its extra-environment contract and contains no ARTEX-specific secret names.
+Real controlled Monitor process coverage is in ARTEX's agent environment tests.

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -22,6 +23,9 @@ const sumsAsset = "SHA256SUMS"
 
 // maxBinarySize 限制解压出来的二进制体积，防止畸形 zip 把磁盘写满。
 const maxBinarySize = 512 << 20 // 512 MiB
+
+// maxZIPSize 是压缩发布包的下载预算；现有发布包约 15 MiB，保留扩展空间。
+const maxZIPSize = 128 << 20 // 128 MiB
 
 // Phase 是升级过程中的阶段，直接用作 SSE 事件里的 phase 字段。
 type Phase string
@@ -50,12 +54,21 @@ func Stage(ctx context.Context, c *http.Client, rel *Release, currentVersion str
 	if distribution.Managed() {
 		return ErrManagedInstallation
 	}
-	if prog == nil {
-		prog = func(Phase, int, string) {}
-	}
 	p, err := ResolvePaths()
 	if err != nil {
 		return err
+	}
+	return stageAt(ctx, c, rel, currentVersion, prog, p, maxZIPSize)
+}
+
+func stageAt(ctx context.Context, c *http.Client, rel *Release, currentVersion string, prog Progress, p Paths, zipBudget int64) error {
+	if prog == nil {
+		prog = func(Phase, int, string) {}
+	}
+	if _, err := os.Lstat(p.New); err == nil {
+		return fmt.Errorf("待安装路径 %s 已存在，请先重启完成升级；路径异常时请检查并处理暂存文件后重试", p.New)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("检查待安装的新版本: %w", err)
 	}
 	if err := checkWritable(p.Dir); err != nil {
 		return err
@@ -65,6 +78,9 @@ func Stage(ctx context.Context, c *http.Client, rel *Release, currentVersion str
 	asset, ok := rel.FindAsset(name)
 	if !ok {
 		return fmt.Errorf("该版本没有提供 %s/%s 的发布包（缺少 %s）", runtime.GOOS, runtime.GOARCH, name)
+	}
+	if asset.Size > zipBudget {
+		return fmt.Errorf("发布包声明大小 %s 超过下载上限 %s", humanSize(asset.Size), humanSize(zipBudget))
 	}
 
 	prog(PhaseDownload, 0, "获取校验和清单…")
@@ -77,19 +93,24 @@ func Stage(ctx context.Context, c *http.Client, rel *Release, currentVersion str
 		return fmt.Errorf("%s 未收录 %s，拒绝安装未经校验的二进制", sumsAsset, name)
 	}
 
-	// 临时文件全部落在目标目录里，保证最后的 rename 是同一文件系统内的原子操作
-	// （跨设备 rename 会失败，而 /tmp 常常是独立挂载点）。
-	zipPath := p.New + ".zip.part"
-	binPath := p.New + ".part"
+	// 同目录随机独占文件避免固定路径碰撞，并保留同文件系统 rename。
+	zf, err := os.CreateTemp(p.Dir, ".artex-update-zip-*")
+	if err != nil {
+		return fmt.Errorf("创建下载临时文件: %w", err)
+	}
+	zipPath := zf.Name()
 	defer func() {
+		_ = zf.Close()
 		_ = os.Remove(zipPath)
-		_ = os.Remove(binPath)
 	}()
 
 	prog(PhaseDownload, 0, fmt.Sprintf("下载 %s（%s）…", name, humanSize(asset.Size)))
-	got, err := download(ctx, c, asset, zipPath, prog)
+	got, err := download(ctx, c, asset, zf, zipBudget, prog)
 	if err != nil {
 		return err
+	}
+	if err := zf.Close(); err != nil {
+		return fmt.Errorf("关闭下载文件: %w", err)
 	}
 
 	prog(PhaseVerify, -1, "校验 SHA256…")
@@ -98,8 +119,20 @@ func Stage(ctx context.Context, c *http.Client, rel *Release, currentVersion str
 	}
 
 	prog(PhaseExtract, -1, "解压并冒烟测试…")
-	if err := extractBinary(zipPath, binPath); err != nil {
+	bf, err := os.CreateTemp(p.Dir, ".artex-update-bin-*.exe")
+	if err != nil {
+		return fmt.Errorf("创建二进制临时文件: %w", err)
+	}
+	binPath := bf.Name()
+	defer func() {
+		_ = bf.Close()
+		_ = os.Remove(binPath)
+	}()
+	if err := extractBinary(zipPath, bf); err != nil {
 		return err
+	}
+	if err := bf.Close(); err != nil {
+		return fmt.Errorf("关闭新二进制: %w", err)
 	}
 	if err := smokeTest(binPath); err != nil {
 		return fmt.Errorf("新版本无法在当前系统上运行: %w", err)
@@ -111,7 +144,7 @@ func Stage(ctx context.Context, c *http.Client, rel *Release, currentVersion str
 	if err != nil {
 		return fmt.Errorf("计算新二进制校验和: %w", err)
 	}
-	if err := os.WriteFile(p.Sum, []byte(binSum), 0o644); err != nil {
+	if err := writeFilePrivate(p.Sum, []byte(binSum)); err != nil {
 		return fmt.Errorf("写入校验和: %w", err)
 	}
 	if err := os.Rename(binPath, p.New); err != nil {
@@ -124,8 +157,8 @@ func Stage(ctx context.Context, c *http.Client, rel *Release, currentVersion str
 		To:       strings.TrimPrefix(rel.TagName, "v"),
 		StagedAt: time.Now().Unix(),
 	}); err != nil {
-		// 标记只影响自动回滚能力，暂存件本身已就位，不因此中断升级。
-		prog(PhaseStaged, -1, "警告：写入升级标记失败，本次升级将没有自动回滚保护")
+		cleanStaged(p)
+		return fmt.Errorf("写入升级标记: %w", err)
 	}
 
 	prog(PhaseStaged, 100, "新版本已就绪，正在重启…")
@@ -192,24 +225,28 @@ func isHexSHA256(s string) bool {
 	return true
 }
 
-// download 把资产写入 dst，同时计算 SHA256 并按 Content-Length 汇报进度。
-func download(ctx context.Context, c *http.Client, a Asset, dst string, prog Progress) (string, error) {
+// download 向已独占创建的文件写入限量资产，同时计算 SHA256 并按声明大小汇报进度。
+func download(ctx context.Context, c *http.Client, a Asset, f *os.File, budget int64, prog Progress) (string, error) {
+	if a.Size > budget {
+		return "", fmt.Errorf("发布包声明大小 %s 超过下载上限 %s", humanSize(a.Size), humanSize(budget))
+	}
+	limit := budget
+	if a.Size > 0 && a.Size < limit {
+		limit = a.Size
+	}
 	body, err := get(ctx, c, a.URL)
 	if err != nil {
 		return "", fmt.Errorf("下载 %s: %w", a.Name, err)
 	}
 	defer body.Close()
 
-	f, err := os.Create(dst)
-	if err != nil {
-		return "", fmt.Errorf("创建临时文件: %w", err)
-	}
-	defer f.Close()
-
 	h := sha256.New()
 	pw := &progressWriter{total: a.Size, prog: prog, name: a.Name, last: time.Now()}
-	if _, err := io.Copy(io.MultiWriter(f, h, pw), body); err != nil {
+	if _, err := io.Copy(io.MultiWriter(f, h, pw), io.LimitReader(body, limit+1)); err != nil {
 		return "", fmt.Errorf("下载中断: %w", err)
+	}
+	if pw.written > limit {
+		return "", fmt.Errorf("发布包下载超过上限 %d 字节（已读取 %d 字节）", limit, pw.written)
 	}
 	if err := f.Sync(); err != nil {
 		return "", fmt.Errorf("落盘失败: %w", err)
@@ -245,7 +282,7 @@ func get(ctx context.Context, c *http.Client, rawURL string) (io.ReadCloser, err
 //
 // 包内结构是 artex-<版本>-<os>-<arch>/artex，但这里按**基名**匹配而不是拼完整
 // 路径：版本号在包名里出现过一次，拼错一个字符就整个升级失败，按基名找更耐改。
-func extractBinary(zipPath, dst string) error {
+func extractBinary(zipPath string, f *os.File) error {
 	want := "artex"
 	if runtime.GOOS == "windows" {
 		want = "artex.exe"
@@ -265,12 +302,6 @@ func extractBinary(zipPath, dst string) error {
 			return fmt.Errorf("读取 %s: %w", entry.Name, err)
 		}
 		defer rc.Close()
-
-		f, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o755)
-		if err != nil {
-			return fmt.Errorf("写出新二进制: %w", err)
-		}
-		defer f.Close()
 
 		n, err := io.Copy(f, io.LimitReader(rc, maxBinarySize+1))
 		if err != nil {

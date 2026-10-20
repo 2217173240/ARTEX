@@ -73,7 +73,11 @@ jobs:
           ARTEX_LLM_PROXY: ""
         run: |
           go test -count=1 ./server -run '^Test(SetupTokenFile|JWTKeyConcurrentCreation|PrepareAuthSetup|AuthInitRequiresOwnership|AdminSessionsRequire|WorkspaceRejectsEscapingSymlinks|WorkspaceNormalFlowsAndRelativeSymlinks|WorkspaceReadSizeAndBinaryLimits|ChatUploadConcurrentNamesDoNotClobber|SkillPath)'
-      - name: Native Python cancellation lifecycle regressions
+      - name: Native portable updater and process environment regressions
+        env:
+          CGO_ENABLED: "0"
+        run: go test -timeout 180s -count=1 ./selfupdate ./internal/processenv
+      - name: Native tool environment and Python cancellation regressions
         env:
           CGO_ENABLED: "0"
           ARTEX_CONFIG: ""
@@ -91,7 +95,7 @@ jobs:
           python=python3; if [ "$TARGET_OS" = windows ]; then python=python; fi
           ARTEX_TEST_PYTHON=$("$python" -c 'import sys; assert sys.version_info.major == 3; print(sys.executable)')
           export ARTEX_TEST_PYTHON
-          go test -timeout 60s -count=1 ./server -run '^TestPythonLifecycle'
+          go test -timeout 60s -count=1 ./agent ./server -run '^Test(ProxyEnv|ExecutableToolEnvironment|CustomToolEnvironment|StdioMCPEnvironment|RemoteMCPHeaders|PythonLifecycle)'
       - name: Package and test DEB and RPM install lifecycle
         if: matrix.os == 'linux'
         env:
