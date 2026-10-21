@@ -1,11 +1,19 @@
 package db
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/stdlib"
 )
 
 // cleanup helpers to remove test data
@@ -456,5 +464,205 @@ func TestListCompanies(t *testing.T) {
 	}
 	if !found {
 		t.Error("ListCompanies: created company not found")
+	}
+}
+
+// 批量读取回归仅使用显式 DSN，并为每个用例创建独立 schema。
+func companyListTestDB(t *testing.T) *DB {
+	t.Helper()
+	dsn := os.Getenv("ARTEX_COMPANY_TEST_DSN")
+	if dsn == "" {
+		t.Skip("set ARTEX_COMPANY_TEST_DSN to an isolated PostgreSQL database")
+	}
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin := stdlib.OpenDB(*cfg)
+	t.Cleanup(func() { admin.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := admin.PingContext(ctx); err != nil {
+		t.Fatal(err)
+	}
+	schema := fmt.Sprintf("company_list_%d", time.Now().UnixNano())
+	if _, err := admin.ExecContext(ctx, `CREATE SCHEMA `+schema); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if _, err := admin.Exec(`DROP SCHEMA ` + schema + ` CASCADE`); err != nil {
+			t.Errorf("clean up isolated schema: %v", err)
+		}
+	})
+	cfg = cfg.Copy()
+	cfg.RuntimeParams["search_path"] = schema
+	cfg.RuntimeParams["timezone"] = "UTC"
+	cfg.RuntimeParams["statement_timeout"] = "5000"
+	sqlDB := stdlib.OpenDB(*cfg)
+	sqlDB.SetMaxOpenConns(1)
+	t.Cleanup(func() { sqlDB.Close() })
+	d := &DB{sqlDB}
+	if _, err := d.Exec(`
+CREATE TABLE companies (
+    id bigint PRIMARY KEY, name text NOT NULL, nkey text NOT NULL, logo text,
+    created_at timestamptz NOT NULL DEFAULT '2026-10-21 00:00:00+00',
+    updated_at timestamptz NOT NULL DEFAULT '2026-10-21 01:00:00+00'
+);
+CREATE TABLE assets (id bigint PRIMARY KEY, company_id bigint REFERENCES companies(id));
+CREATE TABLE company_scope (
+    id bigint PRIMARY KEY, company_id bigint REFERENCES companies(id), kind text NOT NULL,
+    domain text, net cidr, value text, raw text NOT NULL, reason text
+)`); err != nil {
+		t.Fatal(err)
+	}
+	return d
+}
+
+func TestListCompaniesBatchScopeContract(t *testing.T) {
+	d := companyListTestDB(t)
+	if _, err := d.Exec(`
+INSERT INTO companies (id, name, nkey, logo) VALUES
+    (4294967300, 'Zulu 公司', 'zulu', 'https://example.test/logo.png'),
+    (7, 'Beta empty', 'beta', ''), (-9, 'Alpha 公司', 'alpha', NULL);
+INSERT INTO assets (id, company_id) VALUES (1, -9), (2, -9), (3, 4294967300), (4, NULL);
+INSERT INTO company_scope (id, company_id, kind, domain, net, value, raw, reason) VALUES
+    (60, -9, 'keyword', NULL, NULL, '关键字', '原始关键字', '关键字原因'),
+    (50, 4294967300, 'icp', NULL, NULL, '京icp123号', '京 ICP 123号', NULL),
+    (30, 4294967300, 'cidr', NULL, '192.0.2.0/24', NULL, '192.0.2.0/24', '网段'),
+    (20, -9, 'domain', 'example.test', NULL, NULL, '*.example.test', NULL),
+    (10, 4294967300, 'ip', NULL, '2001:db8::1/128', NULL, '2001:db8::1', 'IPv6')`); err != nil {
+		t.Fatal(err)
+	}
+	logo, emptyLogo := "https://example.test/logo.png", ""
+	company := func(id int64, name, nkey string, logo *string) Company {
+		return Company{ID: id, Name: name, NKey: nkey, Logo: logo,
+			CreatedAt: "2026-10-21 00:00:00+00", UpdatedAt: "2026-10-21 01:00:00+00"}
+	}
+	want := []*CompanyWithScope{
+		{Company: company(-9, "Alpha 公司", "alpha", nil), AssetCount: 2, Scope: []ScopeRule{
+			{ID: 20, CompanyID: -9, Kind: "domain", Domain: "example.test", Raw: "*.example.test"},
+			{ID: 60, CompanyID: -9, Kind: "keyword", Value: "关键字", Raw: "原始关键字", Reason: "关键字原因"},
+		}},
+		{Company: company(7, "Beta empty", "beta", &emptyLogo), Scope: []ScopeRule{}},
+		{Company: company(4294967300, "Zulu 公司", "zulu", &logo), AssetCount: 1, Scope: []ScopeRule{
+			{ID: 10, CompanyID: 4294967300, Kind: "ip", Net: "2001:db8::1/128", Raw: "2001:db8::1", Reason: "IPv6"},
+			{ID: 30, CompanyID: 4294967300, Kind: "cidr", Net: "192.0.2.0/24", Raw: "192.0.2.0/24", Reason: "网段"},
+			{ID: 50, CompanyID: 4294967300, Kind: "icp", Value: "京icp123号", Raw: "京 ICP 123号"},
+		}},
+	}
+	got, err := d.Companies().ListCompanies()
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotJSON, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantJSON, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(gotJSON) != string(wantJSON) {
+		t.Fatalf("ListCompanies JSON=%s, want %s", gotJSON, wantJSON)
+	}
+	for _, c := range got {
+		scope, err := d.Companies().GetScope(c.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(c.Scope, scope) {
+			t.Fatalf("company %d scope=%+v, GetScope=%+v", c.ID, c.Scope, scope)
+		}
+	}
+	if stats := d.Stats(); stats.MaxOpenConnections != 1 || stats.InUse != 0 || stats.WaitCount != 0 {
+		t.Fatalf("unexpected connection use: %+v", stats)
+	}
+}
+
+func TestListCompaniesBatchEmpty(t *testing.T) {
+	d := companyListTestDB(t)
+	// 空公司列表无需读取 company_scope。
+	if _, err := d.Exec(`DROP TABLE company_scope`); err != nil {
+		t.Fatal(err)
+	}
+	got, err := d.Companies().ListCompanies()
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(got)
+	if err != nil || string(encoded) != "null" {
+		t.Fatalf("empty list JSON=%s, err=%v; want null", encoded, err)
+	}
+}
+
+func TestListCompaniesBatchErrors(t *testing.T) {
+	cases := []struct {
+		name, ddl, code, message string
+	}{
+		{"company query", `DROP TABLE assets`, "42P01", ""},
+		{"scope query", `DROP TABLE company_scope`, "42P01", ""},
+		{"company scan", `ALTER TABLE companies ALTER COLUMN name DROP NOT NULL; UPDATE companies SET name = NULL`, "", "converting NULL to string"},
+		{"scope scan", `ALTER TABLE company_scope ALTER COLUMN kind DROP NOT NULL; INSERT INTO company_scope (id, company_id, raw) VALUES (1, 1, 'raw')`, "", "converting NULL to string"},
+		{"scope iteration", `
+DROP TABLE company_scope;
+CREATE FUNCTION scope_raw(n bigint) RETURNS text LANGUAGE plpgsql IMMUTABLE AS $$
+BEGIN
+    IF n = 4096 THEN RETURN n::text::cidr::text; END IF;
+    RETURN repeat('x', 128);
+END $$;
+CREATE TABLE scope_source (n bigint NOT NULL, company_id bigint NOT NULL, PRIMARY KEY (company_id, n));
+INSERT INTO scope_source SELECT n, 1 FROM generate_series(1::bigint, 4096) AS n;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+CREATE VIEW company_scope AS
+SELECT n AS id, company_id, 'keyword'::text AS kind,
+       NULL::text AS domain, NULL::cidr AS net, NULL::text AS value,
+       scope_raw(n) AS raw, NULL::text AS reason
+FROM scope_source`, "22P02", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := companyListTestDB(t)
+			if _, err := d.Exec(`INSERT INTO companies (id, name, nkey) VALUES (1, 'Company', 'company')`); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := d.Exec(tc.ddl); err != nil {
+				t.Fatal(err)
+			}
+			if tc.name == "scope iteration" {
+				rows, err := d.Query(`
+SELECT id, company_id, kind,
+       COALESCE(domain,''), COALESCE(net::text,''), COALESCE(value,''), raw, COALESCE(reason,'')
+FROM company_scope WHERE company_id = ANY($1) ORDER BY company_id, id`, []int64{1})
+				if err != nil {
+					t.Fatalf("iteration fixture failed before reading rows: %v", err)
+				}
+				read := 0
+				for rows.Next() {
+					read++
+				}
+				iterationErr := rows.Err()
+				rows.Close()
+				if read == 0 || iterationErr == nil {
+					t.Fatalf("iteration fixture read=%d, err=%v; want rows before error", read, iterationErr)
+				}
+				t.Logf("PostgreSQL returned %d rows before iteration error: %v", read, iterationErr)
+			}
+			got, err := d.Companies().ListCompanies()
+			if err == nil || got != nil {
+				t.Fatalf("ListCompanies=%+v, err=%v; want nil and error", got, err)
+			}
+			if tc.code != "" {
+				var pgErr *pgconn.PgError
+				if !errors.As(err, &pgErr) || pgErr.Code != tc.code {
+					t.Fatalf("error=%v, want PostgreSQL SQLSTATE %s", err, tc.code)
+				}
+			} else if !strings.Contains(err.Error(), tc.message) {
+				t.Fatalf("error=%v, want %q", err, tc.message)
+			}
+			if stats := d.Stats(); stats.InUse != 0 {
+				t.Fatalf("connection retained after error: %+v", stats)
+			}
+		})
 	}
 }

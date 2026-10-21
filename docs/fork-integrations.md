@@ -157,3 +157,9 @@
 - 依据 lin9527ya 的 [`c6fddb17`](https://github.com/lin9527ya/BLADE/commit/c6fddb174682e2a00c4d5a7e57d664a0412b9976) 适配非空任务的 token 聚合和记录筛选。复用 usage 已有索引，在旧表补列后建立 records 的非 NULL 任务索引；保留 DB 空串同时匹配 NULL/空串的合同、字面值 `0`、独立复测与历史 usage 留存。真实 PG16 受控 fixture 的查询计划确认可使用索引，结果等价；实际部署收益取决于数据量与分布。索引创建采用既有启动迁移方式，大型账本升级应预留建索引时间和磁盘空间，参考 [PostgreSQL 部分索引](https://www.postgresql.org/docs/16/indexes-partial.html)。
 
 三项来源均为 AGPL-3.0，并具有 initial `0ef85614` 的共同祖先；lin 仓库以同一 repository ID 从 ARTEX 改名为 BLADE。采用为适合当前架构的有限行为适配，保留上述作者归属；本地独立 TLS、文件、子进程与 PostgreSQL fixture 验证仅覆盖各自受控合同。
+
+## 公司范围批量读取：2026-10-21
+
+依据 lin9527ya 的 [`758eeddc`](https://github.com/lin9527ya/BLADE/commit/758eeddc3a3b9ed4d8e5b4216ce9c3f98d420460)（AGPL-3.0）适配 `ListCompanies`：先查询公司与资产数量，再按实际列出的 int64 公司 ID 批量读取范围。非空列表由 1+N 次 SQL 调用减少为两次；空公司列表保持一次查询及既有 `null`，公司没有范围时保持 `scope: []`。保留全部八个范围字段、公司名称与范围 ID 顺序、资产数量、nullable logo、负数及超过 int32 的公司 ID，以及数据库读取错误传播。
+
+使用参数化的 [PostgreSQL ANY 数组比较](https://www.postgresql.org/docs/16/functions-comparisons.html#FUNCTIONS-COMPARISONS-ANY-SOME)，沿用当前表、索引与公开接口。真实 PG16 受控实验核对完整 JSON 和单连接执行；部署收益取决于公司数量、访问频率和数据库延迟。两次读取保持既有普通查询合同，不承诺同一数据库快照；范围、共享和资产归属语义沿用当前实现。

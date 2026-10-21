@@ -282,13 +282,51 @@ ORDER BY c.name`)
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
 
-	// fetch scope rules for each company
+	if len(out) == 0 {
+		return out, nil
+	}
+	ids := make([]int64, 0, len(out))
 	for _, cws := range out {
-		cws.Scope, err = s.GetScope(cws.ID)
-		if err != nil {
+		ids = append(ids, cws.ID)
+	}
+	byCompany, err := s.scopeByCompany(ids)
+	if err != nil {
+		return nil, err
+	}
+	for _, cws := range out {
+		cws.Scope = byCompany[cws.ID]
+		if cws.Scope == nil {
+			cws.Scope = []ScopeRule{}
+		}
+	}
+	return out, nil
+}
+
+func (s *CompanyStore) scopeByCompany(companyIDs []int64) (map[int64][]ScopeRule, error) {
+	rows, err := s.db.Query(`
+SELECT id, company_id, kind,
+       COALESCE(domain,''), COALESCE(net::text,''), COALESCE(value,''), raw, COALESCE(reason,'')
+FROM company_scope
+WHERE company_id = ANY($1)
+ORDER BY company_id, id`, companyIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[int64][]ScopeRule, len(companyIDs))
+	for rows.Next() {
+		var rule ScopeRule
+		if err := rows.Scan(&rule.ID, &rule.CompanyID, &rule.Kind, &rule.Domain, &rule.Net, &rule.Value, &rule.Raw, &rule.Reason); err != nil {
 			return nil, err
 		}
+		out[rule.CompanyID] = append(out[rule.CompanyID], rule)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return out, nil
 }
