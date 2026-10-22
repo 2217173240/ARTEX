@@ -163,3 +163,10 @@
 依据 lin9527ya 的 [`758eeddc`](https://github.com/lin9527ya/BLADE/commit/758eeddc3a3b9ed4d8e5b4216ce9c3f98d420460)（AGPL-3.0）适配 `ListCompanies`：先查询公司与资产数量，再按实际列出的 int64 公司 ID 批量读取范围。非空列表由 1+N 次 SQL 调用减少为两次；空公司列表保持一次查询及既有 `null`，公司没有范围时保持 `scope: []`。保留全部八个范围字段、公司名称与范围 ID 顺序、资产数量、nullable logo、负数及超过 int32 的公司 ID，以及数据库读取错误传播。
 
 使用参数化的 [PostgreSQL ANY 数组比较](https://www.postgresql.org/docs/16/functions-comparisons.html#FUNCTIONS-COMPARISONS-ANY-SOME)，沿用当前表、索引与公开接口。真实 PG16 受控实验核对完整 JSON 和单连接执行；部署收益取决于公司数量、访问频率和数据库延迟。两次读取保持既有普通查询合同，不承诺同一数据库快照；范围、共享和资产归属语义沿用当前实现。
+
+## 工具链与看板请求：2026-10-22
+
+- 依据 [RuoJi6/ARTEX PR36](https://github.com/RuoJi6/ARTEX/pull/36) 的候选，按 [Go 官方安全公告](https://groups.google.com/g/golang-announce/c/66pojueaQek) 将根模块最低版本升级为 Go 1.26.10。该版本修复 CVE-2026-111943，对特定受损中间证书公钥执行验证限制；不是拒绝全部 eMudhra 证书。现有质量、原生包及发行工作流通过 `go-version-file` 读取该版本。已发布的安装包、二进制和镜像须重新构建交付后才能获得补丁；绕过证书验证的连接不受此项修复保护。
+- 依据 lin9527ya / BLADE 的 [`1fc3f26f`](https://github.com/lin9527ya/BLADE/commit/1fc3f26fb387dbd8855bdd1f9a095aa29198d8ba) 移除看板中没有消费者的 `TokenTotal` 状态和每五秒 `tokenStats` 请求。其他页面的 API、看板的统计来源、刷新周期与 usage 窗口保持现有合同。该改进消除确定的无用请求，实际部署收益取决于看板访问量。
+
+两项采用按当前架构独立适配，来源沿用 AGPL-3.0；保留来源仓库、作者与提议状态，不整体合并其历史。看板 usage 按视图加载、关停收尾以及暂停时长分别需要加载状态、生命周期和计时口径验收，继续作为独立候选。
