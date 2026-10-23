@@ -833,9 +833,9 @@ export default function SkillsPage() {
           </Popover>
         )}
       </div>
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-1 flex-col overflow-hidden lg:flex-row">
         {/* ── 左侧文件树 ── */}
-        <div className="flex w-64 shrink-0 flex-col border-r">
+        <div className="flex h-64 min-h-0 w-full shrink-0 flex-col border-b lg:h-auto lg:w-64 lg:border-b-0 lg:border-r">
           <div className="flex flex-col gap-2 border-b p-2">
             <Button size="sm" variant="outline" className="w-full" onClick={() => setNewOpen(true)}>
               <PlusIcon className="size-3.5" />
@@ -863,7 +863,7 @@ export default function SkillsPage() {
           {/* Radix viewport wraps children in a display:table div that grows with
               content — force it to block so long names truncate instead of
               widening the rows past the sidebar. */}
-          <ScrollArea className="flex-1 [&>[data-slot=scroll-area-viewport]>div]:!block">
+          <ScrollArea className="min-h-0 flex-1 [&>[data-slot=scroll-area-viewport]>div]:!block">
             <div className="p-1">
               {skills.map((s) => {
                 const isOpen = expanded.has(s.name);
@@ -965,7 +965,7 @@ export default function SkillsPage() {
         </div>
 
         {/* ── 右侧面板 ── */}
-        <div className="flex flex-1 flex-col overflow-auto p-4">
+        <div className="flex min-h-[50dvh] flex-1 flex-col overflow-auto p-4 lg:min-h-0">
           {!selected && (
             <SkillsOverview
               skills={skills}
@@ -1109,7 +1109,7 @@ export default function SkillsPage() {
           )}
 
           {selected && selected.path !== null && (
-            <div className="flex h-full flex-col gap-2">
+            <div className="flex min-h-0 flex-1 flex-col gap-2">
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
                 <span className="font-medium text-foreground">{selected.skill}</span>
                 <span>/</span>

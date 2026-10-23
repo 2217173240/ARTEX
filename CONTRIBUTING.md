@@ -88,7 +88,7 @@ CodeQL 告警重新扫描后，应核对准确 commit 及实际 source/sink；�
 
 PR 描述写清问题、最终行为、测试及限制。引用历史 issue、PR 或外部代码时，在实际 PR 描述中注明来源链接、作者、commit 和采用方式：直接 cherry-pick、改写或仅借鉴思路。直接引入提交保留作者，使用 `git cherry-pick -x` 记录来源。不要把未验证的候选分支说成原始 PR 快照。
 
-本恢复版本以 `e6ec56999175509551a1e43a3ee3b053d0941bd9` 为原始基线；原上游为 `Autumn-27/ARTEX`。本地恢复档案收录 69 个 issue、65 个 PR，并保留历史元数据，档案位于 Git 仓库之外，尚未完整恢复讨论和全部原始版本。PR195 的 DoTTak 原提交 `78d0cd0503e3e8229ebb7799f52be758f0ef0579` 通过带 `-x` 的 cherry-pick 引入为 `053d776`；模型超时思路借鉴 r0th-m 候选提交 `9215eb0ef481391381cf2b1424d639f5feca5379` 后重新实现，该候选不是已认证的 PR127 快照，也未整体合入。
+本仓库以 `e6ec56999175509551a1e43a3ee3b053d0941bd9` 为原始基线；原上游为 `Autumn-27/ARTEX`。已采用的改进保存在本仓库的提交、测试与 [fork 集成说明](docs/fork-integrations.md) 中，开发和运行不依赖本地恢复档案；历史 issue、PR 的需求不代表当前版本已全部实现。PR195 的 DoTTak 原提交 `78d0cd0503e3e8229ebb7799f52be758f0ef0579` 通过带 `-x` 的 cherry-pick 引入为 `053d776`；模型超时思路借鉴 [r0th-m 的候选提交](https://github.com/r0th-m/artex-ymh-fork/commit/9215eb0ef481391381cf2b1424d639f5feca5379) 后重新实现，该候选不是已认证的 PR127 快照。候选中的独立会话、隧道及内网编排子系统未整体采用。
 
 日常维护优先 squash 合并；需要保留恢复出的历史 DAG 时可使用 merge commit。合入前确认 `quality` 检查对应待合入的准确 HEAD；新提交需要新的检查结果。单维护者仓库的零批准设置不代表已获得独立 GitHub 审阅。
 
