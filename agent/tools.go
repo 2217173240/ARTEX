@@ -411,7 +411,7 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	if cg, _, err := loadColdGraph(t.ts); err == nil {
 		hotAtRender = cg.hotSet()
 	}
-	hidden := func(id int64) bool { _, c := covered[id]; return c && !hotAtRender[id] }
+	hidden := func(id int64) bool { _, c := covered[id]; return hotAtRender != nil && c && !hotAtRender[id] }
 	const openIntentsCap = 30
 	fr, _ := t.ts.Frontier(openIntentsCap) // priority DESC, id ASC —— 优先级最高的前 N 条；真实总数见 frontier_open
 	out["open_intents"] = compactIntents(fr, parentsOf, yieldsOf)
@@ -1198,42 +1198,27 @@ func (t *ToolSet) proveGoal() actool.CoreTool {
 			"evidence_id": idp("证明它的发现/事实节点 id"),
 			"reason":      str("为什么这个证据满足该目标"),
 		}, "goal_id", "evidence_id"),
-		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
 				GoalID     json.RawMessage `json:"goal_id"`
 				EvidenceID json.RawMessage `json:"evidence_id"`
 				Reason     string          `json:"reason"`
 			}
-			_ = json.Unmarshal(in, &a)
+			if err := json.Unmarshal(in, &a); err != nil {
+				return actool.Errorf(fmt.Sprintf("invalid prove_goal input: %v", err)), nil
+			}
 			goal, ev := pid(a.GoalID), pid(a.EvidenceID)
 			if goal == 0 || ev == 0 {
 				return actool.Errorf("goal_id 和 evidence_id 必填"), nil
 			}
-			goalNode, err := t.ts.GetNode(goal)
-			if err != nil || goalNode == nil || goalNode.Kind != db.KindGoal {
-				return actool.Errorf("goal_id 必须是本任务的目标节点（关联任务目标只读）"), nil
+			proof, err := t.ts.ProveGoal(ctx, goal, ev)
+			if err != nil {
+				return actool.Errorf(fmt.Sprintf("prove_goal: %v", err)), nil
 			}
-			evidenceNode, err := t.ts.GetNodeWithSources(ev)
-			if err != nil || evidenceNode == nil || (evidenceNode.Kind != db.KindFact && evidenceNode.Kind != db.KindFinding) {
-				return actool.Errorf("evidence_id 必须是本任务或直接关联任务的事实/漏洞节点"), nil
-			}
-			_ = t.ts.Link(ev, db.RelProves, goal)
-			_ = t.ts.SetNodeState(goal, "met")
-			// 每标记一个目标 met，就检查本任务是否【所有目标】都已 met；若是，自动判定
-			// 任务完成（置 GoalMet），无需再依赖模型显式调 goal_met。
-			if goals, err := t.ts.ListByKind(db.KindGoal, 1000); err == nil && len(goals) > 0 {
-				allMet := true
-				for _, g := range goals {
-					if g.State != "met" {
-						allMet = false
-						break
-					}
-				}
-				if allMet {
-					t.GoalMet = true
-					t.Reason = fmt.Sprintf("所有 %d 个目标均已 met（最后由 goal %d 触发）", len(goals), goal)
-					return actool.Text(fmt.Sprintf("goal %d marked met；本任务所有目标均已达成，任务自动判定完成", goal)), nil
-				}
+			if proof.AllMet {
+				t.GoalMet = true
+				t.Reason = fmt.Sprintf("所有 %d 个目标均已 met（最后由 goal %d 触发）", proof.Total, goal)
+				return actool.Text(fmt.Sprintf("goal %d marked met；本任务所有目标均已达成，任务自动判定完成", goal)), nil
 			}
 			return actool.Text(fmt.Sprintf("goal %d marked met", goal)), nil
 		})
@@ -1353,6 +1338,37 @@ type factItem struct {
 	AuditID        json.RawMessage   `json:"audit_id"`
 }
 
+func parseRecordFactInput(in json.RawMessage) ([]factItem, bool, json.RawMessage, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(in, &fields); err != nil {
+		return nil, false, nil, err
+	}
+	if fields == nil {
+		return nil, false, nil, fmt.Errorf("record_fact 输入必须是对象")
+	}
+	raw, batch := fields["facts"]
+	if batch {
+		for _, key := range []string{"summary", "detail", "evidence", "confidence", "asset_ids", "observation_ids", "conclusion_kind", "context_key", "audit_id"} {
+			if _, present := fields[key]; present {
+				return nil, true, nil, fmt.Errorf("facts 批量模式不能包含顶层 %s；请将事实字段放入 facts 各项，顶层仅支持 intent_id 默认值", key)
+			}
+		}
+		var items []factItem
+		if err := json.Unmarshal(raw, &items); err != nil {
+			return nil, true, nil, fmt.Errorf("facts 必须是非空事实数组：%w", err)
+		}
+		if len(items) == 0 {
+			return nil, true, nil, fmt.Errorf("facts 必须是非空事实数组；单条模式请省略 facts")
+		}
+		return items, true, fields["intent_id"], nil
+	}
+	var item factItem
+	if err := json.Unmarshal(in, &item); err != nil {
+		return nil, false, nil, err
+	}
+	return []factItem{item}, false, item.IntentID, nil
+}
+
 // recordOneFact 写一条 fact 节点并连到意图（intent→yields→fact）。defaultIntent 为
 // 批量时的默认意图（本条未给 intent_id 时用）。
 func (t *ToolSet) recordOneFact(it factItem, defaultIntent int64) (int64, error) {
@@ -1397,13 +1413,13 @@ func (t *ToolSet) recordOneFactContext(ctx context.Context, it factItem, default
 func (t *ToolSet) recordFact() actool.CoreTool {
 	return t.writeExpTool("record_fact", "把探索【事实/结论】写入探索图，连到产生它的意图（intent_id）。结构化证据先record_observation，再audit_fact_validity，最后使用完全相同的summary/detail/conclusion_kind/context_key/observation_ids和audit_id记录结论。observation类型须满足来源资格；不足时保存inconclusive。资格仅核查来源，不确认业务语义；旧调用标legacy_unchecked。用于记录指纹/枚举等探索结果。\n"+
 		"⚠️一次探索的多个观察要【汇总成一条事实】，不要拆成多条，可以合并成一条事实的就尽量用一条事实表示：summary=对本次结论的总结性一句话，detail=相关细节（可含多个具体项）。例：指纹意图→一条事实 {summary:'识别了 X 站点的技术栈与响应特征', detail:'nginx 1.25 / Vue3 / 200 / title=.. / body_len=..'}，而不是状态码、指纹、标题各记一条。一条意图通常只产出一条事实，拆太碎会让图谱无限膨胀。\n"+
-		"★facts 数组用于一次写多条【彼此不同】的结论（每条可省略 intent_id，默认用顶层 intent_id）。返回 ids 数组，与 facts 等长同序。\n"+
+		"★省略 facts 使用单条模式。提供 facts 时必须是非空数组，顶层仅可提供 intent_id 默认值，不能混入任何单条事实字段（包括 null/空值）；各条可覆盖 intent_id。返回 ids 数组，与 facts 等长同序，失败项为 0，errors 按索引说明。\n"+
 		"⚠️只写你在工具输出里【真实看到】的结论，不要脑补。evidence 与 confidence 用来防止不准确的结论污染图谱：\n"+
 		"  · evidence=支撑本结论的【一行】关键证据（命令+最能证明的那一两行输出），**务必简洁**——细节已在 detail，这里不要再粘大段输出。\n"+
 		"  · confidence=observed（输出里直接看到）| inferred（据现象推断）。\n"+
 		"  · **否定类结论**（不可注入/端口关闭/未发现入口等）只写\"观察 + 试探性读法\"——陈述你实际看到什么，方向是否放弃由规划者综合全局定；务必给 evidence，手段没穷尽或证据弱（含只探一次、看起来像）标 inferred，确已穷尽且直接看到才标 observed。",
 		obj(map[string]any{
-			"facts":           map[string]any{"type": "array", "description": "【有多条不同结论时用】事实数组，元素字段同下方顶层字段（summary/detail/evidence/confidence/intent_id/asset_ids）；省略 intent_id 则用顶层 intent_id。返回 ids 与本数组等长、同序。", "items": map[string]any{"type": "object"}},
+			"facts":           map[string]any{"type": "array", "minItems": 1, "description": "非空事实数组；提供时顶层仅允许 intent_id 默认值，所有事实字段必须放入数组各项，不能混入顶层（包括 null/空值）。各项省略 intent_id 则用顶层默认值。返回 ids 等长同序，失败项为 0，errors 按索引说明。", "items": map[string]any{"type": "object"}},
 			"summary":         str("对本次探索结论的【总结性一句话】（是对 detail 的概括）"),
 			"intent_id":       idp("产生本事实的意图 id（你领到的意图；批量时作为各条默认）"),
 			"detail":          str("本事实的相关细节：把这次探索的多个观察事实都写进这里"),
@@ -1416,22 +1432,14 @@ func (t *ToolSet) recordFact() actool.CoreTool {
 			"asset_ids":       map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "相关资产 id（可选，0/1/多个）：该事实涉及哪些资产"},
 		}),
 		func(ctx context.Context, in json.RawMessage) (actool.Result, error) {
-			var a struct {
-				Facts    []factItem `json:"facts"`
-				factItem            // 单条模式 + 批量默认 intent_id
-			}
-			if err := json.Unmarshal(in, &a); err != nil {
+			items, batch, intentRaw, err := parseRecordFactInput(in)
+			if err != nil {
 				return actool.Errorf(err.Error()), nil
 			}
-			if len(a.factItem.IntentID) > 0 && pid(a.factItem.IntentID) <= 0 {
+			if len(intentRaw) > 0 && pid(intentRaw) <= 0 {
 				return actool.Errorf("intent_id 必须是有效的正整数"), nil
 			}
-			batch := len(a.Facts) > 0
-			items := a.Facts
-			if !batch {
-				items = []factItem{a.factItem}
-			}
-			defaultIntent := pid(a.factItem.IntentID) // 顶层 intent_id = 批量默认
+			defaultIntent := pid(intentRaw)
 			if defaultIntent <= 0 {
 				defaultIntent = t.ownerNode
 			}
