@@ -279,9 +279,8 @@ func truncOutput(s string, n int) string {
 	return string(r[:n]) + " …（已截断，完整见 get_worker_output）"
 }
 
-// renderGraphOverview folds the pre-computed graph_overview snapshot into the
-// wake-up prompt so the planner starts each round with the full situation in
-// hand — saving the round-trip it would otherwise spend calling the tool. It is
+// renderGraphOverview folds the independently queried graph_overview into the
+// wake-up prompt, saving the round-trip otherwise spent calling the tool. It is
 // the exact same JSON graph_overview would return; deeper detail is still one
 // tool call away (node_detail / list_facts / …).
 func renderGraphOverview(data map[string]any) string {
@@ -289,7 +288,22 @@ func renderGraphOverview(data map[string]any) string {
 	if err != nil {
 		return "" // fall back to the model calling graph_overview itself
 	}
-	return "\n\n【本轮态势（graph_overview 预取，等同你调用该工具的返回；需要细节再按需调 node_detail/list_facts 等）】：\n" + WrapUntrustedData("graph_overview", string(b))
+	warning := ""
+	needsWarning, _ := data["incomplete"].(bool)
+	for _, field := range []string{"frontier_open", "running_intents", "running_intents_total", "findings_total", "facts"} {
+		if data[field] == nil {
+			needsWarning = true
+		}
+	}
+	for key, value := range data {
+		if value == nil || (strings.HasSuffix(key, "_truncated") && value == true) {
+			needsWarning = true
+		}
+	}
+	if needsWarning {
+		warning = "\n【态势读取限制】各查询尽力独立读取，并非原子快照。缺失字段、null 或查询失败表示未知，不能当作零或空列表；截断列表不代表完整集合。不得依据未知值推断没有工作、没有证据，或判定量化目标已达成；先按 query_errors 核查并补读所需证据。\n"
+	}
+	return "\n\n【本轮态势（graph_overview 预取，等同你调用该工具的返回；需要细节再按需调 node_detail/list_facts 等）】：\n" + warning + WrapUntrustedData("graph_overview", string(b))
 }
 
 // plannerDefaultTmpl is the built-in EDITABLE body (段 [A]) of the planner prompt,

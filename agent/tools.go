@@ -357,8 +357,20 @@ func (t *ToolSet) graphOverview() actool.CoreTool {
 // an empty context and always needs this first).
 func (t *ToolSet) graphOverviewData() map[string]any {
 	out := map[string]any{}
+	queryErrors := map[string]string{}
+	queryError := func(field string, err error) {
+		if err != nil {
+			out[field] = nil
+			queryErrors[field] = err.Error()
+		}
+	}
+	evidenceTotals, evidenceErr := t.ts.Stats()
+	for field, kind := range map[string]string{"findings_total": db.KindFinding, "facts": db.KindFact, db.KindObservation + "_total": db.KindObservation, db.KindValidityGate + "_total": db.KindValidityGate} {
+		out[field] = evidenceTotals[kind]
+		queryError(field, evidenceErr)
+	}
 	// goals summary folded in so the planner needn't call list_goals each round.
-	goals, _ := t.ts.ListByKind(db.KindGoal, 100)
+	goals, goalsErr := t.ts.ListByKind(db.KindGoal, 100)
 	gsum := make([]map[string]any, 0, len(goals))
 	for _, g := range goals {
 		var p map[string]any
@@ -366,9 +378,10 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 		gsum = append(gsum, map[string]any{"id": g.ID, "state": g.State, "text": p["text"]})
 	}
 	out["goals"] = gsum
+	queryError("goals", goalsErr)
 	// hints: 人类/主 agent 通过 add_hint 挂上图的战略提示；folded in so the
 	// planner reads them every round when generating intents (否则只写不读).
-	hints, _ := t.ts.ListByKind(db.KindHint, 50)
+	hints, hintsErr := t.ts.ListByKind(db.KindHint, 50)
 	hsum := make([]map[string]any, 0, len(hints))
 	for _, h := range hints {
 		var p map[string]any
@@ -380,11 +393,13 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 		hsum = append(hsum, hint)
 	}
 	out["hints"] = hsum
+	queryError("hints", hintsErr)
 	// lineage from the exploration edges: an intent's parents (what it
 	// derived_from — possibly several facts combined) and its yields (the
 	// facts/findings it produced). factFrom maps a fact → the intent that
 	// produced it. This is the relationship layer the flat lists lacked.
-	edges, _ := t.ts.Edges(5000)
+	edges, edgesErr := t.ts.Edges(5000)
+	queryError("lineage", edgesErr)
 	parentsOf := map[int64][]int64{}
 	yieldsOf := map[int64][]int64{}
 	factFrom := map[int64]int64{}
@@ -402,7 +417,8 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	// §6 render-time revival check: a covered member that has become hot again (a new
 	// intent derived from it) must reappear this round — so `hidden` folds a member out
 	// only when it is covered AND still cold.
-	covered, _ := t.ts.CoveredMembers()
+	covered, coveredErr := t.ts.CoveredMembers()
+	queryError("covered_members", coveredErr)
 	// Render-time hot set (ancestor of a live intent / fact under a live intent).
 	// §6 revival check: a covered member that revived (now hot) must NOT stay folded
 	// — hidden() only folds a member out when it is covered AND still cold. Computed
@@ -410,17 +426,25 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	var hotAtRender map[int64]bool
 	if cg, _, err := loadColdGraph(t.ts); err == nil {
 		hotAtRender = cg.hotSet()
+	} else {
+		queryError("cold_graph", err)
 	}
 	hidden := func(id int64) bool { _, c := covered[id]; return hotAtRender != nil && c && !hotAtRender[id] }
 	const openIntentsCap = 30
-	fr, _ := t.ts.Frontier(openIntentsCap) // priority DESC, id ASC —— 优先级最高的前 N 条；真实总数见 frontier_open
+	fr, frontierErr := t.ts.Frontier(openIntentsCap) // priority DESC, id ASC —— 优先级最高的前 N 条；真实总数见 frontier_open
 	out["open_intents"] = compactIntents(fr, parentsOf, yieldsOf)
-	all, _ := t.ts.ListByKind(db.KindIntent, 300)
-	var running, recentDone []*db.Node
+	queryError("open_intents", frontierErr)
+	running, runningTotal, runningErr := t.ts.RunningIntents(300)
+	out["running_intents"] = compactIntents(running, parentsOf, yieldsOf)
+	out["running_intents_total"] = runningTotal
+	out["running_intents_truncated"] = runningTotal > len(running)
+	for _, field := range []string{"running_intents", "running_intents_total", "running_intents_truncated"} {
+		queryError(field, runningErr)
+	}
+	all, recentDoneErr := t.ts.ListByKind(db.KindIntent, 300)
+	var recentDone []*db.Node
 	for _, n := range all {
 		switch n.State {
-		case "running":
-			running = append(running, n)
 		case "done", "blocked", "exhausted":
 			if hidden(n.ID) {
 				continue // in a cold_digest and still cold — shown via cold_digests (§6.2)
@@ -428,27 +452,26 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 			recentDone = append(recentDone, n) // 最新在前（all 按 id 降序）；折叠的已剔除，输出时截最新 N
 		}
 	}
-	out["running_intents"] = compactIntents(running, parentsOf, yieldsOf)
 	// done_intents_total：已结束意图（done/blocked/exhausted）总数，与 recent_done_intents
 	// 平行命名——后者只是它的最新窗口截断视图。两键并排即自描述："看到的是 N/总数"，
 	// 让 planner 去重时别把"没显示"当成"没派过"，无需在提示词里另行解释。
 	if dt, err := t.ts.CountFinishedIntents(); err == nil {
 		out["done_intents_total"] = dt
+	} else {
+		queryError("done_intents_total", err)
 	}
 	// frontier_open：开放意图真实总数（open_intents 只是其中优先级最高的前 N 条截断视图）。
 	if fo, err := t.ts.CountOpenIntents(); err == nil {
 		out["frontier_open"] = fo
 	} else {
-		out["frontier_open"] = len(fr)
+		queryError("frontier_open", err)
 	}
 	// findings (confirmed vulns) and facts (worker exploration results) are
 	// now distinct node kinds. recent_facts surfaces fact summaries (esp.
 	// negative results) so the planner sees them in one call; full content
 	// via node_detail(id).
-	vulnNodes, _ := t.ts.ListByKind(db.KindFinding, 1000)
-	factNodes, _ := t.ts.ListByKind(db.KindFact, 1000) // newest first
-	out["findings_total"] = len(vulnNodes)             // 确认漏洞总数（目标判定看它）；明细见 finding_list（最新一窗）
-	out["facts"] = len(factNodes)                      // 探索事实/结论数（含否定结论）
+	vulnNodes, findingsErr := t.ts.ListByKind(db.KindFinding, 1000)
+	factNodes, factsErr := t.ts.ListByKind(db.KindFact, 1000) // newest first
 	// findings 是任务里最高价值的产物 → 概览带最新一窗（≤10 条，vulnNodes 已按 id 降序即最新在前），
 	// 让 planner 每轮判目标时一眼看到最近确认的漏洞；全量/更早的用 list_findings 取。
 	// 每条只留 {id, summary, from_intent?}：from_intent 是产生本漏洞的意图。
@@ -468,6 +491,7 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 		findingList = append(findingList, m)
 	}
 	out["finding_list"] = findingList
+	queryError("finding_list", findingsErr)
 	// recent_facts：非折叠事实里最新的一窗（≤N，factNodes 按 id 降序即最新在前）。已折进
 	// digest 且仍冷的（hidden）走 cold_digests，不在此重复。每条 {id, summary, from_intent?,
 	// confidence?}；evidence 等详情用 node_detail(id)。更早的用 list_facts 翻。
@@ -495,7 +519,7 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 		recentFacts = append(recentFacts, m)
 	}
 	out["recent_facts"] = recentFacts
-	evidenceTotals, evidenceErr := t.ts.Stats()
+	queryError("recent_facts", factsErr)
 	if evidenceErr != nil {
 		out["evidence_error"] = evidenceErr.Error()
 	}
@@ -503,6 +527,7 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 		nodes, err := t.ts.ListByKind(kind, 1000)
 		if err != nil {
 			out["evidence_error"] = err.Error()
+			queryError("recent_"+kind, err)
 			continue
 		}
 		if evidenceErr == nil {
@@ -527,6 +552,7 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 		recentDone = recentDone[:recentDoneCap]
 	}
 	out["recent_done_intents"] = compactIntents(recentDone, parentsOf, yieldsOf)
+	queryError("recent_done_intents", recentDoneErr)
 	// cold-digest §6.1: 折叠冷区的 digest body，按最新成员时间降序取前 N；被截的更旧 digest
 	// 只给裸 id（仍可 expand_digest 展开），避免冷区唯一出口被无限拉长。
 	const coldDigestsCap = 15
@@ -540,6 +566,8 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	// decomposed goals.
 	if description, goal, err := t.ts.Root(); err == nil {
 		out["task"] = map[string]any{"description": description, "goal": goal}
+	} else {
+		queryError("task", err)
 	}
 	// Direct source tasks are a live, read-only blackboard view. Keep their
 	// summaries in a separate field so their intents never enter this task's
@@ -577,6 +605,8 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 			}
 		}
 	}
+	out["incomplete"] = len(queryErrors) > 0
+	out["query_errors"] = queryErrors
 	return out
 }
 
