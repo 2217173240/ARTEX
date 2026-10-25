@@ -40,4 +40,8 @@
 
 预算或轮次结束的回执说明执行已结束，实际写入以工具回执为准。冷图读取失败时，概览保留已折叠成员的可见性，待图查询恢复后再按当前冷热状态折叠。
 
+`graph_overview` 的 `running_intents` 独立读取运行中意图，按 ID 降序最多显示 300 条；`running_intents_total` 是同一查询快照中的完整总数，`running_intents_truncated` 标明列表是否截断。较新的已结束意图不会挤掉仍在运行的旧意图。`facts` 与 `findings_total` 统计本任务对应类型的全部节点，近期列表继续保留原有显示上限与折叠规则；节点数量不代表结论已经通过语义验收。
+
+概览各部分独立读取，并非整个图的原子快照。查询失败时，相关总数返回 `null`，并通过 `incomplete`、`query_errors` 标明限制，其余成功部分仍可使用。规划提示明确说明未知值不能当作零、截断列表不能当作完整集合；这项说明不构成模型必然正确判断目标的保证。
+
 思路来源：[jkl2825/artex-evidence-gate](https://github.com/jkl2825/artex-evidence-gate/commit/6603fb51d5e2c4894d9a858c8fb1cf8348c1731a)，作者 jkl2825，AGPL-3.0。来源为独立导入历史，共同 Git 祖先未证实；当前实现为按本仓库架构的独立适配，没有复制来源整套 HTTP 执行、planner 或 thread 模型。
