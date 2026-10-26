@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log"
@@ -16,6 +17,7 @@ import (
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/intercept"
+	"github.com/Autumn-27/artex/llmrec"
 	"github.com/Autumn-27/artex/sidequestion"
 )
 
@@ -476,9 +478,27 @@ func (s *Server) runConversation(c *db.Conversation, msg, busyKey string, userMe
 // run ends (clearing busyKey). runConversation wraps it in a goroutine for the
 // fire-and-forget chat path; the P3 trigger queue calls it directly so it can wait
 // for completion before starting the next queued fire for the same agent.
-func (s *Server) runConversationSync(c *db.Conversation, msg, busyKey string) {
+func (s *Server) runConversationSync(c *db.Conversation, msg, busyKey string, taskID int64) {
 	ctx, cancel := s.conversationRunContext(c.ID, busyKey)
+	ctx = s.triggerAttributionContext(ctx, c.AgentKey, taskID)
 	s.runConversationTurn(ctx, cancel, c, msg, busyKey)
+}
+
+func (s *Server) triggerAttributionContext(ctx context.Context, worker string, taskID int64) context.Context {
+	ctx = llmrec.WithWorker(ctx, worker)
+	if taskID <= 0 {
+		return ctx
+	}
+	ctx = llmrec.WithTaskID(ctx, strconv.FormatInt(taskID, 10))
+	var expID sql.NullInt64
+	err := s.m.pg.QueryRowContext(ctx, `SELECT exploration_id FROM tasks WHERE id=$1`, taskID).Scan(&expID)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			log.Printf("[trigger] task %d exploration attribution lookup failed: %v", taskID, err)
+		}
+		return ctx
+	}
+	return llmrec.WithExplorationID(ctx, expID.Int64)
 }
 
 // Register cancellation before returning 202, so an immediate stop/delete cannot
@@ -796,8 +816,13 @@ func mergeAllRuns(items []triggeredRun) triggeredRun {
 	}
 	first := items[0]
 	order := []int64{}
+	// 多任务合并无法按调用准确分摊费用，保留未知任务归属。
+	ownerTaskID := first.taskID
 	groups := map[int64][]triggeredRun{}
 	for _, it := range items {
+		if it.taskID != first.taskID {
+			ownerTaskID = 0
+		}
 		if _, seen := groups[it.taskID]; !seen {
 			order = append(order, it.taskID)
 		}
@@ -820,7 +845,7 @@ func mergeAllRuns(items []triggeredRun) triggeredRun {
 		agentKey:  first.agentKey,
 		title:     fmt.Sprintf("合并触发 · 全部 · %d 条", len(items)),
 		message:   b.String(),
-		taskID:    first.taskID,
+		taskID:    ownerTaskID,
 		mergeable: true,
 		// taskDesc/taskGoal left empty: per-task headers already embedded above.
 	}
@@ -862,7 +887,7 @@ func (s *Server) runTriggeredRun(item triggeredRun) {
 	s.chatMu.Lock()
 	s.chatBusy[busyKey] = true
 	s.chatMu.Unlock()
-	s.runConversationSync(c, msg, busyKey)
+	s.runConversationSync(c, msg, busyKey, item.taskID)
 }
 
 // firstLine returns a single-line, length-capped preview (shared with summaries).

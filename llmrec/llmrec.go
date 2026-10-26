@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"iter"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,6 +19,49 @@ import (
 
 type taskIDContextKey struct{}
 type workerContextKey struct{}
+type explorationIDContextKey struct{}
+
+// WithExplorationID 为会话名称不含 exploration 的调用保存显式归属。
+func WithExplorationID(ctx context.Context, expID int64) context.Context {
+	if expID <= 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, explorationIDContextKey{}, expID)
+}
+
+// ExplorationIDFrom 返回调用方显式绑定的 exploration，缺省时返回零。
+func ExplorationIDFrom(ctx context.Context) int64 {
+	if ctx == nil {
+		return 0
+	}
+	id, _ := ctx.Value(explorationIDContextKey{}).(int64)
+	return id
+}
+
+func attributionFrom(ctx context.Context, session string) (taskID string, expID int64, worker string) {
+	parsedID, worker := parseSession(session)
+	if override := workerFrom(ctx); override != "" {
+		worker = override
+	}
+	expID = ExplorationIDFrom(ctx)
+	if expID <= 0 {
+		expID = db.ParseExpID(parsedID)
+	}
+	taskID = TaskIDFrom(ctx)
+	if taskID == "" {
+		taskID = parsedID
+	}
+	return taskID, expID, worker
+}
+
+func explicitTaskOwner(ctx context.Context) int64 {
+	value := TaskIDFrom(ctx)
+	id, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || id <= 0 || strconv.FormatInt(id, 10) != value {
+		return 0
+	}
+	return id
+}
 
 // WithTaskID attaches the owning task registry id to an LLM call. Session ids
 // are based on exploration ids, which are not interchangeable with task ids.
@@ -123,17 +167,8 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 	recordBodies := r.enabled == nil || r.enabled()
 	start := time.Now()
 	session := transcript.SessionIDFrom(ctx)
-	parsedID, worker := parseSession(session)
-	if ov := workerFrom(ctx); ov != "" {
-		worker = ov
-	}
-	expID := db.ParseExpID(parsedID)
-	taskID := TaskIDFrom(ctx)
-	if taskID == "" {
-		// Backward compatibility for non-task callers. For task calls, the task
-		// runtime always supplies the registry id explicitly.
-		taskID = parsedID
-	}
+	taskID, expID, worker := attributionFrom(ctx, session)
+	ownerTaskID := explicitTaskOwner(ctx)
 
 	// Serialize the request only when storing bodies (this is the expensive part).
 	// Alongside it, attach a Capture so the HTTP transport can hand back the
@@ -170,7 +205,7 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 			r.recordUsage(taskID, expID, worker, usage, int(time.Since(start).Milliseconds()), status)
 			// Heavy trace row — only when body recording is on.
 			if recordBodies {
-				r.record(req, session, taskID, worker, reqBody, capt, start, textBuf.String(), thinkingBuf.String(), usage, stopReason, err)
+				r.record(req, session, taskID, worker, reqBody, capt, start, textBuf.String(), thinkingBuf.String(), usage, stopReason, err, ownerTaskID)
 			}
 		}
 		defer func() { finish(ctx.Err()) }()
@@ -223,15 +258,8 @@ func (r *Recorder) Complete(ctx context.Context, req llm.CompletionRequest) (llm
 	recordBodies := r.enabled == nil || r.enabled()
 	start := time.Now()
 	session := transcript.SessionIDFrom(ctx)
-	parsedID, worker := parseSession(session)
-	if ov := workerFrom(ctx); ov != "" {
-		worker = ov
-	}
-	expID := db.ParseExpID(parsedID)
-	taskID := TaskIDFrom(ctx)
-	if taskID == "" {
-		taskID = parsedID
-	}
+	taskID, expID, worker := attributionFrom(ctx, session)
+	ownerTaskID := explicitTaskOwner(ctx)
 
 	reqBody := ""
 	var capt *Capture
@@ -247,7 +275,7 @@ func (r *Recorder) Complete(ctx context.Context, req llm.CompletionRequest) (llm
 	}
 	r.recordUsage(taskID, expID, worker, usage, int(time.Since(start).Milliseconds()), status)
 	if recordBodies {
-		r.record(req, session, taskID, worker, reqBody, capt, start, msg.Text(), thinkingText(msg), usage, stopReason, err)
+		r.record(req, session, taskID, worker, reqBody, capt, start, msg.Text(), thinkingText(msg), usage, stopReason, err, ownerTaskID)
 	}
 	return msg, stopReason, usage, err
 }
@@ -291,9 +319,8 @@ func (r *Recorder) recordUsage(taskID string, expID int64, worker string, usage 
 }
 
 // record persists one LLM call to PostgreSQL before the provider stream returns.
-// Keeping the write inside the owning task operation means task deletion can
-// drain calls and then remove records without a late async insert recreating one.
-func (r *Recorder) record(req llm.CompletionRequest, session, taskID, worker, reqBody string, capt *Capture, start time.Time, text, thinking string, usage llm.Usage, stopReason string, streamErr error) {
+// 显式任务归属使用数据库生命周期检查，阻止任务删除或归档后的迟到正文。
+func (r *Recorder) record(req llm.CompletionRequest, session, taskID, worker, reqBody string, capt *Capture, start time.Time, text, thinking string, usage llm.Usage, stopReason string, streamErr error, ownerTaskID int64) {
 	latency := int(time.Since(start).Milliseconds())
 	status := "ok"
 	errMsg := ""
@@ -346,7 +373,13 @@ func (r *Recorder) record(req llm.CompletionRequest, session, taskID, worker, re
 		RawResponse: capt.RawResponse(),
 	}
 
-	if err := r.pg.InsertLLMRecord(rec); err != nil {
+	var err error
+	if ownerTaskID > 0 {
+		err = r.pg.InsertTaskLLMRecord(rec, ownerTaskID)
+	} else {
+		err = r.pg.InsertLLMRecord(rec)
+	}
+	if err != nil {
 		log.Printf("[llmrec] insert: %v", err)
 	}
 }

@@ -46,6 +46,9 @@ func TestMergeAllRunsGroupsInterleavedTasks(t *testing.T) {
 		return triggeredRun{agentKey: "a", taskID: id, taskDesc: "d", taskGoal: goal, message: "body", mergeable: true}
 	}
 	out := mergeAllRuns([]triggeredRun{mk(1, "GOAL_A"), mk(2, "GOAL_B"), mk(1, "GOAL_A"), mk(2, "GOAL_B")})
+	if out.taskID != 0 {
+		t.Fatalf("mixed-task run has single owner %d", out.taskID)
+	}
 	if got := strings.Count(out.message, "GOAL_A"); got != 1 {
 		t.Fatalf("task #1 goal should appear once despite interleaving, got %d", got)
 	}
@@ -57,6 +60,25 @@ func TestMergeAllRunsGroupsInterleavedTasks(t *testing.T) {
 	}
 	if got := strings.Count(out.message, "── 触发 "); got != 4 {
 		t.Fatalf("all 4 event bodies should be present, got %d", got)
+	}
+}
+
+func TestMergeAllRunsOwnership(t *testing.T) {
+	for _, ids := range [][]int64{{72}, {72, 72}, {0, 0}, {72, 0}, {0, 72}, {72, 73}} {
+		items := make([]triggeredRun, len(ids))
+		want := ids[0]
+		for i, id := range ids {
+			items[i] = triggeredRun{taskID: id, message: "event"}
+			if id != ids[0] {
+				want = 0
+			}
+		}
+		if got := mergeAllRuns(items).taskID; got != want {
+			t.Fatalf("owners %v: got %d want %d", ids, got, want)
+		}
+	}
+	if got := mergeTriggeredRuns(sameTaskFires(3)).taskID; got != 72 {
+		t.Fatalf("same-task merge owner=%d", got)
 	}
 }
 
