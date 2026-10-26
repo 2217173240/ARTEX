@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"strconv"
 	"time"
 )
 
@@ -209,7 +210,40 @@ func (d *DB) EnsureLLMRecordsTable() error {
 
 // InsertLLMRecord stores one LLM call record.
 func (d *DB) InsertLLMRecord(r *LLMRecord) error {
-	_, err := d.Exec(`
+	return insertLLMRecord(d.DB, r)
+}
+
+// InsertTaskLLMRecord 仅为仍然存活的任务保存调用正文。taskID 必须是明确的任务
+// registry owner，且与 r.TaskID 的规范十进制字符串一致。任务不存在、已删除或
+// 已归档时返回 nil，保持 r.ID 不变。任务锁一直持有到正文写入提交完成；删除和
+// 归档路径必须先取得该任务的 FOR UPDATE 锁。
+func (d *DB) InsertTaskLLMRecord(r *LLMRecord, taskID int64) error {
+	if r == nil || taskID <= 0 || r.TaskID != strconv.FormatInt(taskID, 10) {
+		return fmt.Errorf("invalid LLM record task owner: %d", taskID)
+	}
+	tx, err := d.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck
+	var id int64
+	err = tx.QueryRow(`SELECT id FROM tasks WHERE id=$1 AND deleted_at IS NULL AND archived_at IS NULL FOR KEY SHARE`, taskID).Scan(&id)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err := insertLLMRecord(tx, r); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func insertLLMRecord(execer interface {
+	Exec(string, ...any) (sql.Result, error)
+}, r *LLMRecord) error {
+	_, err := execer.Exec(`
 INSERT INTO llm_records(model, profile_name, session_id, task_id, worker, latency_ms, input_tokens, output_tokens, cache_read, cache_write, status, error, request_body, response_body, raw_request, raw_response)
 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
 		r.Model, nullIfEmpty(r.ProfileName), r.SessionID, nullIfEmpty(r.TaskID), nullIfEmpty(r.Worker),
