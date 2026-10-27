@@ -14,6 +14,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger } from "@/components/ui/select";
 import { api } from "@/lib/api";
+import { findingReportHref } from "@/lib/finding-navigation";
 import { useI18n } from "@/lib/i18n";
 import { useStoredSortPreference } from "@/lib/sort-preference";
 import { statusMeta } from "@/lib/status";
@@ -120,11 +121,7 @@ function Row({
         </span>
         {f.finding_id && (
           <Link
-            href={
-              f.inherited
-                ? `/function/findings/detail?id=${f.finding_id}&context_task=${contextTaskId}`
-                : `/function/findings/detail?id=${f.finding_id}`
-            }
+            href={findingReportHref("detail", f.finding_id, f.inherited ? contextTaskId : undefined, contextTaskId)}
             className="inline-flex shrink-0 items-center gap-0.5 text-muted-foreground text-xs hover:text-primary"
             title={uiText("查看漏洞详情")}
           >
@@ -224,7 +221,7 @@ function FindingsTabInner({ taskId }: { taskId: string }) {
 
   return (
     <div className="flex flex-col gap-4">
-      <FindingCaseList query={{ task: taskId, sort: "time" }} presentation="task" />
+      <FindingCaseList query={{ task: taskId, sort: "time" }} returnTask={taskId} presentation="task" />
       {[
         ...new Set(
           items
@@ -238,7 +235,13 @@ function FindingsTabInner({ taskId }: { taskId: string }) {
             {uiText("继承任务 #")}
             {source} {uiText("· 只读")}
           </p>
-          <FindingCaseList query={{ task: source, sort: "time" }} contextTask={taskId} presentation="task" readOnly />
+          <FindingCaseList
+            query={{ task: source, sort: "time" }}
+            contextTask={taskId}
+            returnTask={taskId}
+            presentation="task"
+            readOnly
+          />
         </div>
       ))}
       <details>

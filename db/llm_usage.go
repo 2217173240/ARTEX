@@ -1,6 +1,9 @@
 package db
 
 import (
+	"context"
+	"database/sql"
+	"fmt"
 	"sort"
 	"strconv"
 	"time"
@@ -16,6 +19,7 @@ type LLMUsage struct {
 	TaskID        string `json:"task_id"`        // task registry id (matches llm_records.task_id)
 	ExplorationID int64  `json:"exploration_id"` // exploration id parsed from the session (0 = unknown/non-task)
 	Worker        string `json:"worker"`         // agent lane: worker / planner / mainagent / goals
+	SessionID     string `json:"session_id"`
 	Model         string `json:"model"`
 	ProfileName   string `json:"profile_name"`
 	LatencyMs     int    `json:"latency_ms"`
@@ -33,6 +37,7 @@ CREATE TABLE IF NOT EXISTS llm_usage (
     task_id        TEXT,
     exploration_id BIGINT,
     worker         TEXT,
+    session_id     TEXT,
     model          TEXT,
     profile_name   TEXT,
     latency_ms     INTEGER,
@@ -42,6 +47,7 @@ CREATE TABLE IF NOT EXISTS llm_usage (
     cache_write    INTEGER NOT NULL DEFAULT 0,
     status         TEXT
 );
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS session_id TEXT;
 CREATE INDEX IF NOT EXISTS idx_llm_usage_task  ON llm_usage(task_id);
 CREATE INDEX IF NOT EXISTS idx_llm_usage_model ON llm_usage(task_id, model);
 CREATE INDEX IF NOT EXISTS idx_llm_usage_exp   ON llm_usage(exploration_id);
@@ -71,11 +77,65 @@ func (d *DB) InsertLLMUsage(u *LLMUsage) error {
 		expID = u.ExplorationID
 	}
 	_, err := d.Exec(`
-INSERT INTO llm_usage(task_id, exploration_id, worker, model, profile_name, latency_ms, input_tokens, output_tokens, cache_read, cache_write, status)
-VALUES (NULLIF($1,''),$2,NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),$6,$7,$8,$9,$10,$11)`,
-		u.TaskID, expID, u.Worker, u.Model, u.ProfileName,
+INSERT INTO llm_usage(task_id, exploration_id, worker, session_id, model, profile_name, latency_ms, input_tokens, output_tokens, cache_read, cache_write, status)
+VALUES (NULLIF($1,''),$2,NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),NULLIF($6,''),$7,$8,$9,$10,$11,$12)`,
+		u.TaskID, expID, u.Worker, u.SessionID, u.Model, u.ProfileName,
 		u.LatencyMs, u.InputTokens, u.OutputTokens, u.CacheRead, u.CacheWrite, u.Status)
 	return err
+}
+
+// LLMUsageRecord 仅包含轻量计量数据，历史未知会话返回空字符串。
+type LLMUsageRecord struct {
+	ID        int64     `json:"id"`
+	Timestamp time.Time `json:"ts"`
+	LLMUsage
+}
+
+// ListLLMUsage 在一致快照中查询任务的计量记录；会话标识不参与任务归属判断。
+func (d *DB) ListLLMUsage(ctx context.Context, taskID string, session *string, page, size int) ([]LLMUsageRecord, int64, error) {
+	id, err := strconv.ParseInt(taskID, 10, 64)
+	if err != nil || id <= 0 || strconv.FormatInt(id, 10) != taskID || page < 0 || size < 1 || size > 200 || int64(page) > int64(^uint64(0)>>1)/int64(size) {
+		return nil, 0, fmt.Errorf("invalid usage query")
+	}
+	tx, err := d.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	if err != nil {
+		return nil, 0, err
+	}
+	defer tx.Rollback() //nolint:errcheck
+	where := "task_id=$1"
+	args := []any{taskID}
+	if session != nil {
+		where += " AND COALESCE(session_id,'')=$2"
+		args = append(args, *session)
+	}
+	var total int64
+	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM llm_usage WHERE "+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	query := `SELECT id,ts,COALESCE(task_id,''),COALESCE(exploration_id,0),COALESCE(worker,''),COALESCE(session_id,''),COALESCE(model,''),COALESCE(profile_name,''),COALESCE(latency_ms,0),input_tokens,output_tokens,cache_read,cache_write,COALESCE(status,'') FROM llm_usage WHERE ` + where + fmt.Sprintf(" ORDER BY id DESC LIMIT $%d OFFSET $%d", len(args)+1, len(args)+2)
+	args = append(args, size, int64(page)*int64(size))
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	result := []LLMUsageRecord{}
+	for rows.Next() {
+		var row LLMUsageRecord
+		if err := rows.Scan(&row.ID, &row.Timestamp, &row.TaskID, &row.ExplorationID, &row.Worker, &row.SessionID, &row.Model, &row.ProfileName, &row.LatencyMs, &row.InputTokens, &row.OutputTokens, &row.CacheRead, &row.CacheWrite, &row.Status); err != nil {
+			rows.Close()
+			return nil, 0, err
+		}
+		result = append(result, row)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, 0, err
+	}
+	return result, total, nil
 }
 
 // TokenByModel aggregates a task's LLM token usage grouped by model, most-used

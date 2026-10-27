@@ -182,7 +182,7 @@ VALUES($1,$2,0,'quota_exhausted','balance exhausted',$3,$4,$3)`, task.ID, llmPro
 	skillName := fmt.Sprintf("archive-skill-%d", task.ID)
 	toolName := fmt.Sprintf("archive-tool-%d", task.ID)
 	vulnclass := fmt.Sprintf("archive-vuln-%d", task.ID)
-	if err := d.InsertLLMUsage(&LLMUsage{TaskID: fmt.Sprint(task.ID), ExplorationID: task.ExplorationID, Worker: "worker", Model: "test", ProfileName: profileName, InputTokens: 11, OutputTokens: 7}); err != nil {
+	if err := d.InsertLLMUsage(&LLMUsage{TaskID: fmt.Sprint(task.ID), ExplorationID: task.ExplorationID, Worker: "worker", SessionID: "archive-session", Model: "test", ProfileName: profileName, InputTokens: 11, OutputTokens: 7}); err != nil {
 		t.Fatal(err)
 	}
 	if err := d.InsertSkillUsage(&SkillUsage{Skill: skillName, AgentKey: "worker", TaskID: task.ID, ExplorationID: task.ExplorationID, Found: true}); err != nil {
@@ -296,6 +296,10 @@ VALUES($1,$2,0,'quota_exhausted','balance exhausted',$3,$4,$3)`, task.ID, llmPro
 	}
 	if nodes < 2 || assets != 1 || usage != 1 {
 		t.Fatalf("restore incomplete nodes=%d assets=%d usage=%d", nodes, assets, usage)
+	}
+	var restoredSession string
+	if err := d.QueryRow(`SELECT session_id FROM llm_usage WHERE task_id=$1`, fmt.Sprint(task.ID)).Scan(&restoredSession); err != nil || restoredSession != "archive-session" {
+		t.Fatalf("restored usage session=%q, err=%v", restoredSession, err)
 	}
 	var restoredRawRequest, restoredRawResponse string
 	if err := d.QueryRow(`SELECT COALESCE(raw_request,''),COALESCE(raw_response,'') FROM llm_records WHERE task_id=$1`, fmt.Sprint(task.ID)).

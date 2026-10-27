@@ -54,6 +54,55 @@ func commandTaskFilter(v string) *int64 {
 	return &n
 }
 
+// pgListLLMUsage 返回任务的轻量计量记录；任务删除后仍允许查询历史台账。
+func (s *Server) pgListLLMUsage(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	task := q.Get("task")
+	id, err := strconv.ParseInt(task, 10, 64)
+	if err != nil || id <= 0 || strconv.FormatInt(id, 10) != task || len(q["task"]) != 1 {
+		writeErr(w, 400, "task must be a canonical positive registry ID")
+		return
+	}
+	page, size := 0, 50
+	for key, target := range map[string]*int{"page": &page, "size": &size} {
+		if values, exists := q[key]; exists {
+			if len(values) != 1 {
+				writeErr(w, 400, "invalid "+key)
+				return
+			}
+			n, err := strconv.Atoi(values[0])
+			if err != nil {
+				writeErr(w, 400, "invalid "+key)
+				return
+			}
+			*target = n
+		}
+	}
+	if page < 0 || size < 1 || size > 200 || int64(page) > int64(^uint64(0)>>1)/int64(size) {
+		writeErr(w, 400, "invalid pagination")
+		return
+	}
+	var session *string
+	if values, exists := q["session"]; exists {
+		if len(values) != 1 {
+			writeErr(w, 400, "invalid session")
+			return
+		}
+		session = &values[0]
+	}
+	pg := s.m.PG()
+	if pg == nil {
+		writeErr(w, 503, "usage database unavailable")
+		return
+	}
+	records, total, err := pg.ListLLMUsage(r.Context(), task, session, page, size)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"records": records, "total": total, "page": page, "size": size})
+}
+
 // pgListLLMRecords returns paginated LLM call records.
 func (s *Server) pgListLLMRecords(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
