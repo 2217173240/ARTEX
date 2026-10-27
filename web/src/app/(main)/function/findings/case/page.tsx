@@ -27,6 +27,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
+import { findingReturnHref, returnTaskId } from "@/lib/finding-navigation";
 import { useI18n } from "@/lib/i18n";
 import type { FindingCaseDetail } from "@/lib/types";
 
@@ -35,6 +36,7 @@ function CaseDetailInner() {
   const params = useSearchParams();
   const id = params.get("id") ?? "";
   const contextTask = params.get("context_task") ?? undefined;
+  const returnTask = returnTaskId(params.get("return_task"));
   const [snapshot, setSnapshot] = React.useState<{ key: string; value: FindingCaseDetail } | null>(null);
   const requestKey = JSON.stringify([id, contextTask]);
   const data = snapshot?.key === requestKey ? snapshot.value : null;
@@ -120,6 +122,9 @@ function CaseDetailInner() {
           <Button variant="link" onClick={() => setRefresh((v) => v + 1)}>
             {uiText("重试")}
           </Button>
+          <Button asChild variant="link">
+            <Link href={findingReturnHref(returnTask)}>{uiText("返回漏洞列表")}</Link>
+          </Button>
         </AlertDescription>
       </Alert>
     ) : (
@@ -130,7 +135,7 @@ function CaseDetailInner() {
     <div className="flex min-w-0 flex-col gap-4">
       <div className="flex flex-wrap items-center gap-3">
         <Button asChild variant="outline">
-          <Link href="/function/findings">{uiText("返回漏洞列表")}</Link>
+          <Link href={findingReturnHref(returnTask)}>{uiText("返回漏洞列表")}</Link>
         </Button>
         <h1 className="font-semibold text-xl">{c.title}</h1>
         <FindingSeverityCounts counts={c} />
@@ -156,7 +161,7 @@ function CaseDetailInner() {
           <AlertDescription>{uiText("继承任务的漏洞组，只读。")}</AlertDescription>
         </Alert>
       ) : (
-        <FindingCaseReviewPanel taskId={c.task_id ?? undefined} />
+        <FindingCaseReviewPanel taskId={c.task_id ?? undefined} contextTask={contextTask} returnTask={returnTask} />
       )}
       <Tabs defaultValue="report">
         <TabsList>
@@ -230,6 +235,7 @@ function CaseDetailInner() {
                 selectedIds={selected}
                 onSelect={readOnly ? undefined : select}
                 contextTask={contextTask}
+                returnTask={returnTask}
               />
             </CardContent>
           </Card>

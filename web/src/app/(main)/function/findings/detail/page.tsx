@@ -23,6 +23,7 @@ import { Separator } from "@/components/ui/separator";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
+import { findingReportHref, findingReturnHref, returnTaskId } from "@/lib/finding-navigation";
 import { useI18n } from "@/lib/i18n";
 import { statusMeta } from "@/lib/status";
 import type { Finding, FindingStatus, Severity } from "@/lib/types";
@@ -61,6 +62,8 @@ function FindingDetailInner() {
   const searchParams = useSearchParams();
   const id = searchParams.get("id") ?? "";
   const contextTaskId = searchParams.get("context_task") ?? "";
+  const returnTask = returnTaskId(searchParams.get("return_task"));
+  const backHref = findingReturnHref(returnTask);
   const [finding, setFinding] = React.useState<Finding | null>(null);
   const [loaded, setLoaded] = React.useState(false);
   const [tab, setTab] = React.useState("overview");
@@ -140,7 +143,7 @@ function FindingDetailInner() {
         ) : null}
         {loaded && (
           <Button asChild variant="outline">
-            <Link href="/function/findings">
+            <Link href={backHref}>
               <ArrowLeftIcon /> {uiText("返回发现列表")}
             </Link>
           </Button>
@@ -168,16 +171,14 @@ function FindingDetailInner() {
         <div className="flex flex-wrap items-center gap-2">
           <SidebarTrigger className="-ml-1" />
           <Button asChild variant="ghost" size="icon" className="size-7">
-            <Link href="/function/findings">
+            <Link href={backHref}>
               <ArrowLeftIcon />
             </Link>
           </Button>
           <ShieldAlertIcon className="size-4 text-muted-foreground" />
           {finding.case_id ? (
             <Button asChild variant="outline" size="sm">
-              <Link
-                href={`/function/findings/case?id=${finding.case_id}${contextTaskId ? `&context_task=${contextTaskId}` : ""}`}
-              >
+              <Link href={findingReportHref("case", finding.case_id, contextTaskId, returnTask)}>
                 {uiText("所属漏洞文件夹")}
               </Link>
             </Button>

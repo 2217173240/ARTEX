@@ -7,6 +7,14 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 
+const navigationModule = { exports: {} };
+runInNewContext(
+  ts.transpileModule(readFileSync(new URL("./finding-navigation.ts", import.meta.url), "utf8"), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+  }).outputText,
+  { module: navigationModule, exports: navigationModule.exports, URLSearchParams },
+);
+
 const compiled = ts.transpileModule(
   readFileSync(new URL("../components/finding-case-list.tsx", import.meta.url), "utf8"),
   {
@@ -89,6 +97,7 @@ function harness(component, initialProps) {
         react: React,
         "react/jsx-runtime": { jsx: (type, props) => ({ type, props }), jsxs: (type, props) => ({ type, props }) },
         "@/lib/api": { api },
+        "@/lib/finding-navigation": navigationModule.exports,
         "@/lib/i18n": {
           useI18n: () => ({
             t: translateUI,

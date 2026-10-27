@@ -233,12 +233,12 @@ func TestAttributionRealProviderCanceledCalls(t *testing.T) {
 							t.Fatal("canceled real completion succeeded")
 						}
 					}
-					var task, worker, status string
+					var task, worker, status, storedSession string
 					var exp, count int64
-					if err := pg.QueryRow(`SELECT count(*),max(task_id),max(exploration_id),max(worker),max(status) FROM llm_usage WHERE profile_name=$1`, profile).Scan(&count, &task, &exp, &worker, &status); err != nil {
+					if err := pg.QueryRow(`SELECT count(*),max(task_id),max(exploration_id),max(worker),max(status),max(session_id) FROM llm_usage WHERE profile_name=$1`, profile).Scan(&count, &task, &exp, &worker, &status, &storedSession); err != nil {
 						t.Fatal(err)
 					}
-					if count != 1 || task != taskID || exp != ownedTask.ExplorationID || worker != "reporter" || status != "error" {
+					if count != 1 || task != taskID || exp != ownedTask.ExplorationID || worker != "reporter" || status != "error" || storedSession != "conv-123" {
 						t.Fatalf("ledger=(%d,%q,%d,%q,%q)", count, task, exp, worker, status)
 					}
 					records, total, err := pg.ListLLMRecords("", "", taskID, 0, 50)
@@ -256,7 +256,7 @@ func TestAttributionRealProviderCanceledCalls(t *testing.T) {
 						t.Fatalf("record=%+v", records[0])
 					}
 					// 输入值验证真实台账聚合，不代表模型实际消耗。
-					r.recordUsage(taskID, ownedTask.ExplorationID, "reporter", llm.Usage{InputTokens: 7, OutputTokens: 3}, 1, "ok")
+					r.recordUsage(taskID, ownedTask.ExplorationID, "reporter", "", llm.Usage{InputTokens: 7, OutputTokens: 3}, 1, "ok")
 					stats, err := pg.TokenByModel(taskID)
 					if err != nil {
 						t.Fatal(err)

@@ -17,6 +17,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Spinner } from "@/components/ui/spinner";
 import { api } from "@/lib/api";
+import { findingReportHref } from "@/lib/finding-navigation";
 import { useI18n } from "@/lib/i18n";
 import type {
   Finding,
@@ -63,6 +64,7 @@ export function FindingCaseMemberRow({
   selected,
   onSelect,
   contextTask,
+  returnTask,
   matched = true,
   nested = false,
 }: {
@@ -70,6 +72,7 @@ export function FindingCaseMemberRow({
   selected?: boolean;
   onSelect?: (id: string, checked: boolean) => void;
   contextTask?: string;
+  returnTask?: string;
   matched?: boolean;
   nested?: boolean;
 }) {
@@ -96,7 +99,7 @@ export function FindingCaseMemberRow({
       <div className="order-last flex min-w-0 flex-1 basis-full flex-col gap-1 sm:order-none sm:basis-auto">
         <Link
           className="line-clamp-2 break-words font-medium hover:underline sm:truncate"
-          href={`/function/findings/detail?id=${id}${contextTask ? `&context_task=${contextTask}` : ""}`}
+          href={findingReportHref("detail", id, contextTask, returnTask)}
         >
           #{id} {[f.name, f.vulnclass].find((v) => v?.trim()) ?? uiText("未分类")}
         </Link>
@@ -106,9 +109,7 @@ export function FindingCaseMemberRow({
       {f.inherited ? <Badge variant="outline">{uiText("继承 · 只读")}</Badge> : null}
       <StatusBadge domain="finding" value={f.status} />
       <Button asChild variant="ghost" size="sm">
-        <Link href={`/function/findings/detail?id=${id}${contextTask ? `&context_task=${contextTask}` : ""}`}>
-          {uiText("查看报告")}
-        </Link>
+        <Link href={findingReportHref("detail", id, contextTask, returnTask)}>{uiText("查看报告")}</Link>
       </Button>
     </div>
   );
@@ -121,6 +122,7 @@ export function FindingCaseMembers({
   selectedIds,
   onSelect,
   contextTask,
+  returnTask,
   nested = false,
   renderRecords,
   refreshToken = 0,
@@ -131,6 +133,7 @@ export function FindingCaseMembers({
   selectedIds?: Set<string>;
   onSelect?: (id: string, checked: boolean) => void;
   contextTask?: string;
+  returnTask?: string;
   nested?: boolean;
   renderRecords?: (items: Finding[]) => React.ReactNode;
   refreshToken?: number;
@@ -209,6 +212,7 @@ export function FindingCaseMembers({
               selected={selectedIds?.has(f.finding_id ?? f.id)}
               onSelect={onSelect}
               contextTask={contextTask}
+              returnTask={returnTask}
               matched={!matchedIds || matchedIds.includes(Number(f.finding_id ?? f.id))}
             />
           ))}
@@ -229,9 +233,13 @@ export function FindingCaseMembers({
 function FindingMergeSuggestionCard({
   suggestion: s,
   onResolve,
+  contextTask,
+  returnTask,
 }: {
   suggestion: FindingCaseSuggestion;
   onResolve: (s: FindingCaseSuggestion, accept: boolean) => Promise<void>;
+  contextTask?: string;
+  returnTask?: string;
 }) {
   const { t: uiText } = useI18n();
   const [expanded, setExpanded] = React.useState(false);
@@ -257,11 +265,17 @@ function FindingMergeSuggestionCard({
         </div>
         <CardTitle className="break-words">{s.title}</CardTitle>
         <CardDescription className="flex flex-wrap gap-3">
-          <Link className="underline underline-offset-4" href={`/function/findings/detail/?id=${s.left_id}`}>
+          <Link
+            className="underline underline-offset-4"
+            href={findingReportHref("detail", s.left_id, contextTask, returnTask)}
+          >
             {uiText("查看原报告 #")}
             {s.left_id}
           </Link>
-          <Link className="underline underline-offset-4" href={`/function/findings/detail/?id=${s.right_id}`}>
+          <Link
+            className="underline underline-offset-4"
+            href={findingReportHref("detail", s.right_id, contextTask, returnTask)}
+          >
             {uiText("查看原报告 #")}
             {s.right_id}
           </Link>
@@ -320,7 +334,17 @@ function FindingReviewRunRow({ run: r }: { run: FindingCaseReviewRun }) {
   );
 }
 
-export function FindingCaseReviewPanel({ taskId, onChange }: { taskId?: string; onChange?: () => void }) {
+export function FindingCaseReviewPanel({
+  taskId,
+  onChange,
+  contextTask,
+  returnTask,
+}: {
+  taskId?: string;
+  onChange?: () => void;
+  contextTask?: string;
+  returnTask?: string;
+}) {
   const { t: uiText } = useI18n();
   const [reviewSnapshot, setReviewSnapshot] = React.useState<{
     taskId?: string;
@@ -393,7 +417,13 @@ export function FindingCaseReviewPanel({ taskId, onChange }: { taskId?: string; 
         </p>
       ) : null}
       {suggestions.map((s) => (
-        <FindingMergeSuggestionCard key={s.id} suggestion={s} onResolve={resolve} />
+        <FindingMergeSuggestionCard
+          key={s.id}
+          suggestion={s}
+          onResolve={resolve}
+          contextTask={contextTask}
+          returnTask={returnTask}
+        />
       ))}
       {runs.some((r) => r.state === "queued" || r.state === "running") ? (
         <div className="flex flex-col gap-2">
@@ -440,6 +470,7 @@ export function FindingCaseList({
   selectedIds,
   onSelect,
   contextTask,
+  returnTask,
   readOnly = false,
   onTotal,
   refreshToken = 0,
@@ -451,6 +482,7 @@ export function FindingCaseList({
   selectedIds?: Set<string>;
   onSelect?: (id: string, checked: boolean) => void;
   contextTask?: string;
+  returnTask?: string;
   readOnly?: boolean;
   onTotal?: (total: number) => void;
   refreshToken?: number;
@@ -514,6 +546,8 @@ export function FindingCaseList({
     <div className="flex min-w-0 flex-col gap-3">
       {!readOnly ? (
         <FindingCaseReviewPanel
+          contextTask={contextTask}
+          returnTask={returnTask}
           taskId={query.task === "all" ? undefined : query.task}
           onChange={() => setRefresh((v) => v + 1)}
         />
@@ -570,7 +604,7 @@ export function FindingCaseList({
                       <Link
                         className="hover:underline"
                         title={group.title}
-                        href={`/function/findings/case?id=${group.id}${contextTask ? `&context_task=${contextTask}` : ""}`}
+                        href={findingReportHref("case", group.id, contextTask, returnTask)}
                       >
                         {group.title}
                       </Link>
@@ -646,6 +680,7 @@ export function FindingCaseList({
                     selectedIds={selectedIds}
                     onSelect={readOnly ? undefined : onSelect}
                     contextTask={contextTask}
+                    returnTask={returnTask}
                   />
                 </CardContent>
               ) : null}
@@ -664,6 +699,7 @@ export function FindingCaseList({
                     selected={selectedIds?.has(row.finding.finding_id ?? row.finding.id)}
                     onSelect={readOnly ? undefined : onSelect}
                     contextTask={contextTask}
+                    returnTask={returnTask}
                   />
                 )}
               </CardContent>
