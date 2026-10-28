@@ -219,12 +219,9 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 				}
 				return
 			}
-			// Always track usage (cheap); accumulate text/thinking only for bodies.
-			// Anthropic (and the other providers) split token usage across events:
-			// message_start carries ONLY the input side (input + cache), message_delta
-			// ONLY the output. They must be FOLDED with Add — overwriting on delta
-			// would zero out the input already counted at start (mirrors the SDK's own
-			// llm.Accumulator; see norma/llm/accumulate.go).
+			// 始终累计用量；仅在记录正文时累计文本和思考内容。
+			// 标准化事件携带用量差值，可能包含输入和缓存的有符号修正。
+			// 使用 Add 与 llm.Accumulator 保持一致，保留省略字段的已有用量。
 			switch ev.Type {
 			case llm.SETextDelta:
 				if recordBodies {
