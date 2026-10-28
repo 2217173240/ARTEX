@@ -177,3 +177,33 @@ to `SpawnSpec.Env`, matching Bash and interactive shell environment propagation.
 ARTEX defines its default server-secret masks in the host package; Norma retains
 its extra-environment contract and contains no ARTEX-specific secret names.
 Real controlled Monitor process coverage is in ARTEX's agent environment tests.
+
+## Anthropic streaming usage snapshots (round 34)
+
+Adapted from sharenjun's ARTEX commit
+[`5ce2fc9d`](https://github.com/sharenjun/ARTEX-main/commit/5ce2fc9d670180711a577ad07baca755a5922691),
+under AGPL-3.0. The exact source commit's license was verified; the original
+Norma v0.4.3 source hashes and Apache-2.0 license provenance remain unchanged.
+
+- `llm/anthropic.go`: maintain a usage snapshot inside each Stream iterator
+  invocation. Present fields replace their previous values; omitted or null
+  fields retain them, and explicit zero is authoritative. Normalize before and
+  after the update and emit signed differences for the existing additive
+  `Usage`/`Accumulator` consumers. Repeated cumulative output or late input/cache
+  corrections therefore converge to the latest observed snapshot.
+- Retain nonstream normalization, content/stop events, transport, capture and
+  cancellation behavior. The existing application policy excludes initial
+  `message_start` output and waits for a later output snapshot. This policy is
+  distinct from the official SDK, which retains initial output; a start-only
+  interrupted stream still records zero output under this compatibility policy.
+- `llm/anthropic_usage_test.go` executes the production decoder and accumulator
+  on declared protocol inputs, including the official stream example,
+  cumulative/repeated snapshots, late cache/input fields, explicit zero, null,
+  downward corrections, independent snapshots and unchanged content events.
+  These tests exercise protocol transformation without a simulated provider or
+  HTTP response server. Live provider billing and multi-message concatenation
+  within one Stream remain outside this validation.
+
+References: [official streaming event contract](https://platform.claude.com/docs/en/build-with-claude/streaming)
+and [official optional cumulative usage fields](https://github.com/anthropics/anthropic-sdk-python/blob/main/src/anthropic/types/message_delta_usage.py),
+read on 2026-10-28. Run both the retained nested-module suite and ARTEX's consumers.

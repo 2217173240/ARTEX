@@ -144,7 +144,8 @@
     "noaadapter/exchange_order_test.go",
     "noaadapter/continuity_helpers_test.go",
     "llm/continuity_wire_test.go",
-    "harness/stream_interruption_test.go"
+    "harness/stream_interruption_test.go",
+    "llm/anthropic_usage_test.go"
   ],
   "extracted_test_helpers": {
     "noaadapter/longsession_test.go": "69c6bc71d08147b9419dde851a68feb731f132b64bbb8fa22be90d52fbc9602b",
@@ -256,6 +257,17 @@
         "llm/anthropic.go"
       ],
       "scope": "Use one existing slice length as initial capacity; append grows without unchecked length arithmetic. Local ARTEX safety repair, not RC-derived."
+    }
+  },
+  "additional_derived_patches": {
+    "anthropic_usage_snapshots": {
+      "source_repository": "https://github.com/sharenjun/ARTEX-main",
+      "source_commit": "5ce2fc9d670180711a577ad07baca755a5922691",
+      "author": "sharenjun",
+      "spdx": "AGPL-3.0",
+      "paths": ["llm/anthropic.go"],
+      "local_tests": ["llm/anthropic_usage_test.go"],
+      "scope": "Convert cumulative optional streaming usage snapshots into signed normalized corrections using iterator-local state. Preserve the existing initial-output compatibility policy and nonstream parsing."
     }
   },
   "rc_derived_patches": {

@@ -124,6 +124,7 @@ func (p *anthropicProvider) Stream(ctx context.Context, req CompletionRequest) i
 		}
 		defer resp.Body.Close()
 		scan := newSSEScanner(resp.Body)
+		var usage anthropicUsage
 		for {
 			_, data, serr := scan.next()
 			if serr == io.EOF {
@@ -136,7 +137,7 @@ func (p *anthropicProvider) Stream(ctx context.Context, req CompletionRequest) i
 			if data == "" {
 				continue
 			}
-			ev, ok, perr := parseAnthropicFrame(data)
+			ev, ok, perr := parseAnthropicFrame(data, &usage)
 			if perr != nil {
 				yield(StreamEvent{}, perr)
 				return
@@ -232,7 +233,7 @@ func parseAnthropicResponse(raw []byte) (Message, string, Usage, error) {
 	return Message{Role: RoleAssistant, Content: blocks}, r.StopReason, usage, nil
 }
 
-func parseAnthropicFrame(data string) (StreamEvent, bool, error) {
+func parseAnthropicFrame(data string, usage *anthropicUsage) (StreamEvent, bool, error) {
 	var f struct {
 		Type         string `json:"type"`
 		ContentBlock struct {
@@ -248,9 +249,9 @@ func parseAnthropicFrame(data string) (StreamEvent, bool, error) {
 			Signature   string `json:"signature"`
 			StopReason  string `json:"stop_reason"`
 		} `json:"delta"`
-		Usage   *anthropicUsage `json:"usage"`
+		Usage   *anthropicUsageUpdate `json:"usage"`
 		Message struct {
-			Usage *anthropicUsage `json:"usage"`
+			Usage *anthropicUsageUpdate `json:"usage"`
 		} `json:"message"`
 		Error *struct {
 			Message string `json:"message"`
@@ -262,13 +263,9 @@ func parseAnthropicFrame(data string) (StreamEvent, bool, error) {
 	switch f.Type {
 	case "message_start":
 		if f.Message.Usage != nil {
-			// Anthropic reports the full input side (input + cache read/creation) in
-			// BOTH message_start and message_delta. To avoid double-counting when the
-			// accumulator folds both events, message_start carries ONLY the input side
-			// and message_delta carries ONLY output. The initial output_tokens here is
-			// a placeholder (≈1), so drop it — the real output comes from message_delta.
-			u := f.Message.Usage.norm()
-			u.OutputTokens = 0
+			// 保持现有兼容策略：起始事件仅记录输入，输出等待后续累计值。
+			// 只有起始事件的中断流因此仍记录零输出。
+			u := f.Message.Usage.delta(usage, false)
 			return StreamEvent{Type: SEMessageStart, Usage: u}, true, nil
 		}
 	case "content_block_start":
@@ -289,10 +286,8 @@ func parseAnthropicFrame(data string) (StreamEvent, bool, error) {
 	case "message_delta":
 		ev := StreamEvent{Type: SEMessageDelta, StopReason: f.Delta.StopReason}
 		if f.Usage != nil {
-			// Only output here — the input side (input/cache) was already counted at
-			// message_start; message_delta re-echoes it, so counting it again would
-			// double the input/cache totals.
-			ev.Usage = Usage{OutputTokens: f.Usage.OutputTokens}
+			// 累计快照转换为差值，使加法消费者保留输入和缓存的后续修正。
+			ev.Usage = f.Usage.delta(usage, true)
 		}
 		return ev, true, nil
 	case "message_stop":
@@ -312,6 +307,37 @@ type anthropicUsage struct {
 	OutputTokens             int `json:"output_tokens"`
 	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+}
+
+// 指针区分省略或 null 字段与明确报告的零值。
+type anthropicUsageUpdate struct {
+	InputTokens              *int `json:"input_tokens"`
+	OutputTokens             *int `json:"output_tokens"`
+	CacheReadInputTokens     *int `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens *int `json:"cache_creation_input_tokens"`
+}
+
+func (u anthropicUsageUpdate) delta(previous *anthropicUsage, includeOutput bool) Usage {
+	before := previous.norm()
+	if u.InputTokens != nil {
+		previous.InputTokens = *u.InputTokens
+	}
+	if u.CacheReadInputTokens != nil {
+		previous.CacheReadInputTokens = *u.CacheReadInputTokens
+	}
+	if u.CacheCreationInputTokens != nil {
+		previous.CacheCreationInputTokens = *u.CacheCreationInputTokens
+	}
+	if includeOutput && u.OutputTokens != nil {
+		previous.OutputTokens = *u.OutputTokens
+	}
+	after := previous.norm()
+	return Usage{
+		InputTokens:      after.InputTokens - before.InputTokens,
+		OutputTokens:     after.OutputTokens - before.OutputTokens,
+		CacheReadTokens:  after.CacheReadTokens - before.CacheReadTokens,
+		CacheWriteTokens: after.CacheWriteTokens - before.CacheWriteTokens,
+	}
 }
 
 // norm maps Anthropic usage to the canonical Usage. InputTokens is the TOTAL input
