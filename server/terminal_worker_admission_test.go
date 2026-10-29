@@ -136,6 +136,18 @@ func (p *terminalAdmissionProvider) Complete(context.Context, llm.CompletionRequ
 
 func newTerminalAdmissionFixture(t *testing.T, d *terminalAdmissionDriver, p *terminalAdmissionProvider) (*Manager, *Engine, *Task, *agent.Worker, *atomic.Int64) {
 	t.Helper()
+	// The lifecycle driver controls Frontier admission only. Tool authorization
+	// uses its own real catalog and the same wiring as a production Server.
+	dsn, _, err := db.DSN()
+	if err != nil {
+		t.Skip("postgres not configured")
+	}
+	catalog, err := db.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalog.Close() })
+	wireFixtureToolAssembly(t, catalog)
 	if d.settled == nil {
 		d.settled = make(chan string, 16)
 	}

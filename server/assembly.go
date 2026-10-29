@@ -204,6 +204,15 @@ func seedPrompts(pg *db.DB) {
 	}
 }
 
+// toolCatalogError preserves the database cause without publishing connection
+// details through agent errors or activity streams.
+type toolCatalogError struct{ cause error }
+
+func (e *toolCatalogError) Error() string {
+	return "读取工具授权目录失败，本轮工具装配已停止"
+}
+func (e *toolCatalogError) Unwrap() error { return e.cause }
+
 // wireTools seeds the built-in tool catalog (idempotent, first-insert only so page
 // edits survive restart) and wires the DB tools table into the agent runtime: at
 // tool-assembly time each built-in tool is filtered by its agent binding / enabled
@@ -249,11 +258,10 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 	// interactive_shell is on, so Bash points at shell_open for interactive programs
 	// without ever referencing a tool that isn't injected (§14.1/§14.2).
 	const bashInteractiveShellNote = "\n\n需要【交互输入】的程序（msfconsole / ssh 交互登录 / mysql、psql、python 等 REPL / 密码或 yes/no 提示 / nc 反弹 shell）不要用 Bash（它没有 stdin、会卡住），改用 shell_open 开交互会话（用完 shell_close）。一次性、非交互命令仍用 Bash。"
-	agent.ToolResolve = func(ctx context.Context, agentKey string, tools []actool.CoreTool) []actool.CoreTool {
+	agent.ToolResolve = func(ctx context.Context, agentKey string, tools []actool.CoreTool) ([]actool.CoreTool, error) {
 		rows, err := pg.ListTools()
 		if err != nil {
-			log.Printf("[tools] 读取工具表失败，按代码默认放行: %v", err)
-			return tools
+			return nil, &toolCatalogError{cause: err}
 		}
 		byKey := make(map[string]*db.Tool, len(rows))
 		for _, t := range rows {
@@ -333,7 +341,7 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 				}
 			}
 		}
-		return out
+		return out, nil
 	}
 }
 

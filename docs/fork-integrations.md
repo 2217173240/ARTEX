@@ -218,3 +218,11 @@
 工具触发查询按 exploration、调用 ID、工具、工作进程、节点和主会话段，选择结果之前最近的一条调用入参。真实 PostgreSQL 复现了 13 条结果被展开为 25 个事件；单一前序配对消除该查询的行数放大，未配对的结果及错误输出继续保留。查询使用现有索引。对于同一范围内重叠复用相同 ID 的调用，最近前序规则仍有归属歧义；现有游标提交顺序语义保持不变。
 
 Anthropic 流的累计用量快照转换为有符号差值，供现有加法消费者合并。重复输出快照不再重复累加，后续输入和缓存修正、明确零值与省略字段分别处理。每次流迭代持有独立状态，非流式行为和起始输出兼容策略保持不变，见 [Norma 补丁记录](../third_party/norma/PATCHES.md)。生产解码器与 accumulator 的协议输入回归验证该转换；本轮未调用真实模型或安全测试目标，也不据此推断实际结算费用。
+
+## 工具授权失败与活动流补偿：2026-10-29
+
+依据 hexsen929 的 [PR6](https://github.com/hexsen929/ARTEX/pull/6) 中 [`6634f6aa`](https://github.com/hexsen929/ARTEX/commit/6634f6aa8df3c2835ca414fc7d28ed933f114bd2)（精确提交许可证为 AGPL-3.0）适配工具装配的授权失败处理。目录读取错误经明确的错误返回贯穿四类运行入口，在模型会话及 planner 预备压缩开始前停止运行。底层原因保留在错误链中，对外提示使用固定说明；空工具集合显式保留。实际 PostgreSQL 故障验证覆盖默认禁止的 `goal_met`、停用的 `record_fact` 与四个 nil-provider 入口。原有 MCP 审批、撤销和可选服务降级继续使用已有契约。
+
+依据 lin9527ya / BLADE 的 [`30ff2ac7`](https://github.com/lin9527ya/BLADE/commit/30ff2ac7a6fb18927d162ab94435845bd45319fb)（精确提交许可证为 AGPL-3.0）中的溢出恢复线索，在现有互斥锁内立即移除并关闭缓冲已满的活动订阅。该订阅读完排队前缀后结束连接，后续发布无法推进其游标；客户端按最后事件 ID 从数据库补取，遵循 [EventSource 重连与 Last-Event-ID](https://html.spec.whatwg.org/multipage/server-sent-events.html#the-last-event-id-header) 的现有契约。健康订阅继续接收，取消订阅保持幂等。
+
+实际广播器基线复现了丢失 ID 257 后发送 ID 258 的行为。修复后的并发 race 测试验证关闭顺序；真实 PostgreSQL 与 HTTP SSE 的组合回归补取 544 条记录，跨过 500 条分页边界。该验证组合了确定的通道溢出与实际 HTTP 补偿，未通过慢 TCP 读者在 handler 内诱发溢出；数据库提交和并发发布的排序、阻塞写入时限仍沿用既有行为。本轮未调用模型或安全测试目标。

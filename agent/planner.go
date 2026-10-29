@@ -367,11 +367,6 @@ func plannerSystem(goal, dataDir, workDir string) string {
 // for time/heartbeat wakes). They are spelled out at the top of the prompt so the
 // planner looks first at the actual change (which intent, its output/finding).
 func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts *db.ExplorationStore, goal string, triggers []TriggerEvent, emit func(db.Activity)) (met bool, reason string, err error) {
-	// cold-digest §2.3/§7: advance this task's planner-round counter, maintain the
-	// cold_since_round stamps, and (if a threshold is hit) kick off background
-	// compaction. Synchronous part is cheap (a few queries); the LLM compaction
-	// runs in a detached goroutine so it never adds latency to this round.
-	p.compactor.OnPlannerRound(ctx, ts)
 	tsx := NewToolSet(ts, "planner")
 	tsx.SetFindingRecorder(p.findingRecorder)
 	if as != nil {
@@ -388,8 +383,15 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// 资产覆盖度功能关闭时剔除 add_task_scope/list_untested_assets（不入 prompt）。
 	base := append(tsx.DropCoverageTools(tsx.PlannerTools()), actool.DefaultTools()...)
 	ctx = WithRunInfo(ctx, RunInfo{TaskID: taskID, ExplorationID: explorationID(ts)})
-	tools, def, cleanup := AugmentTools(ctx, "planner", base)
+	tools, def, cleanup, err := AugmentTools(ctx, "planner", base)
 	defer cleanup()
+	if err != nil {
+		return false, "", err
+	}
+	// Catalog authorization must succeed before background LLM compaction starts.
+	// cold-digest §2.3/§7: maintain this task's round and cold-node stamps, then
+	// launch any needed compaction without delaying the planning round.
+	p.compactor.OnPlannerRound(ctx, ts)
 	// 关键态势（刚完成的意图 + 预取的完整图）改放【本轮 user 输入】(见下方 input)，system
 	// 只留静态规划正文。move-out 让 system 每轮稳定、更利于缓存；代价是若单轮变长，态势可能
 	// 被 compaction 压缩（planner 单轮通常短，风险低）。situational 会拼进下方 input。
