@@ -6,10 +6,7 @@ import (
 	"github.com/Autumn-27/artex/db"
 )
 
-// Broadcaster is a per-task in-process pub/sub for live activity events. The
-// engine publishes each appended activity at its single emit point; SSE handlers
-// subscribe per task. Storage (activity table) and the live stream come from the
-// same Publish call, so they never diverge.
+// Broadcaster 按任务广播已保存的活动；数据库负责重连时的历史补偿。
 type Broadcaster struct {
 	mu   sync.Mutex
 	subs map[string]map[chan db.Activity]struct{} // task id -> set of subscriber channels
@@ -35,21 +32,22 @@ func (b *Broadcaster) Subscribe(task string) (<-chan db.Activity, func()) {
 		once.Do(func() {
 			b.mu.Lock()
 			if m := b.subs[task]; m != nil {
-				delete(m, ch)
+				if _, exists := m[ch]; exists {
+					delete(m, ch)
+					close(ch)
+				}
 				if len(m) == 0 {
 					delete(b.subs, task)
 				}
 			}
 			b.mu.Unlock()
-			close(ch)
 		})
 	}
 }
 
-// Publish fans an activity out to all subscribers of a task. Non-blocking: if a
-// subscriber's buffer is full the event is dropped — the client reconnects with
-// its last seq cursor and catches up the gap from the DB, so liveness never
-// stalls the engine.
+// Publish 非阻塞广播活动；缓冲满时先移除并关闭订阅，阻止后续帧越过缺口。
+// handler 读完已排队的前缀后退出，客户端从最后收到的 ID 重连补偿。
+// 此处保留发布顺序；数据库 ID 分配与并发发布的排序由调用方负责。
 func (b *Broadcaster) Publish(task string, a db.Activity) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -57,6 +55,11 @@ func (b *Broadcaster) Publish(task string, a db.Activity) {
 		select {
 		case ch <- a:
 		default:
+			delete(b.subs[task], ch)
+			close(ch)
 		}
+	}
+	if len(b.subs[task]) == 0 {
+		delete(b.subs, task)
 	}
 }

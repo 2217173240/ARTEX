@@ -121,7 +121,8 @@ func TestChatMentionWorkerReceivesServerDetails(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
-	defer m.Close()
+	t.Cleanup(func() { _ = m.Close() })
+	wireFixtureToolAssembly(t, m.pg)
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Server{ctx: ctx, m: m, engine: NewEngine(m)}
 	task, err := m.CreateTask("Worker mention test", "Read referenced records", nil, 0, 0)

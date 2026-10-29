@@ -30,6 +30,8 @@ MCP 保存与授权分离。普通管理保存以及 Agent 的 `create_mcp` / `u
 
 这项授权约束覆盖应用的 MCP 管理与调用通道。被授权的高权限 Auto 仍具有其他命令、自定义工具等执行能力；若进程能访问管理凭据、数据库或宿主机资源，它可以绕过应用层配置权限。因此这不构成进程沙箱、跨租户隔离或完整的提示注入防护。部署应将控制面的凭据与不可信执行环境隔离，按实际任务限制网络和凭据范围；仅向可信操作员提供管理访问。参考 [OWASP Excessive Agency](https://genai.owasp.org/llmrisk/llm062025-excessive-agency/) 的最小权限与服务端授权建议。
 
+工具启用状态与 Agent 绑定属于必需授权目录。main agent、planner、worker 和 chat 在创建模型会话前读取并应用该目录；读取失败以明确错误停止本次运行，planner 的预备压缩也在装配成功后启动。显式空工具集合保持为空，避免底层 SDK 选择默认工具。目录恢复后可重新发起运行；可选 MCP 服务连接失败继续按服务独立降级，已有 MCP 调用版本校验保持原有约束。该检查限定装配阶段，不增加运行中内置工具绑定的即时撤销能力。参考 [OWASP 授权检查失败处理](https://cheatsheetseries.owasp.org/cheatsheets/Authorization_Cheat_Sheet.html#exit-safely-when-authorization-checks-fail)。
+
 可执行工具（Bash、后台命令、Monitor、交互 shell、自定义 command/Python）及 stdio MCP 默认不传递宿主 `ARTEX_PG_DSN`、`ANTHROPIC_API_KEY`、`OPENAI_API_KEY`、`ARTEX_LLM_BASE_URL`、`ARTEX_LLM_PROXY` 的秘密值。工具环境覆盖在默认屏蔽之后应用；操作员明确配置同名值时仍传递，stdio MCP 继续要求批准对应配置版本。HTTP/SSE MCP 的配置环境字段表示请求头，保持其认证语义。父进程保留配置与动态超时读取；PATH、HOME、会话代理和证书继续可用。此策略减少隐式继承，不隐藏变量名称，也不覆盖未知环境秘密、固定用途 ripgrep/npm、启动器向后端传递配置或同账户文件访问。秘密应只提供给需要它的组件，参考 [OWASP 秘密管理指引](https://cheatsheetseries.owasp.org/cheatsheets/Secrets_Management_Cheat_Sheet.html)。
 
 浏览器会话使用服务端签发的 HttpOnly、SameSite=Lax cookie，HTTPS 部署还设置 Secure；前端不持久化 JWT，也不将其放入 SSE URL。旧版浏览器会话升级后需要重新登录一次。命令行客户端继续使用 Bearer 认证。反向代理应保留外部 Host 并覆盖 `X-Forwarded-Proto`；Next 本机代理的转发 Host 只在后端确认连接来自 loopback 时采用。开发环境保留同一 localhost/私有 IP 上的前端 3000 或 5173 → 后端 8787 连接。

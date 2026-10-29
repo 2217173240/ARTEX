@@ -262,7 +262,10 @@ func TestEvidenceToolUpgradePreservesRuntimeCustomization(t *testing.T) {
 	if err := m.pg.UpdateTool("record_fact", updated.Description, updated.Schema, json.RawMessage(`["worker"]`), true); err != nil {
 		t.Fatal(err)
 	}
-	tools := agent.ToolResolve(t.Context(), "worker", agent.NewToolSet(nil, "").WorkerTools())
+	tools, err := agent.ToolResolve(t.Context(), "worker", agent.NewToolSet(nil, "").WorkerTools())
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, tool := range tools {
 		if tool.Name() == "record_fact" {
 			visible := tool.InputSchema()["properties"].(map[string]any)

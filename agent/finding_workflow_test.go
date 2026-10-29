@@ -16,18 +16,21 @@ func TestFindingWorkflowSharedAssemblyAndSwitch(t *testing.T) {
 	on := false
 	FindingTrafficBindingEnabled = func() bool { return on }
 	ts := NewToolSet(nil, "fixture")
-	ToolResolve = func(_ context.Context, _ string, base []actool.CoreTool) []actool.CoreTool {
+	ToolResolve = func(_ context.Context, _ string, base []actool.CoreTool) ([]actool.CoreTool, error) {
 		out := make([]actool.CoreTool, len(base))
 		for i, tool := range base {
 			out[i] = DecorateTool(tool, "CUSTOM DESCRIPTION", tool.InputSchema())
 		}
-		return out
+		return out, nil
 	}
 	for _, role := range []string{"worker", "planner", "mainagent", "auto", "pentest", "custom-agent"} {
 		for _, enabled := range []bool{false, true, false} {
 			on = enabled
-			out, def, cleanup := AugmentTools(t.Context(), role, []actool.CoreTool{ts.addFinding(), ts.addHint()})
+			out, def, cleanup, err := AugmentTools(t.Context(), role, []actool.CoreTool{ts.addFinding(), ts.addHint()})
 			cleanup()
+			if err != nil {
+				t.Fatal(err)
+			}
 			system, _ := deferredSystem("USER CUSTOM PROMPT", def)
 			if !strings.HasPrefix(system[0], "USER CUSTOM PROMPT") {
 				t.Fatal("custom prompt replaced")
@@ -59,9 +62,15 @@ func TestFindingWorkflowSharedAssemblyAndSwitch(t *testing.T) {
 		}
 	}
 	on = true
-	ToolResolve = func(context.Context, string, []actool.CoreTool) []actool.CoreTool { return nil }
-	out, def, cleanup := AugmentTools(t.Context(), "planner", []actool.CoreTool{ts.addFinding()})
+	ToolResolve = func(context.Context, string, []actool.CoreTool) ([]actool.CoreTool, error) { return nil, nil }
+	out, def, cleanup, err := AugmentTools(t.Context(), "planner", []actool.CoreTool{ts.addFinding()})
 	defer cleanup()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out == nil {
+		t.Fatal("empty tools must not select SDK defaults")
+	}
 	if len(out) != 0 || def.FindingGuidance != "" {
 		t.Fatal("reintroduced disabled tool or its guidance")
 	}
