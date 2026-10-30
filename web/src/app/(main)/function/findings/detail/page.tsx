@@ -23,7 +23,7 @@ import { Separator } from "@/components/ui/separator";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
-import { findingReportHref, findingReturnHref, returnTaskId } from "@/lib/finding-navigation";
+import { findingReportHref, findingReturnHref, findingReturnTab, returnTaskId } from "@/lib/finding-navigation";
 import { useI18n } from "@/lib/i18n";
 import { statusMeta } from "@/lib/status";
 import type { Finding, FindingStatus, Severity } from "@/lib/types";
@@ -63,7 +63,8 @@ function FindingDetailInner() {
   const id = searchParams.get("id") ?? "";
   const contextTaskId = searchParams.get("context_task") ?? "";
   const returnTask = returnTaskId(searchParams.get("return_task"));
-  const backHref = findingReturnHref(returnTask);
+  const returnTab = findingReturnTab(searchParams.get("return_tab"));
+  const backHref = findingReturnHref(returnTask, returnTab);
   const [finding, setFinding] = React.useState<Finding | null>(null);
   const [loaded, setLoaded] = React.useState(false);
   const [tab, setTab] = React.useState("overview");
@@ -178,7 +179,7 @@ function FindingDetailInner() {
           <ShieldAlertIcon className="size-4 text-muted-foreground" />
           {finding.case_id ? (
             <Button asChild variant="outline" size="sm">
-              <Link href={findingReportHref("case", finding.case_id, contextTaskId, returnTask)}>
+              <Link href={findingReportHref("case", finding.case_id, contextTaskId, returnTask, returnTab)}>
                 {uiText("所属漏洞文件夹")}
               </Link>
             </Button>

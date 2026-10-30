@@ -1,4 +1,5 @@
 {
+  "缺少漏洞组 ID，请返回漏洞列表重新打开报告。": "The finding case ID is missing. Return to the findings list and reopen the report.",
   "实时": "Real-time",
   "移除": "Remove",
   "上传文件": "Upload file",

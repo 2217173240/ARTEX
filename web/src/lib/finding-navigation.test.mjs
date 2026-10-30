@@ -51,12 +51,14 @@ test("original and unified reports carry navigation origin independently of inhe
     assert.equal(inherited.searchParams.get("id"), "7&extra=1");
     assert.equal(inherited.searchParams.get("context_task"), "12&mode=write");
     assert.equal(inherited.searchParams.get("return_task"), "42");
-    assert.equal(inherited.searchParams.size, 3);
+    assert.equal(inherited.searchParams.get("return_tab"), "findings");
+    assert.equal(inherited.searchParams.size, 4);
     const own = new URL(findingReportHref(kind, "7", undefined, "42"), "https://artex.example");
     assert.equal(own.searchParams.has("context_task"), false);
     assert.equal(own.searchParams.get("return_task"), "42");
     const global = new URL(findingReportHref(kind, "7"), "https://artex.example");
     assert.equal(global.searchParams.has("return_task"), false);
+    assert.equal(global.searchParams.has("return_tab"), false);
     assert.equal(
       new URL(findingReportHref(kind, "7", "12", "//evil"), "https://artex.example").searchParams.has("return_task"),
       false,
@@ -95,23 +97,60 @@ test("URL tabs validate each history entry and retain unrelated query state", ()
 
 test("paired suggestion reports retain the opening task across detail and unified report navigation", () => {
   for (const contextTask of [undefined, "12"]) {
-    for (const reportId of ["7", "8"]) {
-      const detail = new URL(findingReportHref("detail", reportId, contextTask, "42"), "https://artex.example");
-      const unified = new URL(
-        findingReportHref(
-          "case",
-          "9",
-          detail.searchParams.get("context_task") ?? undefined,
-          detail.searchParams.get("return_task") ?? undefined,
-        ),
-        "https://artex.example",
-      );
-      assert.equal(detail.searchParams.get("id"), reportId);
-      assert.equal(unified.searchParams.get("context_task"), contextTask ?? null);
-      assert.equal(
-        findingReturnHref(unified.searchParams.get("return_task")),
-        "/function/tasks/detail?id=42&tab=findings",
-      );
+    for (const returnTab of ["findings", "retests"]) {
+      for (const reportId of ["7", "8"]) {
+        const detail = new URL(
+          findingReportHref("detail", reportId, contextTask, "42", returnTab),
+          "https://artex.example",
+        );
+        const unified = new URL(
+          findingReportHref(
+            "case",
+            "9",
+            detail.searchParams.get("context_task") ?? undefined,
+            detail.searchParams.get("return_task") ?? undefined,
+            detail.searchParams.get("return_tab") ?? undefined,
+          ),
+          "https://artex.example",
+        );
+        assert.equal(detail.searchParams.get("id"), reportId);
+        assert.equal(unified.searchParams.get("context_task"), contextTask ?? null);
+        assert.equal(
+          findingReturnHref(unified.searchParams.get("return_task"), unified.searchParams.get("return_tab")),
+          `/function/tasks/detail?id=42&tab=${returnTab}`,
+        );
+      }
+    }
+  }
+});
+
+test("return tabs accept only findings and retests within a valid task origin", () => {
+  for (const tab of [
+    undefined,
+    null,
+    "",
+    "findings",
+    "report",
+    "Retests",
+    "constructor",
+    "retests&tab=report",
+    "//evil",
+  ]) {
+    assert.equal(findingReturnHref("42", tab), "/function/tasks/detail?id=42&tab=findings");
+    for (const kind of ["detail", "case"]) {
+      const report = new URL(findingReportHref(kind, "7", "12", "42", tab), "https://artex.example");
+      assert.equal(report.searchParams.get("return_tab"), "findings");
+      assert.equal(report.searchParams.get("context_task"), "12");
+    }
+  }
+  assert.equal(findingReturnHref("42", "retests"), "/function/tasks/detail?id=42&tab=retests");
+  for (const task of [undefined, "", "0", "-1", "01", "9223372036854775808", "//evil"]) {
+    for (const tab of ["findings", "retests", "report"]) {
+      assert.equal(findingReturnHref(task, tab), "/function/findings");
+      const report = new URL(findingReportHref("detail", "7", "12", task, tab), "https://artex.example");
+      assert.equal(report.searchParams.has("return_task"), false);
+      assert.equal(report.searchParams.has("return_tab"), false);
+      assert.equal(report.searchParams.get("context_task"), "12");
     }
   }
 });

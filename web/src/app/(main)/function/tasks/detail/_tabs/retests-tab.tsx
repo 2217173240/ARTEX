@@ -1,7 +1,5 @@
 "use client";
 
-import { useI18n } from "@/lib/i18n";
-
 import * as React from "react";
 
 import Link from "next/link";
@@ -17,6 +15,8 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/u
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
+import { findingReportHref } from "@/lib/finding-navigation";
+import { useI18n } from "@/lib/i18n";
 import type { Finding, FindingsPage } from "@/lib/types";
 
 const PAGE_SIZE = 20;
@@ -155,7 +155,9 @@ export function RetestsTab({ taskId }: { taskId: string }) {
               <div className="flex flex-wrap items-start justify-between gap-2">
                 <h2 className="min-w-0 flex-1 break-words font-medium">{findingLabel(selected)}</h2>
                 <Button asChild variant="ghost" size="sm">
-                  <Link href={`/function/findings/detail?id=${selected.finding_id || selected.id}`}>
+                  <Link
+                    href={findingReportHref("detail", selected.finding_id || selected.id, undefined, taskId, "retests")}
+                  >
                     {uiText("漏洞详情")}
                     <ArrowUpRightIcon data-icon="inline-end" />
                   </Link>
