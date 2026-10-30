@@ -66,6 +66,7 @@ export function FindingCaseMemberRow({
   contextTask,
   returnTask,
   matched = true,
+  returnTab,
   nested = false,
 }: {
   finding: Finding;
@@ -74,6 +75,7 @@ export function FindingCaseMemberRow({
   contextTask?: string;
   returnTask?: string;
   matched?: boolean;
+  returnTab?: string;
   nested?: boolean;
 }) {
   const { t: uiText } = useI18n();
@@ -99,7 +101,7 @@ export function FindingCaseMemberRow({
       <div className="order-last flex min-w-0 flex-1 basis-full flex-col gap-1 sm:order-none sm:basis-auto">
         <Link
           className="line-clamp-2 break-words font-medium hover:underline sm:truncate"
-          href={findingReportHref("detail", id, contextTask, returnTask)}
+          href={findingReportHref("detail", id, contextTask, returnTask, returnTab)}
         >
           #{id} {[f.name, f.vulnclass].find((v) => v?.trim()) ?? uiText("未分类")}
         </Link>
@@ -109,7 +111,7 @@ export function FindingCaseMemberRow({
       {f.inherited ? <Badge variant="outline">{uiText("继承 · 只读")}</Badge> : null}
       <StatusBadge domain="finding" value={f.status} />
       <Button asChild variant="ghost" size="sm">
-        <Link href={findingReportHref("detail", id, contextTask, returnTask)}>{uiText("查看报告")}</Link>
+        <Link href={findingReportHref("detail", id, contextTask, returnTask, returnTab)}>{uiText("查看报告")}</Link>
       </Button>
     </div>
   );
@@ -124,6 +126,7 @@ export function FindingCaseMembers({
   contextTask,
   returnTask,
   nested = false,
+  returnTab,
   renderRecords,
   refreshToken = 0,
 }: {
@@ -135,6 +138,7 @@ export function FindingCaseMembers({
   contextTask?: string;
   returnTask?: string;
   nested?: boolean;
+  returnTab?: string;
   renderRecords?: (items: Finding[]) => React.ReactNode;
   refreshToken?: number;
 }) {
@@ -214,6 +218,7 @@ export function FindingCaseMembers({
               contextTask={contextTask}
               returnTask={returnTask}
               matched={!matchedIds || matchedIds.includes(Number(f.finding_id ?? f.id))}
+              returnTab={returnTab}
             />
           ))}
       {data.total > 20 ? (
@@ -235,11 +240,13 @@ function FindingMergeSuggestionCard({
   onResolve,
   contextTask,
   returnTask,
+  returnTab,
 }: {
   suggestion: FindingCaseSuggestion;
   onResolve: (s: FindingCaseSuggestion, accept: boolean) => Promise<void>;
   contextTask?: string;
   returnTask?: string;
+  returnTab?: string;
 }) {
   const { t: uiText } = useI18n();
   const [expanded, setExpanded] = React.useState(false);
@@ -267,14 +274,14 @@ function FindingMergeSuggestionCard({
         <CardDescription className="flex flex-wrap gap-3">
           <Link
             className="underline underline-offset-4"
-            href={findingReportHref("detail", s.left_id, contextTask, returnTask)}
+            href={findingReportHref("detail", s.left_id, contextTask, returnTask, returnTab)}
           >
             {uiText("查看原报告 #")}
             {s.left_id}
           </Link>
           <Link
             className="underline underline-offset-4"
-            href={findingReportHref("detail", s.right_id, contextTask, returnTask)}
+            href={findingReportHref("detail", s.right_id, contextTask, returnTask, returnTab)}
           >
             {uiText("查看原报告 #")}
             {s.right_id}
@@ -339,11 +346,13 @@ export function FindingCaseReviewPanel({
   onChange,
   contextTask,
   returnTask,
+  returnTab,
 }: {
   taskId?: string;
   onChange?: () => void;
   contextTask?: string;
   returnTask?: string;
+  returnTab?: string;
 }) {
   const { t: uiText } = useI18n();
   const [reviewSnapshot, setReviewSnapshot] = React.useState<{
@@ -423,6 +432,7 @@ export function FindingCaseReviewPanel({
           onResolve={resolve}
           contextTask={contextTask}
           returnTask={returnTask}
+          returnTab={returnTab}
         />
       ))}
       {runs.some((r) => r.state === "queued" || r.state === "running") ? (
@@ -472,6 +482,7 @@ export function FindingCaseList({
   contextTask,
   returnTask,
   readOnly = false,
+  returnTab,
   onTotal,
   refreshToken = 0,
   presentation = "records",
@@ -484,6 +495,7 @@ export function FindingCaseList({
   contextTask?: string;
   returnTask?: string;
   readOnly?: boolean;
+  returnTab?: string;
   onTotal?: (total: number) => void;
   refreshToken?: number;
   presentation?: "records" | "task" | "asset";
@@ -549,6 +561,7 @@ export function FindingCaseList({
           contextTask={contextTask}
           returnTask={returnTask}
           taskId={query.task === "all" ? undefined : query.task}
+          returnTab={returnTab}
           onChange={() => setRefresh((v) => v + 1)}
         />
       ) : null}
@@ -604,7 +617,7 @@ export function FindingCaseList({
                       <Link
                         className="hover:underline"
                         title={group.title}
-                        href={findingReportHref("case", group.id, contextTask, returnTask)}
+                        href={findingReportHref("case", group.id, contextTask, returnTask, returnTab)}
                       >
                         {group.title}
                       </Link>
@@ -681,6 +694,7 @@ export function FindingCaseList({
                     onSelect={readOnly ? undefined : onSelect}
                     contextTask={contextTask}
                     returnTask={returnTask}
+                    returnTab={returnTab}
                   />
                 </CardContent>
               ) : null}
@@ -700,6 +714,7 @@ export function FindingCaseList({
                     onSelect={readOnly ? undefined : onSelect}
                     contextTask={contextTask}
                     returnTask={returnTask}
+                    returnTab={returnTab}
                   />
                 )}
               </CardContent>

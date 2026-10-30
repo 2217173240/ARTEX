@@ -31,13 +31,46 @@ type sideRun struct {
 }
 type sideQuestionState struct {
 	mu           sync.Mutex
-	commands     sync.Mutex // short admission / clear operations only, never inference
+	commands     sync.Mutex // admission, history clear and checkpoint writes; never inference
 	pending      map[string]sidequestion.Snapshot
 	latest       map[string]sidequestion.Snapshot
 	seen         map[string][2]int64
+	retries      map[string]sideCheckpointRetry
 	runs         map[string]sideRun
 	done         chan struct{}
 	outputTokens int
+}
+
+type sideCheckpointRetry struct {
+	failures    int
+	nextAttempt time.Time
+}
+
+func (r sideCheckpointRetry) failed(now time.Time) (sideCheckpointRetry, time.Duration) {
+	delays := [...]time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second, 30 * time.Second}
+	index := r.failures
+	if index >= len(delays) {
+		index = len(delays) - 1
+	}
+	delay := delays[index]
+	if r.failures < len(delays) {
+		r.failures++
+	}
+	r.nextAttempt = now.Add(delay)
+	return r, delay
+}
+
+func (s *Server) publishSideSnapshot(snap sidequestion.Snapshot) {
+	s.side.mu.Lock()
+	defer s.side.mu.Unlock()
+	key := snap.Parent.Key()
+	old, ok := s.side.seen[key]
+	if ok && (old[0] > snap.RunID || old[0] == snap.RunID && old[1] >= snap.Version) {
+		return
+	}
+	s.side.latest[key] = snap
+	s.side.seen[key] = [2]int64{snap.RunID, snap.Version}
+	s.side.pending[key] = snap
 }
 
 func sideModel(cfg agent.Config, id int64, name string) sidequestion.Model {
@@ -51,7 +84,7 @@ func bindSideProvider(p llm.Provider, cfg agent.Config, id int64, name string) l
 }
 
 func (s *Server) initSideQuestions() {
-	s.side = &sideQuestionState{pending: map[string]sidequestion.Snapshot{}, latest: map[string]sidequestion.Snapshot{}, seen: map[string][2]int64{}, runs: map[string]sideRun{}, done: make(chan struct{})}
+	s.side = &sideQuestionState{pending: map[string]sidequestion.Snapshot{}, latest: map[string]sidequestion.Snapshot{}, seen: map[string][2]int64{}, retries: map[string]sideCheckpointRetry{}, runs: map[string]sideRun{}, done: make(chan struct{})}
 	if n, err := strconv.Atoi(os.Getenv("ARTEX_BTW_MAX_OUTPUT_TOKENS")); err == nil && n >= 256 && n <= 32768 {
 		s.side.outputTokens = n
 	}
@@ -62,18 +95,7 @@ func (s *Server) initSideQuestions() {
 	if err := s.m.pg.InterruptSideRequests(s.ctx); err != nil {
 		log.Printf("[btw] recover: %v", err)
 	}
-	s.ctx = sidequestion.WithPublisher(s.ctx, func(snap sidequestion.Snapshot) {
-		s.side.mu.Lock()
-		defer s.side.mu.Unlock()
-		key := snap.Parent.Key()
-		old, ok := s.side.seen[key]
-		if ok && (old[0] > snap.RunID || old[0] == snap.RunID && old[1] >= snap.Version) {
-			return
-		}
-		s.side.latest[key] = snap
-		s.side.seen[key] = [2]int64{snap.RunID, snap.Version}
-		s.side.pending[key] = snap
-	})
+	s.ctx = sidequestion.WithPublisher(s.ctx, s.publishSideSnapshot)
 	go func() {
 		defer close(s.side.done)
 		tick := time.NewTicker(250 * time.Millisecond)
@@ -81,7 +103,7 @@ func (s *Server) initSideQuestions() {
 		for {
 			select {
 			case <-tick.C:
-				s.flushSideSnapshots()
+				s.flushSideSnapshotsMatching(false, nil)
 			case <-s.ctx.Done():
 				s.flushSideSnapshots()
 				return
@@ -91,30 +113,57 @@ func (s *Server) initSideQuestions() {
 }
 
 func (s *Server) flushSideSnapshots() {
+	s.flushSideSnapshotsMatching(true, nil)
+}
+
+func (s *Server) flushSideSnapshotsMatching(force bool, match func(sidequestion.Parent) bool) {
 	if s.side == nil || s.m.pg == nil {
 		return
 	}
 	s.side.commands.Lock()
 	defer s.side.commands.Unlock()
 	s.side.mu.Lock()
-	pending := s.side.pending
-	s.side.pending = map[string]sidequestion.Snapshot{}
+	pending := map[string]sidequestion.Snapshot{}
+	now := time.Now()
+	for key, snap := range s.side.pending {
+		if (match == nil || match(snap.Parent)) && (force || !now.Before(s.side.retries[key].nextAttempt)) {
+			pending[key] = snap
+			delete(s.side.pending, key)
+		}
+	}
 	s.side.mu.Unlock()
 	for key, snap := range pending {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		err := s.m.pg.SaveSideSnapshot(ctx, snap)
 		cancel()
 		s.side.mu.Lock()
+		var delay time.Duration
 		if err == nil || errors.Is(err, db.ErrSideParentGone) {
 			if cur, ok := s.side.latest[key]; ok && cur.RunID == snap.RunID && cur.Version == snap.Version {
 				delete(s.side.latest, key)
 			}
-		} else if newer, ok := s.side.pending[key]; !ok || newer.RunID < snap.RunID || newer.RunID == snap.RunID && newer.Version < snap.Version {
-			s.side.pending[key] = snap
+			if err == nil {
+				delete(s.side.retries, key)
+			} else if _, newer := s.side.pending[key]; !newer {
+				delete(s.side.retries, key)
+			}
+		} else {
+			if newer, ok := s.side.pending[key]; !ok || newer.RunID < snap.RunID || newer.RunID == snap.RunID && newer.Version < snap.Version {
+				s.side.pending[key] = snap
+			}
+			if s.side.retries == nil {
+				s.side.retries = map[string]sideCheckpointRetry{}
+			}
+			s.side.retries[key], delay = s.side.retries[key].failed(time.Now())
 		}
 		s.side.mu.Unlock()
 		if err != nil && !errors.Is(err, db.ErrSideParentGone) {
-			log.Printf("[btw] checkpoint persistence: %v", err)
+			label := fmt.Sprintf("%T", err)
+			var sqlState interface{ SQLState() string }
+			if errors.As(err, &sqlState) {
+				label = sqlState.SQLState()
+			}
+			log.Printf("[btw] checkpoint persistence parent=%s error=%s retry_in=%s", key, label, delay)
 		}
 	}
 }
@@ -162,7 +211,7 @@ func (s *Server) drainTaskSideQuestions(ctx context.Context, taskID string) erro
 			return ctx.Err()
 		}
 	}
-	s.flushSideSnapshots()
+	s.flushSideSnapshotsMatching(true, func(p sidequestion.Parent) bool { return p.TaskID == id })
 	// A failed flush must not silently leave the latest checkpoint out of archive.
 	s.side.mu.Lock()
 	defer s.side.mu.Unlock()
