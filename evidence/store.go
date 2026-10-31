@@ -13,6 +13,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -57,8 +58,9 @@ func verifyFile(path, hash string, length int64) error {
 	return nil
 }
 
-// A new body becomes visible only after a durable write. Failed SQL commits may
-// leave unreferenced files; GC reaps those after a full day's grace period.
+// A new body is flushed and closed before rename; the final directory is then
+// synced where supported. Failed SQL commits may leave unreferenced files;
+// GC reaps those after a full day's grace period.
 func (s *Store) writeBody(r io.Reader, expectedLength int64, expectedHash string) (hash string, err error) {
 	stage := filepath.Join(s.Dir, ".staging")
 	if err = os.MkdirAll(stage, 0o700); err != nil {
@@ -107,12 +109,28 @@ func (s *Store) writeBody(r io.Reader, expectedLength int64, expectedHash string
 	if err = os.Rename(f.Name(), path); err != nil {
 		return "", err
 	}
-	d, err := os.Open(filepath.Dir(path))
+	return hash, syncDir(filepath.Dir(path))
+}
+
+// Windows cannot flush this read-only directory handle. Validate it on every
+// platform, and retain directory Sync on other platforms.
+func syncDir(path string) (err error) {
+	d, err := os.Open(path)
 	if err != nil {
-		return "", err
+		return err
 	}
-	defer d.Close()
-	return hash, d.Sync()
+	defer func() { err = errors.Join(err, d.Close()) }()
+	info, err := d.Stat()
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("evidence sync path is not a directory: %s", path)
+	}
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	return d.Sync()
 }
 
 // StageFindingsExport freezes bindings/report versions and makes private body
