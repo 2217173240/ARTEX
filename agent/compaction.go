@@ -604,9 +604,17 @@ func (c *Compactor) compress(ctx context.Context, g *coldGraph, b block, nodeByI
 		MaxTokens: 1500,
 		Thinking:  "disabled",
 	}
-	msg, _, _, err := c.prov.Complete(ctx, req)
+	msg, stopReason, _, err := c.prov.Complete(ctx, req)
 	if err != nil {
 		return "", err
+	}
+	return compressionResultBody(msg, stopReason)
+}
+
+// compressionResultBody 拒绝已知截断或空白的摘要正文。
+func compressionResultBody(msg llm.Message, stopReason string) (string, error) {
+	if stopReason == "max_tokens" {
+		return "", fmt.Errorf("incomplete compaction body from model")
 	}
 	body := strings.TrimSpace(msg.Text())
 	if body == "" {
