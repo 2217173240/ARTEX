@@ -2,6 +2,7 @@ package db
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -736,6 +737,17 @@ WHERE exploration_id=$1 AND kind=$2 ORDER BY id DESC LIMIT $3`, s.expID, kind, l
 	return scanNodes(rows)
 }
 
+// ReportFindings reads every current-exploration finding in one statement.
+func (s *ExplorationStore) ReportFindings(ctx context.Context) ([]*Node, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+nodeCols+` FROM exploration_nodes
+WHERE exploration_id=$1 AND kind=$2 ORDER BY id DESC`, s.expID, KindFinding)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanNodes(rows)
+}
+
 // ListByKindPage returns one newest-first page of nodes of a kind for reverse
 // pagination: up to `limit` nodes with id < `before` (before<=0 = the newest page).
 // hasMore reports whether still-older nodes exist, so a client (e.g. the worker
@@ -1178,6 +1190,50 @@ WHERE id=$2 AND exploration_id=$3 AND kind='intent' AND state='open'`, owner, id
 	}
 	n, _ := res.RowsAffected()
 	return n == 1, nil
+}
+
+// TaskCounts contains exact task totals from one statement snapshot.
+type TaskCounts struct {
+	ByKind         map[string]int
+	RunningIntents int
+	OpenIntents    int
+	GoalsTotal     int
+	GoalsMet       int
+}
+
+func (s *ExplorationStore) TaskCounts(ctx context.Context) (TaskCounts, error) {
+	out := TaskCounts{ByKind: map[string]int{}}
+	rows, err := s.db.QueryContext(ctx, `SELECT kind,state,count(*) FROM exploration_nodes WHERE exploration_id=$1 GROUP BY kind,state`, s.expID)
+	if err != nil {
+		return TaskCounts{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var kind, state string
+		var count int
+		if err := rows.Scan(&kind, &state, &count); err != nil {
+			return TaskCounts{}, err
+		}
+		out.ByKind[kind] += count
+		if kind == KindIntent {
+			if state == "running" {
+				out.RunningIntents += count
+			}
+			if state == "open" {
+				out.OpenIntents += count
+			}
+		}
+		if kind == KindGoal {
+			out.GoalsTotal += count
+			if state == "met" {
+				out.GoalsMet += count
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return TaskCounts{}, err
+	}
+	return out, nil
 }
 
 // Stats returns node counts grouped by kind (for dashboard).
