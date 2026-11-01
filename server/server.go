@@ -1105,24 +1105,15 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 	}
 	out["llm_configured"] = s.engine.ReadyFor(t)
 
-	st, _ := t.Store.Stats()
-	out["exploration"] = st
+	counts, err := t.Store.TaskCounts(r.Context())
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	out["exploration"] = counts.ByKind
 
 	// per-task running state + heartbeat (distinct from "LLM configured").
-	intents, _ := t.Store.ListByKind(db.KindIntent, 100000)
-	inFlight := 0
-	for _, in := range intents {
-		if in.State == "running" {
-			inFlight++
-		}
-	}
-	goals, _ := t.Store.ListByKind(db.KindGoal, 10000)
-	goalsMet := 0
-	for _, g := range goals {
-		if g.State == "met" {
-			goalsMet++
-		}
-	}
+	inFlight := counts.RunningIntents
 	last := s.engine.LastActivity(t.ID)
 	paused := s.engine.IsPaused(t.ID)
 	activeCalls := s.engine.ActiveLLMCalls(t.ID)
@@ -1152,8 +1143,8 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 		"llm_in_flight": activeCalls,
 		"last_activity": last,
 		"stalled":       stalled,
-		"goals_total":   len(goals),
-		"goals_met":     goalsMet,
+		"goals_total":   counts.GoalsTotal,
+		"goals_met":     counts.GoalsMet,
 	}
 	writeJSON(w, 200, out)
 }
@@ -3948,7 +3939,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 202, map[string]any{"status": "accepted", "mode": "llm"})
 		return
 	}
-	reply := s.fallbackChat(t, req.Message)
+	reply := s.fallbackChat(ctx, t, req.Message)
 	s.engine.emitActivity(t, db.Activity{Worker: "mainagent", Kind: "text", Summary: reply, MainSeg: segPtr})
 	s.finishTaskChat(t.ID, cancel)
 	writeJSON(w, 200, map[string]any{"reply": reply, "mode": "rule"})
@@ -4004,7 +3995,7 @@ func (s *Server) stopChat(w http.ResponseWriter, r *http.Request) {
 }
 
 // fallbackChat is the no-LLM human-steering handler: simple命令 + 态势摘要.
-func (s *Server) fallbackChat(t *Task, msg string) string {
+func (s *Server) fallbackChat(ctx context.Context, t *Task, msg string) string {
 	m := strings.TrimSpace(msg)
 	lower := strings.ToLower(m)
 	switch {
@@ -4017,14 +4008,21 @@ func (s *Server) fallbackChat(t *Task, msg string) string {
 		_, _ = t.Store.AddNode(db.KindHint, map[string]any{"text": text}, 0, "active", "human", nil)
 		return "已记录提示，规划者下次会读到：" + text
 	default:
-		assetCounts, _ := s.m.Assets().CountsByType()
+		assetCounts, err := s.m.Assets().CountsByType()
+		if err != nil {
+			log.Printf("[chat] task %s asset counts: %v", t.ID, err)
+			return "当前态势暂时无法读取，请稍后重试。"
+		}
+		counts, err := t.Store.TaskCounts(ctx)
+		if err != nil {
+			log.Printf("[chat] task %s task counts: %v", t.ID, err)
+			return "当前态势暂时无法读取，请稍后重试。"
+		}
 		assets := 0
 		for _, c := range assetCounts {
 			assets += c
 		}
-		fnd, _ := t.Store.ListByKind(db.KindFinding, 1000)
-		fr, _ := t.Store.Frontier(1000)
-		return fmt.Sprintf("（规则模式，未配置 LLM）当前态势：资产 %d，待领意图 %d，确认发现 %d。\n可用指令：以\"意图 ...\"注入意图，\"提示 ...\"给规划者提示。", assets, len(fr), len(fnd))
+		return fmt.Sprintf("（规则模式，未配置 LLM）当前态势：资产 %d，待领意图 %d，确认发现 %d。\n可用指令：以\"意图 ...\"注入意图，\"提示 ...\"给规划者提示。", assets, counts.OpenIntents, counts.ByKind[db.KindFinding])
 	}
 }
 
@@ -4034,12 +4032,20 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "no active task")
 		return
 	}
-	findings, _ := t.Store.ListByKind(db.KindFinding, 1000) // 纯漏洞（事实是独立的 KindFact，不进报告）
+	findings, err := t.Store.ReportFindings(r.Context())
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	assetCounts, err := s.m.Assets().CountsByType()
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
 	counts := map[string]int{}
 	for _, ty := range []string{"root_domain", "ip", "subdomain", "app", "service", "endpoint"} {
-		ns, _ := s.m.Assets().QueryByType(ty, 100000, 0)
-		if len(ns) > 0 {
-			counts[ty] = len(ns)
+		if assetCounts[ty] > 0 {
+			counts[ty] = assetCounts[ty]
 		}
 	}
 	md := report.Markdown(report.Input{
