@@ -1,6 +1,6 @@
 name: quality
 
-on:
+"on":
   pull_request:
   workflow_dispatch:
   push:
@@ -10,11 +10,35 @@ permissions:
   contents: read
 
 concurrency:
-  group: quality-${{ github.event.pull_request.number || github.ref }}
+  group: quality-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  backend:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      run_ci: ${{ steps.classify.outputs.run_ci }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: classify
+        name: Classify changed paths
+        env:
+          GITHUB_EVENT_BEFORE: ${{ github.event.before }}
+          GITHUB_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GITHUB_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: python3 scripts/ci-changes.py
+
+  backend-race:
+    needs: changes
+    if: needs.changes.outputs.run_ci == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     services:
@@ -49,47 +73,87 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: go.mod
+          cache: true
+          cache-dependency-path: |
+            go.mod
+            go.sum
+            third_party/go-mitmproxy/go.mod
+            third_party/go-mitmproxy/go.sum
+            third_party/norma/go.mod
+            third_party/norma/go.sum
+            scripts/ci-backend.py
       - name: Race tests with a fresh database for each package
         env:
           POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
         shell: bash
         run: |
           set -euo pipefail
-          packages=$(go list ./...)
-          index=0
-          for package in $packages; do
-            index=$((index + 1))
-            database="artex_ci_${index}"
-            docker exec "$POSTGRES_CONTAINER" psql -U artex_ci -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE ${database}"
-            fixture_dsn="postgres://artex_ci:fixture_only@127.0.0.1:5432/${database}?sslmode=disable"
-            ARTEX_PG_DSN="$fixture_dsn" ARTEX_INTERCEPT_TEST_DSN="$fixture_dsn" ARTEX_AUTH_TEST_DSN="$fixture_dsn" ARTEX_RATE_TEST_PG_DSN="$fixture_dsn" ARTEX_LEDGER_TEST_DSN="$fixture_dsn" ARTEX_COMPANY_TEST_DSN="$fixture_dsn" \
-              go test -race -count=1 -skip '^TestLiveContextReview$' "$package"
-          done
-      - name: Build CLI
-        env:
-          CGO_ENABLED: "0"
-        run: go build -o "$RUNNER_TEMP/artex" ./cmd/artex
+          python3 scripts/ci-backend.py --shard "${{ matrix.shard }}"
+
+  backend-tools:
+    needs: changes
+    if: needs.changes.outputs.run_ci == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: |
+            third_party/go-mitmproxy/go.mod
+            third_party/go-mitmproxy/go.sum
+            third_party/norma/go.mod
+            third_party/norma/go.sum
       - name: Patched proxy dependency regression tests
         working-directory: third_party/go-mitmproxy
         run: go test -race -count=1 ./internal/helper
       - name: Patched Norma dependency regression tests
         working-directory: third_party/norma
         run: go test -race -count=1 ./...
-      - name: Cross-compile supported CLI platforms
-        env:
-          CGO_ENABLED: "0"
-        shell: bash
-        run: |
-          set -euo pipefail
-          # Linux amd64 is built above; these check the remaining release targets.
-          for target in linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
-            GOOS="${target%/*}" GOARCH="${target#*/}" \
-              go build -o "$RUNNER_TEMP/artex-${target//\//-}" ./cmd/artex
-          done
       - name: Static harvest regression tests
         run: python3 -m unittest discover -s skills/api-recon/scripts -p 'test_harvest_static.py'
+      - name: CI helper regression tests
+        env:
+          ARTEX_CI_TEST_TMP: ${{ runner.temp }}
+        run: python3 -m unittest scripts/test_ci_helpers.py
+
+  quality:
+    if: always()
+    needs: [changes, backend-race, backend-tools, frontend, native, image, security]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enforce quality result
+        env:
+          RUN_CI: ${{ needs.changes.outputs.run_ci }}
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          BACKEND_RESULT: ${{ needs.backend-race.result }}
+          TOOLS_RESULT: ${{ needs.backend-tools.result }}
+          FRONTEND_RESULT: ${{ needs.frontend.result }}
+          NATIVE_RESULT: ${{ needs.native.result }}
+          IMAGE_RESULT: ${{ needs.image.result }}
+          SECURITY_RESULT: ${{ needs.security.result }}
+        run: |
+          set -euo pipefail
+          test "$CHANGES_RESULT" = success
+          if [ "$RUN_CI" = true ]; then
+            for result in "$BACKEND_RESULT" "$TOOLS_RESULT" "$FRONTEND_RESULT" "$NATIVE_RESULT" "$IMAGE_RESULT" "$SECURITY_RESULT"; do
+              test "$result" = success
+            done
+          elif [ "$RUN_CI" = false ]; then
+            for result in "$BACKEND_RESULT" "$TOOLS_RESULT" "$FRONTEND_RESULT" "$NATIVE_RESULT" "$IMAGE_RESULT" "$SECURITY_RESULT"; do
+              test "$result" = skipped
+            done
+          else
+            echo "unexpected RUN_CI=$RUN_CI" >&2
+            exit 1
+          fi
 
   frontend:
+    needs: changes
+    if: needs.changes.outputs.run_ci == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -105,6 +169,15 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm ci --ignore-scripts
+      - name: Restore frontend compiler caches
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            web/.next/cache
+            web/tsconfig.tsbuildinfo
+          key: ${{ runner.os }}-${{ runner.arch }}-node22-next-mock-${{ hashFiles('web/package-lock.json', 'web/next.config.*', 'web/tsconfig.json') }}-${{ hashFiles('web/src/**', 'web/public/**', 'web/scripts/**') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-node22-next-mock-${{ hashFiles('web/package-lock.json', 'web/next.config.*', 'web/tsconfig.json') }}-
       - run: node --test src/lib/*.test.mjs
       - run: npx --no-install tsc --noEmit
       - name: Check UI translation dictionary coverage
@@ -132,7 +205,8 @@ jobs:
       artifact-prefix: ci-native
 
   image:
-    needs: frontend
+    needs: [changes, frontend]
+    if: needs.changes.outputs.run_ci == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -215,6 +289,8 @@ jobs:
           python3 scripts/check-image-layers.py "$RUNNER_TEMP/image.tar" --canaries "$RUNNER_TEMP/image-canaries.json"
 
   security:
+    needs: changes
+    if: needs.changes.outputs.run_ci == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -260,24 +336,3 @@ jobs:
           "$RUNNER_TEMP/gitleaks-bin/gitleaks" dir "$current" --redact=100 --no-banner || result=1
           "$RUNNER_TEMP/gitleaks-bin/gitleaks" git . --log-opts=HEAD --redact=100 --no-banner || result=1
           exit "$result"
-
-  quality:
-    name: quality
-    if: always()
-    needs: [backend, frontend, security, image, native]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Require all checks to succeed
-        env:
-          BACKEND_RESULT: ${{ needs.backend.result }}
-          FRONTEND_RESULT: ${{ needs.frontend.result }}
-          SECURITY_RESULT: ${{ needs.security.result }}
-          NATIVE_RESULT: ${{ needs.native.result }}
-          IMAGE_RESULT: ${{ needs.image.result }}
-        run: |
-          set -euo pipefail
-          test "$BACKEND_RESULT" = success
-          test "$FRONTEND_RESULT" = success
-          test "$SECURITY_RESULT" = success
-          test "$IMAGE_RESULT" = success
-          test "$NATIVE_RESULT" = success

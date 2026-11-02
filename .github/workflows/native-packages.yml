@@ -13,7 +13,6 @@ on:
         type: string
 permissions:
   contents: read
-cache-mode: read
 jobs:
   native:
     timeout-minutes: 35
@@ -28,6 +27,9 @@ jobs:
           - { os: windows, arch: amd64, runner: windows-2022, channel: msi }
           - { os: windows, arch: arm64, runner: windows-11-arm, channel: msi }
     runs-on: ${{ matrix.runner }}
+    env:
+      # Keep test dependency compilation paths identical to the release builds.
+      GOFLAGS: -trimpath
     defaults:
       run:
         shell: bash
@@ -39,8 +41,15 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
         with:
           go-version-file: go.mod
-          # Executed trigger-commit code must never restore or save dependency/build caches.
-          cache: false
+          # PR caches are merge-ref scoped; only trusted main pushes populate reusable caches.
+          # Release callers explicitly remain read-only through their caller workflow.
+          cache-dependency-path: |
+            go.mod
+            go.sum
+            third_party/go-mitmproxy/go.mod
+            third_party/go-mitmproxy/go.sum
+            third_party/norma/go.mod
+            third_party/norma/go.sum
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: ${{ inputs.frontend-artifact }}
@@ -59,6 +68,15 @@ jobs:
           go build -tags embedui -trimpath -ldflags "-s -w -X main.version=$VERSION -X github.com/Autumn-27/artex/distribution.BuildChannel=$CHANNEL" -o "dist/artex$suffix" ./cmd/artex
           python=python3; if [ "$GOOS" = windows ]; then python=python; fi
           "$python" scripts/native-smoke.py "dist/artex$suffix"
+      - name: Build native non-embedded executable
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          suffix=""; if [ "$GOOS" = windows ]; then suffix=.exe; fi
+          go build -trimpath -o "$RUNNER_TEMP/artex-native-$GOOS-$GOARCH$suffix" ./cmd/artex
       - name: Native credential and file-boundary regressions
         env:
           CGO_ENABLED: "0"
@@ -106,8 +124,13 @@ jobs:
           CGO_ENABLED: "0"
         run: |
           set -euo pipefail
+          NFPM_BIN="$(bash scripts/setup-nfpm.sh)"
+          export NFPM_BIN
+          mkdir -p previous
           for format in deb rpm; do
-            go build -tags embedui -trimpath -ldflags "-s -w -X main.version=$VERSION -X github.com/Autumn-27/artex/distribution.BuildChannel=$format" -o dist/artex ./cmd/artex
+            if [ "$format" = rpm ]; then
+              go build -tags embedui -trimpath -ldflags "-s -w -X main.version=$VERSION -X github.com/Autumn-27/artex/distribution.BuildChannel=$format" -o dist/artex ./cmd/artex
+            fi
             bash scripts/package-linux.sh --binary dist/artex --version "$VERSION" --arch "$ARCH" --format "$format" --outdir dist
             bash scripts/package-linux.sh --binary dist/artex --version 0.0.0 --arch "$ARCH" --format "$format" --outdir previous
             python3 packaging/linux/verify-package.py "dist/artex-$VERSION-linux-$ARCH.$format" "$ARCH"
@@ -159,6 +182,7 @@ jobs:
           VERSION: ${{ inputs.version }}
           ARCH: ${{ matrix.arch }}
         run: |
+          $env:WIX_BIN = ./scripts/setup-wix.ps1 -Destination (Join-Path $env:RUNNER_TEMP 'artex-wix')
           ./scripts/package-windows.ps1 -Binary dist/artex.exe -Version $env:VERSION -Architecture $env:ARCH -OutputDirectory dist
           ./scripts/package-windows.ps1 -Binary dist/artex.exe -Version 0.0.0 -Architecture $env:ARCH -OutputDirectory previous
           if ($env:ARCH -eq 'arm64') {
