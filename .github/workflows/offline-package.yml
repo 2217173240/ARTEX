@@ -6,7 +6,6 @@ on:
       - scripts/build-offline.py
       - scripts/artex-offline
       - scripts/test_offline_lifecycle.py
-      - docs/offline-deployment.md
       - Makefile
   push:
     branches: [main]
@@ -15,7 +14,6 @@ on:
       - scripts/build-offline.py
       - scripts/artex-offline
       - scripts/test_offline_lifecycle.py
-      - docs/offline-deployment.md
       - Makefile
   workflow_dispatch:
     inputs:
@@ -36,6 +34,9 @@ on:
 permissions:
   contents: read
 cache-mode: read
+concurrency:
+  group: offline-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   package:
     strategy:
