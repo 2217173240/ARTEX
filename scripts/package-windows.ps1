@@ -37,18 +37,16 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Tracked skill staging failed.' }
     Copy-Item (Join-Path $repo 'packaging/windows/launch.vbs') $stage
     Copy-Item (Join-Path $repo 'packaging/windows/README.txt') $stage
-    # WiX 4.0.6 is the MS-RL release predating WiX's maintenance-fee policy.
-    # Pin and verify the exact official NuGet artifact; use an isolated local feed.
-    $feed = Join-Path $work 'feed'
-    New-Item -ItemType Directory $feed | Out-Null
-    $package = Join-Path $feed 'wix.4.0.6.nupkg'
-    Invoke-WebRequest 'https://api.nuget.org/v3-flatcontainer/wix/4.0.6/wix.4.0.6.nupkg' -OutFile $package
-    if ((Get-FileHash $package -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'a94dd42ae1fb56b32da180e2173ceda4f0d10b4c8871c5ee59ecb502131a1eb6') { throw 'WiX package checksum mismatch.' }
-    $nugetConfig = Join-Path $work 'NuGet.Config'
-    Set-Content $nugetConfig '<configuration><packageSources><clear /></packageSources></configuration>' -Encoding UTF8
-    $toolPath = Join-Path $work 'tools'
-    & dotnet tool install wix --version 4.0.6 --tool-path $toolPath --configfile $nugetConfig --add-source $feed
-    if ($LASTEXITCODE -ne 0) { throw 'WiX tool installation failed.' }
+    $toolPath = $env:WIX_BIN
+    if ([string]::IsNullOrWhiteSpace($toolPath)) {
+        $toolPath = & (Join-Path $repo 'scripts/setup-wix.ps1') -Destination (Join-Path $work 'tools')
+        if ($LASTEXITCODE -ne 0) { throw 'WiX tool setup failed.' }
+    } else {
+        $toolPath = [IO.Path]::GetFullPath($toolPath)
+        if (-not (Test-Path -LiteralPath $toolPath -PathType Leaf)) { throw "WIX_BIN is not a file: $toolPath" }
+    }
+    $versionOutput = (& $toolPath --version | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $versionOutput -notmatch '^4\.0\.6(?:\+.*)?$') { throw "Unexpected WiX version: $versionOutput" }
     function Escape-Xml([string]$value) { [System.Security.SecurityElement]::Escape($value) }
     # RFC 4122 UUIDv5, using network-order namespace bytes rather than Guid.ToByteArray.
     # Identities refer only to installed resources; versions and build paths never enter them.
@@ -117,7 +115,7 @@ try {
     [IO.File]::WriteAllText($source, $xml.ToString(), [Text.UTF8Encoding]::new($false))
     $platform = if ($Architecture -eq 'amd64') { 'x64' } else { 'arm64' }
     $msi = Join-Path $outputPath "artex-$Version-windows-$Architecture.msi"
-    & (Join-Path $toolPath 'wix.exe') build $source -arch $platform -o $msi -pdbtype none
+    & $toolPath build $source -arch $platform -o $msi -pdbtype none
     if ($LASTEXITCODE -ne 0) { throw 'WiX MSI build or validation failed.' }
     Write-Output $msi
 } finally {

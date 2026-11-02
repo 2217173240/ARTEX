@@ -182,6 +182,7 @@ jobs:
           VERSION: ${{ inputs.version }}
           ARCH: ${{ matrix.arch }}
         run: |
+          $env:WIX_BIN = ./scripts/setup-wix.ps1 -Destination (Join-Path $env:RUNNER_TEMP 'artex-wix')
           ./scripts/package-windows.ps1 -Binary dist/artex.exe -Version $env:VERSION -Architecture $env:ARCH -OutputDirectory dist
           ./scripts/package-windows.ps1 -Binary dist/artex.exe -Version 0.0.0 -Architecture $env:ARCH -OutputDirectory previous
           if ($env:ARCH -eq 'arm64') {
