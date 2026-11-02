@@ -28,6 +28,8 @@
 
 Node 使用 `setup-node` 的 npm 缓存，仍通过 lockfile 执行 `npm ci`。Go 使用 `setup-go` 的模块与编译缓存；依赖键覆盖本次任务实际使用的模块。原生测试与发行构建统一 `-trimpath`，复用编译缓存，同时保留 `-count=1` 强制执行测试。
 
+前端另缓存 `.next/cache` 和 TypeScript 编译元数据，按平台、Node 版本、构建模式、依赖、配置和源码区分。每次仍执行全部 Node 测试、独立 TypeScript 检查和静态导出，不缓存测试结果或导出产物。
+
 PR 缓存限定在 merge ref，不能污染 main 缓存。main push 可更新可信缓存；release 和 offline workflow 的 `cache-mode: read` 继续限制缓存写入。缓存不保存应用配置、模型凭据、数据库、发行包或容器镜像层。
 
 Linux 打包在每个任务中下载一次固定版本的预编译 nFPM，并校验 SHA-256。DEB、RPM 和 previous 包复用该工具，分别保留安装生命周期验证。仓库没有 Rust 构建，无需 Rust 缓存。

@@ -169,6 +169,15 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm ci --ignore-scripts
+      - name: Restore frontend compiler caches
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            web/.next/cache
+            web/tsconfig.tsbuildinfo
+          key: ${{ runner.os }}-${{ runner.arch }}-node22-next-mock-${{ hashFiles('web/package-lock.json', 'web/next.config.*', 'web/tsconfig.json') }}-${{ hashFiles('web/src/**', 'web/public/**', 'web/scripts/**') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-node22-next-mock-${{ hashFiles('web/package-lock.json', 'web/next.config.*', 'web/tsconfig.json') }}-
       - run: node --test src/lib/*.test.mjs
       - run: npx --no-install tsc --noEmit
       - name: Check UI translation dictionary coverage
