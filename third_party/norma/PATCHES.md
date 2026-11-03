@@ -207,3 +207,36 @@ Norma v0.4.3 source hashes and Apache-2.0 license provenance remain unchanged.
 References: [official streaming event contract](https://platform.claude.com/docs/en/build-with-claude/streaming)
 and [official optional cumulative usage fields](https://github.com/anthropics/anthropic-sdk-python/blob/main/src/anthropic/types/message_delta_usage.py),
 read on 2026-10-28. Run both the retained nested-module suite and ARTEX's consumers.
+
+## OpenAI-compatible tool signatures and indexed streams (2026-11-03)
+
+Adapted from heonjinjeong's
+[`6a8abc7`](https://github.com/Autumn-27/norma/commit/6a8abc786c2f8c25b19505cb7c411cc6fdc9a90a)
+and Autumn-27's
+[`6fce368`](https://github.com/Autumn-27/norma/commit/6fce368e13f3206510a4540f5104c1969f211ae4)
+and [`a6254c4`](https://github.com/Autumn-27/norma/commit/a6254c4bec2cec97ded34f1938224ed9e6d7b67e).
+The source LICENSE at the first commit is Apache-2.0, blob
+`52e2373e0ab621b7ca99ef3e26bec7eb2e70897c`. The recorded v0.4.3 baseline
+and its original hashes continue to identify the retained source tree.
+
+- `llm/types.go`, `provider.go`, `openai.go`, and `accumulate.go` preserve opaque
+  `extra_content.google.thought_signature` on its tool block. Explicit optional
+  tool indexes distinguish index zero from legacy sequential events and route
+  interleaved arguments and early or late signature metadata to the correct call.
+- `harness/query.go` buffers indexed tool calls until the stream completes
+  successfully. Cancellation and errors retain raw diagnostics while excluding
+  unfinished calls from execution and replay. Legacy sequential calls retain
+  their existing completion boundaries. Metadata events keep tool inputs open.
+- `llm/anthropic.go` creates outbound copies with Gemini tool metadata removed.
+  Thinking signatures remain available to Anthropic. `noaadapter/project.go`
+  preserves tool signatures through projection and clears them when valid
+  rewritten arguments replace the signed input.
+- The application classifies tool signature events as pre-output metadata, so
+  its safe retry/failover window closes when actual content or a tool start arrives.
+
+Regression tests use the production decoders, accumulator, encoder, streaming
+buffer and NOA projection with declared protocol inputs. JSON history roundtrips,
+parallel call association and interruption handling are covered alongside the
+retained Anthropic cumulative usage suite. Live Gemini API acceptance remains
+unverified. The protocol reference is Google's
+[OpenAI compatibility documentation](https://ai.google.dev/gemini-api/docs/openai).

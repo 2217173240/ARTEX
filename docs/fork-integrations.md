@@ -260,3 +260,11 @@ Anthropic 流的累计用量快照转换为有符号差值，供现有加法消�
 依据 xingchuan / chu0119 的 [`599f088a`](https://github.com/chu0119/ARTEX/commit/599f088aa918c6a54b4c281442bb8e88d1a50a8d)（精确提交许可证为 AGPL-3.0）适配内嵌界面的 HTTP 缓存。真实、精确匹配的 `_next/static/` 版本化静态文件，仅在 GET/HEAD 的 200、206 或 304 响应使用一年期 public immutable 缓存；HTML 与 service-worker 路径保持重新验证。页面入口、SPA 回退、重定向、错误及其他方法响应均使用 `no-cache`，缓存决策在实际状态提交时完成。
 
 保持现有 `ServeFileFS` 路由、路径检查、HEAD、范围及条件请求行为，未改动 API 或认证缓存。回归用真实 Next.js 静态导出文件与生产处理器执行 HTTP 请求，现有六个平台原生任务配置为运行同一组带 `embedui` 标签的测试。生成导出未包含 service-worker 文件，该排除分支按源码审阅确认；此次未增加 ETag，也未调用模型或安全测试目标。
+
+## OpenAI 兼容工具签名与并行流：2026-11-03
+
+从 jiwoochris/artex-global 的 [PR56](https://github.com/jiwoochris/artex-global/pull/56) 发现协议兼容缺口，按 heonjinjeong 的 [`6a8abc7`](https://github.com/Autumn-27/norma/commit/6a8abc786c2f8c25b19505cb7c411cc6fdc9a90a) 与 Autumn-27 的 [`6fce368`](https://github.com/Autumn-27/norma/commit/6fce368e13f3206510a4540f5104c1969f211ae4)、[`a6254c4`](https://github.com/Autumn-27/norma/commit/a6254c4bec2cec97ded34f1938224ed9e6d7b67e) 适配当前保留的 Norma 源码。上述源码采用 Apache-2.0，精确版本与归属见 [PATCHES.md](../third_party/norma/PATCHES.md)。
+
+OpenAI 兼容接口返回的工具 thought signature 随对应调用保存、序列化和重放。并行流按显式工具索引组装参数，索引零、交错参数及早到、迟到签名均有独立处理。签名元数据保持工具输入开放，带索引工具在流成功完成后执行。中断时保留诊断并清除未执行调用的重放内容，应用重试窗口按实际输出判定。
+
+Anthropic 请求使用清理过 Gemini 工具字段的副本。NOA 保留原参数对应的签名，参数被改写时清除失配签名。协议、流式生命周期和历史往返回归使用生产实现，继续执行既有累计 usage 回归。真实 Gemini 服务验收仍待具备对应测试条件后完成。

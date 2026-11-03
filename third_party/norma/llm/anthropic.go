@@ -379,10 +379,20 @@ func filterThinkingBlocks(msgs []Message, thinkingEnabled bool) []Message {
 		if len(content) == 0 {
 			continue // empty content array is rejected by Anthropic — drop it
 		}
-		if len(content) == len(m.Content) {
-			out = append(out, m)
-		} else {
-			out = append(out, Message{Role: m.Role, Content: content})
+		m.Content = stripThoughtSignatures(content)
+		out = append(out, m)
+	}
+	return out
+}
+
+// Gemini 的工具签名不属于 Anthropic 协议；复制内容后清除，保留历史记录。
+func stripThoughtSignatures(content []ContentBlock) []ContentBlock {
+	out := make([]ContentBlock, len(content))
+	copy(out, content)
+	for i := range out {
+		out[i].ThoughtSignature = ""
+		if out[i].Content != nil {
+			out[i].Content = stripThoughtSignatures(out[i].Content)
 		}
 	}
 	return out

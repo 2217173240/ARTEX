@@ -28,6 +28,13 @@ type oaToolCall struct {
 		Name      string `json:"name"`
 		Arguments string `json:"arguments"`
 	} `json:"function"`
+	ExtraContent *oaToolExtraContent `json:"extra_content,omitempty"`
+}
+
+type oaToolExtraContent struct {
+	Google struct {
+		ThoughtSignature string `json:"thought_signature,omitempty"`
+	} `json:"google"`
 }
 
 type oaTool struct {
@@ -92,6 +99,10 @@ func toOpenAIMessages(system string, msgs []Message) []oaMessage {
 					tc := oaToolCall{ID: b.ID, Type: "function"}
 					tc.Function.Name = b.Name
 					tc.Function.Arguments = string(b.Input)
+					if b.ThoughtSignature != "" {
+						tc.ExtraContent = &oaToolExtraContent{}
+						tc.ExtraContent.Google.ThoughtSignature = b.ThoughtSignature
+					}
 					if tc.Function.Arguments == "" {
 						tc.Function.Arguments = "{}"
 					}
@@ -483,7 +494,11 @@ func parseOpenAIResponse(raw []byte) (Message, string, Usage, error) {
 		if strings.TrimSpace(in) == "" {
 			in = "{}"
 		}
-		blocks = append(blocks, ContentBlock{Type: BlockToolUse, ID: tc.ID, Name: tc.Function.Name, Input: []byte(in)})
+		block := ContentBlock{Type: BlockToolUse, ID: tc.ID, Name: tc.Function.Name, Input: []byte(in)}
+		if tc.ExtraContent != nil {
+			block.ThoughtSignature = tc.ExtraContent.Google.ThoughtSignature
+		}
+		blocks = append(blocks, block)
 	}
 	return Message{Role: RoleAssistant, Content: blocks}, mapOpenAIFinish(ch.FinishReason), usage, nil
 }
@@ -556,12 +571,16 @@ func parseOpenAIFrame(data string, started map[int]bool) (evs []StreamEvent, sto
 		evs = append(evs, StreamEvent{Type: SETextDelta, Text: ch.Delta.Refusal})
 	}
 	for _, tc := range ch.Delta.ToolCalls {
+		index := tc.Index
 		if !started[tc.Index] && (tc.ID != "" || tc.Function.Name != "") {
 			started[tc.Index] = true
-			evs = append(evs, StreamEvent{Type: SEToolUseStart, ToolID: tc.ID, ToolName: tc.Function.Name})
+			evs = append(evs, StreamEvent{Type: SEToolUseStart, ToolID: tc.ID, ToolName: tc.Function.Name, ToolIndex: &index})
 		}
 		if tc.Function.Arguments != "" {
-			evs = append(evs, StreamEvent{Type: SEToolInputJSON, Text: tc.Function.Arguments})
+			evs = append(evs, StreamEvent{Type: SEToolInputJSON, Text: tc.Function.Arguments, ToolIndex: &index})
+		}
+		if tc.ExtraContent != nil && tc.ExtraContent.Google.ThoughtSignature != "" {
+			evs = append(evs, StreamEvent{Type: SEToolUseSignature, Text: tc.ExtraContent.Google.ThoughtSignature, ToolIndex: &index})
 		}
 	}
 	if ch.FinishReason != "" {

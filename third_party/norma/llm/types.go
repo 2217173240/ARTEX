@@ -42,9 +42,10 @@ type ContentBlock struct {
 	Signature string `json:"signature,omitempty"`
 
 	// ToolUse: a model request to invoke a tool.
-	ID    string          `json:"id,omitempty"`
-	Name  string          `json:"name,omitempty"`
-	Input json.RawMessage `json:"input,omitempty"`
+	ID               string          `json:"id,omitempty"`
+	Name             string          `json:"name,omitempty"`
+	Input            json.RawMessage `json:"input,omitempty"`
+	ThoughtSignature string          `json:"thought_signature,omitempty"`
 
 	// ToolResult: the outcome of a tool, fed back to the model.
 	ToolUseID string         `json:"tool_use_id,omitempty"`
