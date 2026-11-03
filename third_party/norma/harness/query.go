@@ -793,6 +793,116 @@ func (l *loop) requestMessages() []llm.Message {
 	return llm.MessagesForAPI(l.messages)
 }
 
+// toolStreamBuffer owns completion boundaries for one model stream. Indexed
+// calls remain pending until successful EOF; legacy calls close on the next
+// content event. The accumulator supplies block identity and signatures; raw
+// input retains the executor's existing validation contract.
+type toolStreamBuffer struct {
+	acc     *llm.Accumulator
+	tools   []*bufferedStreamTool
+	indexed map[int]*bufferedStreamTool
+	legacy  *bufferedStreamTool
+}
+
+type bufferedStreamTool struct {
+	ordinal int
+	indexed bool
+	raw     strings.Builder // unmodified dispatch input and interruption diagnostics
+}
+
+func (t *bufferedStreamTool) dispatchBlock(block llm.ContentBlock) llm.ContentBlock {
+	raw := strings.TrimSpace(t.raw.String())
+	if raw == "" || !jsonValid(raw) {
+		raw = "{}"
+	}
+	block.Input = []byte(raw)
+	return block
+}
+
+func newToolStreamBuffer() *toolStreamBuffer {
+	return &toolStreamBuffer{acc: llm.NewAccumulator(), indexed: make(map[int]*bufferedStreamTool)}
+}
+
+func (b *toolStreamBuffer) closeLegacy() *llm.ContentBlock {
+	if b.legacy == nil {
+		return nil
+	}
+	block := b.legacy.dispatchBlock(b.acc.Message().ToolUses()[b.legacy.ordinal])
+	b.legacy = nil
+	return &block
+}
+
+func (b *toolStreamBuffer) add(ev llm.StreamEvent) *llm.ContentBlock {
+	var ready *llm.ContentBlock
+	// Metadata carries no block-completion boundary, even when it targets a
+	// different call. Indexed input also cannot complete a legacy call.
+	if ev.Type != llm.SEToolInputJSON && ev.Type != llm.SEToolUseSignature && ev.Type != llm.SEThinkingSignature {
+		ready = b.closeLegacy()
+	}
+	if ev.Type == llm.SEToolUseStart {
+		t := &bufferedStreamTool{ordinal: len(b.tools), indexed: ev.ToolIndex != nil}
+		if ev.ToolIndex != nil {
+			if pending := b.indexed[*ev.ToolIndex]; pending != nil {
+				t.raw.WriteString(pending.raw.String())
+			}
+			b.indexed[*ev.ToolIndex] = t
+		} else {
+			b.legacy = t
+		}
+		b.tools = append(b.tools, t)
+	}
+	if ev.Type == llm.SEToolInputJSON {
+		var t *bufferedStreamTool
+		if ev.ToolIndex != nil {
+			t = b.indexed[*ev.ToolIndex]
+			if t == nil {
+				t = &bufferedStreamTool{indexed: true}
+				b.indexed[*ev.ToolIndex] = t
+			}
+		} else if len(b.tools) > 0 {
+			t = b.tools[len(b.tools)-1]
+		}
+		if t != nil {
+			t.raw.WriteString(ev.Text)
+		}
+	}
+	b.acc.Add(ev)
+	return ready
+}
+
+// finish releases successful indexed calls in block arrival order, or removes
+// every unfinished call from replay history while retaining its raw diagnostic.
+func (b *toolStreamBuffer) finish(success bool) (llm.Message, []llm.ContentBlock, *llm.ContentBlock) {
+	var ready []llm.ContentBlock
+	if success {
+		if block := b.closeLegacy(); block != nil {
+			ready = append(ready, *block)
+		}
+	}
+	m := b.acc.Message()
+	var diagnostic *llm.ContentBlock
+	content := make([]llm.ContentBlock, 0, len(m.Content))
+	ordinal := 0
+	for _, block := range m.Content {
+		if block.Type == llm.BlockToolUse {
+			t := b.tools[ordinal]
+			ordinal++
+			if !success && (t.indexed || t == b.legacy) {
+				copy := block
+				copy.Input = []byte(t.raw.String())
+				diagnostic = &copy
+				continue
+			}
+			if success && t.indexed {
+				ready = append(ready, t.dispatchBlock(block))
+			}
+		}
+		content = append(content, block)
+	}
+	m.Content = content
+	return m, ready, diagnostic
+}
+
 func (l *loop) streamAndExecute(schemas []llm.ToolSchema) (asst llm.Message, exec *streamExec, stopReason string, err error, consumerStopped, aborted bool) {
 	l.interruptedToolInput = nil
 	l.maybeInjectTodoReminder()
@@ -813,22 +923,8 @@ func (l *loop) streamAndExecute(schemas []llm.ToolSchema) (asst llm.Message, exe
 	}
 	exec = newStreamExec(l)
 	defer exec.cancel()
-	acc := llm.NewAccumulator()
-
-	var building bool
-	var curID, curName string
-	var curInput strings.Builder
-	finalizeTool := func() bool { // false = consumer stopped
-		if !building {
-			return true
-		}
-		building = false
-		raw := strings.TrimSpace(curInput.String())
-		curInput.Reset()
-		if raw == "" || !jsonValid(raw) {
-			raw = "{}"
-		}
-		block := llm.ContentBlock{Type: llm.BlockToolUse, ID: curID, Name: curName, Input: []byte(raw)}
+	buffer := newToolStreamBuffer()
+	dispatch := func(block llm.ContentBlock) bool {
 		if !l.emit(Event{Kind: KindToolUse, ToolUse: &block}) {
 			return false
 		}
@@ -845,15 +941,10 @@ func (l *loop) streamAndExecute(schemas []llm.ToolSchema) (asst llm.Message, exe
 			err = l.ctx.Err()
 			break
 		}
-		if ev.Type == llm.SEToolInputJSON {
-			if building {
-				curInput.WriteString(ev.Text)
+		if block := buffer.add(ev); block != nil {
+			if !dispatch(*block) {
+				return asst, exec, "", nil, true, false
 			}
-			acc.Add(ev)
-			continue
-		}
-		if !finalizeTool() {
-			return asst, exec, "", nil, true, false
 		}
 		switch ev.Type {
 		case llm.SETextDelta:
@@ -864,34 +955,20 @@ func (l *loop) streamAndExecute(schemas []llm.ToolSchema) (asst llm.Message, exe
 			if ev.Text != "" && !l.emit(Event{Kind: KindThinking, Text: ev.Text}) {
 				return asst, exec, "", nil, true, false
 			}
-		case llm.SEToolUseStart:
-			curID, curName, building = ev.ToolID, ev.ToolName, true
 		}
-		acc.Add(ev)
 	}
 	if err == nil {
 		err = l.ctx.Err()
 	}
-	if err != nil && building {
-		// JSON validity alone does not complete a tool block. Keep these bytes
-		// for diagnostics only, outside both the executor and replay history.
-		l.interruptedToolInput = &llm.ContentBlock{Type: llm.BlockToolUse, ID: curID, Name: curName, Input: []byte(curInput.String())}
-	} else if err == nil && !finalizeTool() {
-		return asst, exec, "", nil, true, false
-	}
-	l.usage.Add(acc.Usage)
-	asst = acc.Message()
-	if l.interruptedToolInput != nil {
-		// The building block is the last tool in accumulator order. Remove by
-		// position, rather than ID (providers can emit empty or repeated IDs).
-		for i := len(asst.Content) - 1; i >= 0; i-- {
-			if asst.Content[i].Type == llm.BlockToolUse {
-				asst.Content = append(asst.Content[:i], asst.Content[i+1:]...)
-				break
-			}
+	var ready []llm.ContentBlock
+	asst, ready, l.interruptedToolInput = buffer.finish(err == nil)
+	for _, block := range ready {
+		if !dispatch(block) {
+			return asst, exec, "", nil, true, false
 		}
 	}
-	stopReason = acc.StopReason
+	l.usage.Add(buffer.acc.Usage)
+	stopReason = buffer.acc.StopReason
 	if err != nil {
 		exec.cancel()
 		cs := !exec.drainSynthetic("model stream interrupted; tool outcome unknown unless a result was already received; do not automatically replay")
@@ -903,6 +980,38 @@ func (l *loop) streamAndExecute(schemas []llm.ToolSchema) (asst llm.Message, exe
 		return asst, exec, stopReason, nil, true, false
 	}
 	return asst, exec, stopReason, nil, false, ab
+}
+
+func jsonValid(s string) bool {
+	// Guard incomplete streamed input; the executor validates JSON syntax.
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	depth := 0
+	inStr := false
+	esc := false
+	for _, r := range s {
+		if inStr {
+			if esc {
+				esc = false
+			} else if r == '\\' {
+				esc = true
+			} else if r == '"' {
+				inStr = false
+			}
+			continue
+		}
+		switch r {
+		case '"':
+			inStr = true
+		case '{', '[':
+			depth++
+		case '}', ']':
+			depth--
+		}
+	}
+	return depth == 0 && !inStr
 }
 
 // completeAndExecute is the non-streaming counterpart of streamAndExecute's body.
@@ -949,36 +1058,4 @@ func (l *loop) completeAndExecute(req llm.CompletionRequest) (asst llm.Message, 
 		return asst, exec, stopReason, nil, true, false
 	}
 	return asst, exec, stopReason, nil, false, ab
-}
-
-func jsonValid(s string) bool {
-	// minimal check used only to guard tool input assembly
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return false
-	}
-	depth := 0
-	inStr := false
-	esc := false
-	for _, r := range s {
-		if inStr {
-			if esc {
-				esc = false
-			} else if r == '\\' {
-				esc = true
-			} else if r == '"' {
-				inStr = false
-			}
-			continue
-		}
-		switch r {
-		case '"':
-			inStr = true
-		case '{', '[':
-			depth++
-		case '}', ']':
-			depth--
-		}
-	}
-	return depth == 0 && !inStr
 }

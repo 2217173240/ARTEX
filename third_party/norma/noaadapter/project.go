@@ -21,6 +21,8 @@ type Sidecar struct {
 	// Signatures holds each thinking block's provider signature, keyed by core
 	// id. Anthropic validates it on replay, so it must come back byte-identical.
 	Signatures map[string]string
+	// ToolSignatures 保留工具调用的原始签名，按 core id 索引。
+	ToolSignatures map[string]string
 	// Origins maps a core id back to its source position.
 	Origins map[string]origin
 	// ToolResultIsError preserves the error flag of a tool result.
@@ -30,6 +32,7 @@ type Sidecar struct {
 func newSidecar() *Sidecar {
 	return &Sidecar{
 		Signatures:        map[string]string{},
+		ToolSignatures:    map[string]string{},
 		Origins:           map[string]origin{},
 		ToolResultIsError: map[string]bool{},
 	}
@@ -71,6 +74,9 @@ func Project(msgs []llm.Message) ([]noa.CoreMessage, *Sidecar) {
 			sc.Origins[core.ID] = origin{msgIdx: mi, blkIdx: bi}
 			if b.Type == llm.BlockThinking {
 				sc.Signatures[core.ID] = b.Signature
+			}
+			if b.Type == llm.BlockToolUse {
+				sc.ToolSignatures[core.ID] = b.ThoughtSignature
 			}
 			if b.Type == llm.BlockToolResult && b.IsError {
 				sc.ToolResultIsError[core.ID] = true
@@ -289,10 +295,15 @@ func rebuildBlock(b llm.ContentBlock, c noa.CoreMessage, sc *Sidecar, opts Reass
 		b.Signature = sc.Signatures[c.ID]
 
 	case llm.BlockToolUse:
+		if signature, ok := sc.ToolSignatures[c.ID]; ok {
+			b.ThoughtSignature = signature
+		}
 		// Only replace the arguments if the rewrite is still valid JSON.
 		// Writing a malformed payload back would break the call itself.
 		if c.Text != string(b.Input) && json.Valid([]byte(c.Text)) {
 			b.Input = json.RawMessage(c.Text)
+			// 签名只适用于模型输出的原始参数。
+			b.ThoughtSignature = ""
 		}
 
 	case llm.BlockToolResult:

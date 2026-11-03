@@ -21,6 +21,7 @@ const (
 	SEThinkingDelta     StreamEventType = "thinking_delta"
 	SEThinkingSignature StreamEventType = "thinking_signature"
 	SEToolUseStart      StreamEventType = "tool_use_start"
+	SEToolUseSignature  StreamEventType = "tool_use_signature"
 	SEToolInputJSON     StreamEventType = "tool_input_delta"
 	SEMessageDelta      StreamEventType = "message_delta" // carries stop_reason / usage
 	SEMessageStop       StreamEventType = "message_stop"
@@ -29,9 +30,10 @@ const (
 // StreamEvent is one normalized model-level streaming event (FR-03.5).
 type StreamEvent struct {
 	Type       StreamEventType
-	Text       string // text/thinking/tool_input JSON fragment
+	Text       string // text/thinking/tool_input JSON fragment or opaque tool signature
 	ToolID     string // tool_use_start
 	ToolName   string // tool_use_start
+	ToolIndex  *int   // tool events; nil when the provider does not expose an index
 	StopReason string // message_delta
 	Usage      Usage  // message_start / message_delta
 }
