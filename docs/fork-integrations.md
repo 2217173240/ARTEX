@@ -268,3 +268,11 @@ Anthropic 流的累计用量快照转换为有符号差值，供现有加法消�
 OpenAI 兼容接口返回的工具 thought signature 随对应调用保存、序列化和重放。并行流按显式工具索引组装参数，索引零、交错参数及早到、迟到签名均有独立处理。签名元数据保持工具输入开放，带索引工具在流成功完成后执行。中断时保留诊断并清除未执行调用的重放内容，应用重试窗口按实际输出判定。
 
 Anthropic 请求使用清理过 Gemini 工具字段的副本。NOA 保留原参数对应的签名，参数被改写时清除失配签名。协议、流式生命周期和历史往返回归使用生产实现，继续执行既有累计 usage 回归。真实 Gemini 服务验收仍待具备对应测试条件后完成。
+
+## 检查点 JSONB 的 Unicode 兼容：2026-11-04
+
+依据 hexsen929 的 [PR12](https://github.com/hexsen929/ARTEX/pull/12) 中 [`83350ded`](https://github.com/hexsen929/ARTEX/commit/83350dedfd7ce44a09cf5e2856936ad05427f3f9)（精确提交许可证为 AGPL-3.0）适配现有 JSONB 写入清理。捕获的工具参数可以通过 `json.RawMessage` 保留孤立的 UTF-16 代理项转义；[PostgreSQL JSON 类型](https://www.postgresql.org/docs/16/datatype-json.html)要求代理项正确配对，此类内容会导致检查点保存失败。
+
+清理函数在数据库写入边界将孤立代理项替换为 U+FFFD，继续移除 NUL，并保留原始相邻的合法代理对和字面反斜线。输入切片保持不变；清理过程保留数值词法、重复键及其他 JSON 字节，JSONB 存储仍遵循数据库自身的规范化规则。运行中的模型参数继续使用原始内容，恢复后的快照使用可存储的替换字符。此次适配仅涉及 Unicode 清理及其存储回归，任务删除、检查点重试及事务契约沿用现有实现。
+
+隔离 PostgreSQL 16.14 实际复现原始转义的 `22P02` 错误，并通过生产 `CloneRequest`、`SaveSideSnapshot` 和 `SideSnapshot` 验证保存与恢复、精确整数与小数、合法代理对及原始请求保持不变。完整数据库 race 测试通过；此次未调用模型或安全测试目标。
