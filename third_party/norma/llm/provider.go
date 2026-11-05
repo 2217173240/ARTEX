@@ -164,6 +164,22 @@ type Provider interface {
 	Complete(ctx context.Context, req CompletionRequest) (Message, string, Usage, error)
 }
 
+// ResolveBaseURL returns the endpoint used by the built-in provider. Explicit
+// values and environment values are preserved verbatim.
+func ResolveBaseURL(format Format, baseURL string) string {
+	if baseURL != "" {
+		return baseURL
+	}
+	switch format {
+	case FormatAnthropic:
+		return envOr("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
+	case FormatOpenAI, FormatOpenAIResponses:
+		return envOr("OPENAI_BASE_URL", "https://api.openai.com/v1")
+	default:
+		return baseURL
+	}
+}
+
 // NewProvider builds a built-in provider for cfg.Format. Missing APIKey/BaseURL
 // fall back to standard environment variables and public endpoints.
 func NewProvider(cfg Config) (Provider, error) {
@@ -177,13 +193,11 @@ func NewProvider(cfg Config) (Provider, error) {
 	if cfg.RateLimit != nil {
 		cfg.limiter = newRateLimiter(*cfg.RateLimit) // shared by the provider (cfg copies the pointer)
 	}
+	cfg.BaseURL = ResolveBaseURL(cfg.Format, cfg.BaseURL)
 	switch cfg.Format {
 	case FormatAnthropic:
 		if cfg.APIKey == "" {
 			cfg.APIKey = os.Getenv("ANTHROPIC_API_KEY")
-		}
-		if cfg.BaseURL == "" {
-			cfg.BaseURL = envOr("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
 		}
 		if cfg.APIVersion == "" {
 			cfg.APIVersion = "2023-06-01"
@@ -193,16 +207,10 @@ func NewProvider(cfg Config) (Provider, error) {
 		if cfg.APIKey == "" {
 			cfg.APIKey = os.Getenv("OPENAI_API_KEY")
 		}
-		if cfg.BaseURL == "" {
-			cfg.BaseURL = envOr("OPENAI_BASE_URL", "https://api.openai.com/v1")
-		}
 		return &openaiProvider{cfg: cfg}, nil
 	case FormatOpenAIResponses:
 		if cfg.APIKey == "" {
 			cfg.APIKey = os.Getenv("OPENAI_API_KEY")
-		}
-		if cfg.BaseURL == "" {
-			cfg.BaseURL = envOr("OPENAI_BASE_URL", "https://api.openai.com/v1")
 		}
 		return &openaiResponsesProvider{cfg: cfg}, nil
 	default:
