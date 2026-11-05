@@ -170,7 +170,7 @@ cd ARTEX
 # 1) 前端静态导出
 cd web && npm ci && npm run build:static && cd ..
 # 2) 拷进内嵌目录
-cp -r web/out server/webui/dist
+mkdir -p server/webui/dist && cp -r web/out/. server/webui/dist/
 # 3) 编译（-tags embedui 才内嵌前端）
 CGO_ENABLED=0 go build -tags embedui -o artex ./cmd/artex
 ./start.sh
@@ -248,7 +248,7 @@ cp -r <解压目录>/skills ./ && cp <解压目录>/artex ./
 ```bash
 git pull
 cd web && npm ci && npm run build:static && cd ..
-cp -r web/out server/webui/dist
+mkdir -p server/webui/dist && cp -r web/out/. server/webui/dist/
 CGO_ENABLED=0 go build -tags embedui -o artex ./cmd/artex
 # 重启 ./start.sh
 ```
