@@ -240,3 +240,14 @@ parallel call association and interruption handling are covered alongside the
 retained Anthropic cumulative usage suite. Live Gemini API acceptance remains
 unverified. The protocol reference is Google's
 [OpenAI compatibility documentation](https://ai.google.dev/gemini-api/docs/openai).
+
+## Shared effective API base URL (2026-11-05)
+
+`llm.ResolveBaseURL` exposes the existing provider-specific environment and
+public-default URL resolution. `NewProvider` consumes the same function; an
+explicit nonempty URL retains its exact existing value. The host uses this
+resolution to bind stored credentials to the actual connection-test and model
+discovery target. API key, API version, caller-supplied HTTP client, retry and
+rate-limit behavior retain their existing contracts. This is a local extraction
+of the retained Apache-2.0 implementation; the upstream version and original
+`UPSTREAM-SHA256.json` remain unchanged.

@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Autumn-27/artex/internal/httpsecurity"
 	"github.com/Autumn-27/artex/llmrec"
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/compaction"
@@ -443,7 +444,10 @@ func quotaAwareHTTPClient(proxy, sessionHeaderKey string) (*http.Client, error) 
 		}
 		transport.Proxy = http.ProxyURL(proxyURL)
 	}
-	return &http.Client{Transport: quotaAwareTransport{base: transport, sessionHeaderKey: strings.TrimSpace(sessionHeaderKey)}}, nil
+	return &http.Client{
+		Transport:     quotaAwareTransport{base: transport, sessionHeaderKey: strings.TrimSpace(sessionHeaderKey)},
+		CheckRedirect: httpsecurity.SameOriginRedirect,
+	}, nil
 }
 
 // logTestConnection prints the raw HTTP status code(s) and response body of a
