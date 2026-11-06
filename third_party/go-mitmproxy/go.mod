@@ -1,6 +1,6 @@
 module github.com/lqqyt2423/go-mitmproxy
 
-go 1.26
+go 1.27.3
 
 require (
 	github.com/andybalholm/brotli v1.2.1

@@ -64,7 +64,7 @@ cat > "$work/Distribution.xml" <<XML
   <title>ARTEX $version</title>
   <options customize="never" require-scripts="false" hostArchitectures="$macho_arch"/>
   <domains enable_localSystem="true" enable_currentUserHome="false" enable_anywhere="false"/>
-  <allowed-os-versions><os-version min="12.0"/></allowed-os-versions>
+  <allowed-os-versions><os-version min="13.0"/></allowed-os-versions>
   <choices-outline><line choice="artex"/></choices-outline>
   <choice id="artex" visible="false" title="ARTEX"><pkg-ref id="io.github.2217173240.artex"/></choice>
   <pkg-ref id="io.github.2217173240.artex" version="$version" onConclusion="none">component.pkg</pkg-ref>

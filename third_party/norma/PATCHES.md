@@ -251,3 +251,11 @@ discovery target. API key, API version, caller-supplied HTTP client, retry and
 rate-limit behavior retain their existing contracts. This is a local extraction
 of the retained Apache-2.0 implementation; the upstream version and original
 `UPSTREAM-SHA256.json` remain unchanged.
+
+## Go 1.27 JSON engine
+
+The local module minimum is Go 1.27.3, matching ARTEX and the retained proxy
+module. The standard `encoding/json` API uses Go 1.27's v2 engine with v1
+compatibility semantics. JSON tags, raw-message handling, provider encoders,
+decoders and the recorded upstream baseline remain unchanged. This module
+metadata adjustment does not upgrade the retained SDK or rewrite its JSON API.
