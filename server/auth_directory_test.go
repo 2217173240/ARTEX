@@ -121,9 +121,24 @@ func TestAuthStateCanonicalLegacyDuplicates(t *testing.T) {
 		t.Fatal(err)
 	}
 	canonical, err := canonicalAuthPath(relative)
-	if err != nil || canonical != legacy {
+	if err != nil || !filepath.IsAbs(canonical) {
 		t.Fatal("relative alias canonicalization", err)
 	}
+	assertSameDirectory := func(t *testing.T, actual, expected string) {
+		t.Helper()
+		actualInfo, err := os.Stat(actual)
+		if err != nil {
+			t.Fatal(err)
+		}
+		expectedInfo, err := os.Stat(expected)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !os.SameFile(actualInfo, expectedInfo) {
+			t.Fatal("canonical directory identity differs")
+		}
+	}
+	assertSameDirectory(t, canonical, legacy)
 	key, err := loadOrCreateJWTKey(primary, legacy, relative, legacy)
 	if err != nil || len(key) < 32 {
 		t.Fatal("duplicate missing legacy paths", err)
@@ -134,9 +149,20 @@ func TestAuthStateCanonicalLegacyDuplicates(t *testing.T) {
 			t.Skip(err)
 		}
 		canonicalAlias, err := canonicalAuthPath(alias)
-		if err != nil || canonicalAlias != legacy {
+		if err != nil || !filepath.IsAbs(canonicalAlias) {
 			t.Fatal("symlink alias canonicalization", err)
 		}
+		assertSameDirectory(t, canonicalAlias, legacy)
+		parentAlias := filepath.Join(root, "parent-alias")
+		if err := os.Symlink(root, parentAlias); err != nil {
+			t.Fatal(err)
+		}
+		aliasedLegacy := filepath.Join(parentAlias, "legacy")
+		canonicalParent, err := canonicalAuthPath(aliasedLegacy)
+		if err != nil || !filepath.IsAbs(canonicalParent) {
+			t.Fatal("parent alias canonicalization", err)
+		}
+		assertSameDirectory(t, canonicalParent, aliasedLegacy)
 		other := filepath.Join(root, "other-auth")
 		if _, err := loadOrCreateJWTKey(other, legacy, alias, relative); err != nil {
 			t.Fatal(err)
