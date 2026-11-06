@@ -13,6 +13,10 @@
 
 ## 校验范围
 
+三个 Go 模块统一要求 Go 1.27.3。质量、原生包和发行工作流通过根目录 `go.mod` 选择构建工具链，独立运行保留模块时也遵循相同最低版本。默认使用 JSON v2 引擎，现有 `encoding/json` API 保留兼容语义；正常构建不设置 `GOEXPERIMENT=nojsonv2`。工具链变更继续运行既有全部检查，包括 JSONB 原始输入、模型协议及六个平台的原生生命周期。macOS 安装基线为 13.0。
+
+CodeQL 的 Go 任务也显式选择同一工具链；其他语言不安装 Go，该分析任务不另外保存 Go 缓存。
+
 | 任务 | 保留的校验 |
 | --- | --- |
 | backend-race | 动态枚举全部根模块 package，分成三个互不重叠的分片；每个 package 使用独立 PostgreSQL 数据库，执行 `go test -race -count=1`，仅排除需要真实模型凭据的既有 `TestLiveContextReview` |

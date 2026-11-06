@@ -5,11 +5,13 @@
 ## 安装与打开
 
 - Windows：运行 MSI，在开始菜单打开 **ARTEX**。**ARTEX Control** 打开本地控制页，**Stop ARTEX** 停止程序。安装位置是 `%LOCALAPPDATA%\Programs\ARTEX`。
-- macOS：运行 PKG，在「应用程序」打开 ARTEX。控制页可通过 `open -a ARTEX --args launch control` 打开；也可使用下面的命令停止。
+- macOS 13+：运行 PKG，在「应用程序」打开 ARTEX。控制页可通过 `open -a ARTEX --args launch control` 打开；也可使用下面的命令停止。
 - Debian/Ubuntu：`sudo apt install ./artex-<版本>-linux-<架构>.deb`。
 - Fedora/RHEL 系：`sudo dnf install ./artex-<版本>-linux-<架构>.rpm`。
 
 Linux 安装后在应用菜单打开 ARTEX，或运行 `artex launch`；菜单另有控制和停止动作。`amd64` 表示 Intel/AMD x64，`arm64` 表示 64 位 ARM。各系统按架构分别打包。
+
+当前源码采用 Go 1.27.3，macOS 安装器与二进制统一要求 macOS 13+。历史安装包保留各自发布时的系统要求。升级安装包不会更改已有个人目录和数据库配置。
 
 MSI 和 PKG 当前没有发布者签名；macOS 包未公证。正式证书需由发布者提供，云端构建不能代替签名身份。所有下载文件均可按 Release 的 `SHA256SUMS` 核对。
 

@@ -1,6 +1,6 @@
 module github.com/Autumn-27/artex
 
-go 1.26.10
+go 1.27.3
 
 replace github.com/Autumn-27/norma => ./third_party/norma
 

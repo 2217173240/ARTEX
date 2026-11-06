@@ -101,7 +101,7 @@ AI 自主渗透测试系统（Go 后端 + Next.js 前端）
 | 系统 | 安装包 | 安装后启动 |
 | --- | --- | --- |
 | Windows | `.msi` | 开始菜单 → ARTEX；安装在当前用户目录 |
-| macOS | `.pkg` | 应用程序 → ARTEX |
+| macOS 13+ | `.pkg` | 应用程序 → ARTEX |
 | Linux | `.deb` / `.rpm` | 应用菜单 → ARTEX，或 `artex launch` |
 
 首次启动在本地页面填写已有 PostgreSQL 的主机、端口、用户名、密码和数据库名，连接成功后打开 ARTEX。随后设置管理员账号，并在「LLM 配置」添加模型。启动器使用本机回环地址和空闲端口；再次启动打开已有实例。个人配置、日志、数据和可编辑 skills 放在用户目录，升级或卸载安装包会保留它们。
@@ -163,6 +163,8 @@ ZIP 是运行包，不包含源码安装、更新脚本；`install.sh` / `update
 > 后台常驻：`nohup ./start.sh >artex.log 2>&1 &`。
 
 ### 方式四：从源码编译单二进制
+
+源码构建使用 Go 1.27.3 或更新的受支持版本，以及 Node.js 22。Go 1.27 默认采用 JSON v2 引擎，现有 JSON API 保留兼容语义。使用该工具链构建的 macOS 版本要求 macOS 13+；历史安装包按对应版本的系统要求使用。
 
 ```bash
 git clone https://github.com/2217173240/ARTEX.git

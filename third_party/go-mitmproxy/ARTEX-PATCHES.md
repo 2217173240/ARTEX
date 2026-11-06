@@ -4,7 +4,7 @@ Upstream: https://github.com/lqqyt2423/go-mitmproxy, module version **v1.9.2**.
 Source module checksum: `h1:+QTbDyUUaVRmEavPq0/eWzJ2K+K4JdL4ff91s/adnxk=`.
 Downloaded module ZIP SHA-256: `0abd197455a47fc6045176cb29727959e51686de62d8bcd09be000236c3744d2`.
 `UPSTREAM-MANIFEST.json` records SHA-256 of every retained upstream file before patching.
-All retained upstream files preserve their upstream contents except the three differences below;
+All retained upstream runtime files preserve their upstream contents except the three differences below;
 upstream LICENSE remains applicable. Tests and this provenance metadata are ARTEX additions.
 
 Only semantic production change: remove `conn.Close()` after SOCKS5 `DialContext` returns
@@ -18,7 +18,10 @@ remove the extra EOF blank line in `proxy/flow.go` and remove trailing tabs on
 the blank line after SetFormatter in `proxy/instance_logger.go`. Neither changes
 Go behavior. `UPSTREAM-MANIFEST.json` deliberately retains original upstream
 hashes; these two files and `internal/helper/proxy.go` are the exact three
-differences against that manifest.
+runtime-source differences against that manifest. The local `go.mod` minimum is
+Go 1.27.3, matching ARTEX and its retained Norma module. This metadata change
+selects the default JSON v2 engine while retaining the existing JSON API and
+compatibility semantics; original upstream manifest hashes remain unchanged.
 
 Fix idea: 6ccg, https://github.com/6ccg/ARTEX/commit/cb5dfec8fcc3844bd7d56f3e208ff1cb1a34d4b0
 (author `6ccg <44950572+6ccg@users.noreply.github.com>`). This applies the same
