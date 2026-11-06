@@ -24,6 +24,12 @@ sync_repo(){
 
 # ── ① Docker 更新 ───────────────────────────────
 update_docker(){
+  [ ! -L auth ] || die "auth 不得为符号链接"
+  if [ -e auth ]; then
+    [ -d auth ] || die "auth 必须是目录"
+  else
+    mkdir -m 700 auth
+  fi
   command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1 \
     || die "未检测到 docker / docker compose，请先用 ./install.sh 安装部署"
   [ -f .env ] || die "未找到 .env，请先运行 ./install.sh 完成首次部署"

@@ -143,7 +143,7 @@ func TestTaskEvidenceRoutesScopeAndPagination(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	dir := t.TempDir()
-	s := New(ctx, m, dir, dir, dir)
+	s := New(ctx, m, dir, dir, t.TempDir())
 	s.archiveWG.Wait()
 	token, err := signAdminJWTForTest(t, s)
 	if err != nil {

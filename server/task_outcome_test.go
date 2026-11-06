@@ -55,7 +55,7 @@ func TestTaskOutcomeAPIAndDatabaseFailure(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
 	td := t.TempDir()
-	s := New(ctx, m, td, td, td)
+	s := New(ctx, m, td, td, t.TempDir())
 	token, err := signAdminJWTForTest(t, s)
 	if err != nil {
 		t.Fatal(err)

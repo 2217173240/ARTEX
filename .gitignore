@@ -1,5 +1,6 @@
 # backend
 /data/
+/auth/
 *.db
 *.db-wal
 *.db-shm

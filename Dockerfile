@@ -41,8 +41,10 @@ COPY LICENSE THIRD-PARTY-NOTICES.txt /app/
 COPY start.sh /app/start.sh
 RUN chmod +x /app/artex /app/start.sh
 COPY skills/ /app/skills/
-# data/（SQLite + jwt.key）持久化点
-VOLUME ["/app/data"]
+# 私有认证状态与业务数据分别持久化。
+RUN mkdir -m 0700 /app/auth
+ENV ARTEX_AUTH_DIR=/app/auth
+VOLUME ["/app/data", "/app/auth"]
 EXPOSE 8787 8788
 ENTRYPOINT ["/app/start.sh"]
 CMD ["-addr", ":8787", "-proxy", ":8788"]

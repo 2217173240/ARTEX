@@ -55,7 +55,10 @@ func validatePassword(pw string) string {
 // at the new location, it is migrated (base key preserved) and
 // the old file removed so it disappears from the workspace. On first run a random
 // key is generated and persisted.
-func loadOrCreateJWTKey(keyDir, dataDir string) ([]byte, error) {
+func loadOrCreateJWTKey(keyDir, dataDir string, legacyKeyDirs ...string) ([]byte, error) {
+	if err := os.MkdirAll(keyDir, 0700); err != nil {
+		return nil, err
+	}
 	path := filepath.Join(keyDir, jwtKeyFilename)
 	readKey := func() ([]byte, error) {
 		data, err := os.ReadFile(path)
@@ -69,13 +72,31 @@ func loadOrCreateJWTKey(keyDir, dataDir string) ([]byte, error) {
 		return key, nil
 	}
 	if key, err := readKey(); err == nil {
+		if err := cleanupMatchingLegacyKeys(path, key, append(append([]string{}, legacyKeyDirs...), dataDir)); err != nil {
+			return nil, err
+		}
 		return key, nil
 	} else if !os.IsNotExist(err) {
 		return nil, err
 	}
 	// Preserve the legacy key while moving its delivery location outside the
 	// workspace. Exclusive publication cannot overwrite a concurrent startup.
-	if legacy := filepath.Join(dataDir, jwtKeyFilename); legacy != path {
+	seen := map[string]bool{}
+	primary, err := canonicalAuthPath(path)
+	if err != nil {
+		return nil, err
+	}
+	seen[primary] = true
+	for _, dir := range append(append([]string{}, legacyKeyDirs...), dataDir) {
+		legacy := filepath.Join(dir, jwtKeyFilename)
+		canonical, err := canonicalAuthPath(legacy)
+		if err != nil {
+			return nil, err
+		}
+		if seen[canonical] {
+			continue
+		}
+		seen[canonical] = true
 		if data, err := os.ReadFile(legacy); err == nil {
 			if len(strings.TrimSpace(string(data))) < 32 {
 				return nil, fmt.Errorf("legacy jwt.key is invalid; file preserved")
@@ -85,7 +106,9 @@ func loadOrCreateJWTKey(keyDir, dataDir string) ([]byte, error) {
 				return nil, err
 			}
 			if created {
-				_ = os.Remove(legacy)
+				if err := os.Remove(legacy); err != nil && !os.IsNotExist(err) {
+					return nil, fmt.Errorf("remove migrated JWT key %s: %w", legacy, err)
+				}
 				log.Printf("[auth] JWT key 已从 %s 迁移到 %s（移出可浏览工作区）", legacy, path)
 			}
 			return readKey()

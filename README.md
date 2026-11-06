@@ -127,7 +127,7 @@ cd ARTEX
 - **① 全部 Docker**：填一个 Postgres 密码（可回车随机）→ 自动写 `.env` → `docker compose up -d`。
 - **② 本地运行**：选数据库（连已有 / 用 Docker 起一个）→ 生成 `config.json` → `go` 编译内嵌单二进制 → 启动。
 
-装好后打开 **http://localhost:8787**。首次进入 `/setup` 时，从启动日志标出的 `setup.token` 文件复制初始化令牌，再设置管理员密码；已初始化的实例直接登录。Docker 默认可用 `docker compose exec artex cat /app/setup.token` 读取令牌，路径以启动日志为准。
+装好后打开 **http://localhost:8787**。首次进入 `/setup` 时，从启动日志标出的 `setup.token` 文件复制初始化令牌，再设置管理员密码；已初始化的实例直接登录。支持 `ARTEX_AUTH_DIR` 的 Docker 镜像默认可用 `docker compose exec artex cat /app/auth/setup.token` 读取令牌；较早镜像可能仍使用 `/app/setup.token`，实际路径以启动日志为准。
 
 ### 方式二：Docker Compose（手动）
 
@@ -196,7 +196,20 @@ ARTEX_TARGETS=linux/amd64,windows/amd64 ./build.sh --release
 
 ## 更新升级
 
-> 升级只换程序、不动数据：Postgres 数据卷 `pgdata`、`./data`（jwt.key / SQLite 等）、`./skills` 都会保留。**数据库迁移无需手动执行**——`artex` 每次启动会幂等重跑 `schema.sql`（含 `ADD COLUMN` / `CREATE INDEX IF NOT EXISTS`），即“重启即迁移”。升级前仍建议先备份 `./data` 与数据库。
+> 升级只换程序、不动数据：Postgres 数据卷 `pgdata`、`./data`、`./auth`（私有认证状态）和 `./skills` 都会保留。**数据库迁移无需手动执行**——`artex` 每次启动会幂等重跑 `schema.sql`（含 `ADD COLUMN` / `CREATE INDEX IF NOT EXISTS`），即“重启即迁移”。升级前仍建议先备份这些持久化目录与数据库。
+
+支持 `ARTEX_AUTH_DIR` 的镜像在 `/app/auth` 保存 `jwt.key` 和首次设置的交付文件，该目录与可浏览的 `/app/data` 分开，并绑定到宿主机 `./auth`。安装和更新脚本为新目录设置私有权限。原生安装和便携程序默认继续使用原来的个人目录或程序目录；可通过 `ARTEX_AUTH_DIR` 指定独立认证目录，启动时会拒绝将其放在可浏览工作区内部。
+
+首次从旧 Docker 部署升级且希望保留当前会话时，应在重建旧容器之前保存其实际 `jwt.key` 到新绑定目录。默认旧路径为 `/app/jwt.key`；目标 `auth/jwt.key` 已存在时保留该文件，先核对实例。对于目标尚不存在的默认部署，可执行：
+
+```bash
+umask 077
+test ! -L auth && mkdir -p auth &&
+test ! -e auth/jwt.key && test ! -L auth/jwt.key &&
+docker compose cp artex:/app/jwt.key auth/jwt.key && chmod 600 auth/jwt.key
+```
+
+随后运行正常升级。新程序在目标缺失时按旧程序目录、旧数据目录的顺序迁移可用密钥，保留已有目标及不同的旧凭据；容器已经移除后无法从其旧写入层恢复密钥。未保留旧密钥时，已有数据库密码继续有效，旧登录会话需要重新登录。首次设置令牌随同一基础密钥派生；已初始化实例沿用登录流程。
 
 ### 方式一：页面一键更新（推荐）
 

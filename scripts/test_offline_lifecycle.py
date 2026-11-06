@@ -77,6 +77,17 @@ def main():
             inside(*compose, "exec", "-T", "postgres", "psql", "-U", "artex", "-d", "artex", "-v", "ON_ERROR_STOP=1", "-c",
                    "CREATE TABLE offline_preservation (value text); INSERT INTO offline_preservation VALUES ('preserved');")
             inside("sh", "-c", "printf preserved > data/offline-sentinel")
+            assert inside("stat", "-c", "%a", "auth") == "700"
+            inside("sh", "-c", "printf preserved > auth/offline-sentinel")
+            # 使用真实管理脚本验证状态目录的符号链接被拒绝。
+            inside("mv", "auth", "auth-sentinel-held")
+            inside("ln", "-s", "auth-sentinel-held", "auth")
+            try:
+                linked = subprocess.run(["docker", "exec", "--workdir", target, name, "bash", "./artex-offline", "status"], capture_output=True)
+                assert linked.returncode != 0 and b"auth must be a regular directory" in linked.stderr
+            finally:
+                inside("rm", "auth")
+                inside("mv", "auth-sentinel-held", "auth")
             print(inside("bash", "./artex-offline", "stop"))
             # 删除容器并保留卷，验证 install 恢复真实持久化数据。
             inside(*compose, "down")
@@ -86,13 +97,16 @@ def main():
             assert inside("sha256sum", ".env").split()[0] == env_hash
             assert inside("cat", ".project") == project
             assert inside("cat", "data/offline-sentinel") == "preserved"
+            assert inside("cat", "auth/offline-sentinel") == "preserved"
             value = inside(*compose, "exec", "-T", "postgres", "psql", "-U", "artex", "-d", "artex", "-Atc", "SELECT value FROM offline_preservation")
             assert value == "preserved"
             for filename in (".env", ".project"):
                 assert inside("stat", "-c", "%a", filename) == "600"
             assert inside("stat", "-c", "%a", "data") == "700"
+            assert inside("stat", "-c", "%a", "auth") == "700"
             print(inside("bash", "./artex-offline", "status"))
-            print("PASS: network=none, empty image store, corruption/duplicate-inventory rejection, install, health/version, reinstall, SQL/file/config preservation, permissions")
+            print("PASS: network=none, empty image store, corruption/duplicate-inventory rejection, install, health/version, reinstall, SQL/file/config/auth-directory preservation, permissions")
+            print("Auth-directory checks verify packaging only; JWT/session persistence requires a binary supporting ARTEX_AUTH_DIR.")
         finally:
             if started:
                 subprocess.run(["docker", "logs", name], check=False)
