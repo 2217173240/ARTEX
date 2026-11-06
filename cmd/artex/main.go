@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -62,9 +63,19 @@ func run() int {
 	if len(os.Args) == 1 && distribution.Managed() {
 		return runLauncher(nil, os.Stdout, os.Stderr)
 	}
+	baseDir := config.BaseDir()
+	authDir := baseDir
+	if strings.TrimSpace(os.Getenv("ARTEX_AUTH_DIR")) != "" {
+		authDir = config.AuthDir()
+	}
+	authDir, err := filepath.Abs(authDir)
+	if err != nil {
+		log.Printf("resolve authentication directory: %v", err)
+		return 1
+	}
 	var (
 		addr    = flag.String("addr", ":8787", "HTTP listen address")
-		dataDir = flag.String("data", filepath.Join(config.BaseDir(), "data"), "data directory for SQLite stores (default: data/ next to the executable)")
+		dataDir = flag.String("data", filepath.Join(baseDir, "data"), "data directory for SQLite stores (default: data/ next to the executable)")
 		proxy   = flag.String("proxy", "127.0.0.1:8788", "traffic recording proxy address (empty to disable)")
 	)
 	flag.Parse()
@@ -126,7 +137,7 @@ func run() int {
 		skillDir = abs
 	}
 	log.Printf("[config] skill 目录: %s", skillDir)
-	srv := server.New(ctx, mgr, skillDir, *dataDir, config.BaseDir())
+	srv := server.New(ctx, mgr, skillDir, *dataDir, authDir, baseDir)
 	httpSrv := &http.Server{
 		Addr:              *addr,
 		Handler:           srv.Handler(),

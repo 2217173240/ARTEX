@@ -35,6 +35,12 @@ ensure_docker(){
 
 # ── ① 全部 Docker ───────────────────────────────
 install_docker(){
+  [ ! -L auth ] || die "auth 不得为符号链接"
+  if [ -e auth ]; then
+    [ -d auth ] || die "auth 必须是目录"
+  else
+    mkdir -m 700 auth
+  fi
   ensure_docker
   if [ ! -f .env ]; then
     require_python

@@ -59,13 +59,15 @@ check_state() {
   [[ -f .env && ! -L .env && -f .project && ! -L .project ]] || fail 'Run install first; existing partial state requires manual recovery'
   [[ "$(cat .project)" =~ ^artex-offline-[a-f0-9]{24}$ ]] || fail 'Invalid project identity'
   [[ ! -L data && -d data ]] || fail 'data must be a regular directory'
+  [[ ! -L auth && -d auth ]] || fail 'auth must be a regular directory'
   chmod 600 .env .project
   chmod 700 data
 }
 initialize() {
-  [[ ! -L .env && ! -L .project && ! -L data ]] || fail 'State paths must not be symlinks'
+  [[ ! -L .env && ! -L .project && ! -L data && ! -L auth ]] || fail 'State paths must not be symlinks'
+  [[ ! -e auth || -d auth ]] || fail 'auth must be a regular directory'
   if [[ ! -e .env ]]; then
-    [[ ! -e data && ! -e .project ]] || fail 'Existing data requires its original .env and .project; restore them before retrying'
+    [[ ! -e data && ! -e auth && ! -e .project ]] || fail 'Existing state requires its original .env and .project; restore them before retrying'
     local password project
     password=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
     project=$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')
@@ -76,6 +78,7 @@ initialize() {
   fi
   [[ -e .project ]] || fail 'Restore the original .project before retrying'
   mkdir -p data
+  if [[ ! -e auth ]]; then mkdir -m 700 auth; fi
   check_state
 }
 command=${1:-help}
@@ -99,7 +102,7 @@ if [[ "$command" == install ]]; then
   initialize
   compose config --quiet
   compose up --detach --pull never --wait --wait-timeout 180
-  printf '%s\n' 'Installed. Use the loopback ports configured in .env; preserve .env, .project and data.'
+  printf '%s\n' 'Installed. Use the loopback ports configured in .env; preserve .env, .project, data and auth.'
 else
   check_state
   case "$command" in

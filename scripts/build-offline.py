@@ -91,7 +91,7 @@ def compose(artex, postgres):
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: [CMD-SHELL, "pg_isready -U artex -d artex"]
+      test: [CMD-SHELL, "pg_isready -h 127.0.0.1 -U artex -d artex"]
       interval: 2s
       timeout: 3s
       retries: 30
@@ -104,12 +104,14 @@ def compose(artex, postgres):
         condition: service_healthy
     environment:
       ARTEX_CONFIG: /dev/null
+      ARTEX_AUTH_DIR: /app/auth
       ARTEX_PG_DSN: postgres://artex:${{POSTGRES_PASSWORD}}@postgres:5432/artex?sslmode=disable
     ports:
       - "127.0.0.1:${{ARTEX_PORT:-8787}}:8787"
       - "127.0.0.1:${{ARTEX_PROXY_PORT:-8788}}:8788"
     volumes:
       - ./data:/app/data
+      - ./auth:/app/auth
     healthcheck:
       test: [CMD, curl, --fail, --silent, http://127.0.0.1:8787/api/health]
       interval: 3s

@@ -63,6 +63,15 @@ func BaseDir() string {
 	return dir
 }
 
+// AuthDir returns the private authentication directory, honoring ARTEX_AUTH_DIR.
+// The default is BaseDir; resolution does not create the directory.
+func AuthDir() string {
+	if dir := strings.TrimSpace(os.Getenv("ARTEX_AUTH_DIR")); dir != "" {
+		return dir
+	}
+	return BaseDir()
+}
+
 // isGoRunDir reports whether dir is where `go run` parked its executable: under
 // the system temp dir (cache miss), or anywhere inside a Go build cache
 // (…/go-build/…, the cache-hit case — NOT under os.TempDir(), which is why the
