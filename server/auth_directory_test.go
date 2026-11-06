@@ -115,11 +115,8 @@ func TestAuthStateCanonicalLegacyDuplicates(t *testing.T) {
 	if err := os.Mkdir(legacy, 0700); err != nil {
 		t.Fatal(err)
 	}
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	relative, err := filepath.Rel(cwd, legacy)
+	t.Chdir(root)
+	relative, err := filepath.Rel(root, legacy)
 	if err != nil {
 		t.Fatal(err)
 	}
