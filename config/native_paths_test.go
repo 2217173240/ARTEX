@@ -22,8 +22,8 @@ func TestApplicationHomeDoesNotReadWorkingDirectoryConfig(t *testing.T) {
 	if got := Path(); got != filepath.Join(home, "config.json") {
 		t.Fatal(got)
 	}
-	if got := Load().Database.DSN; got != "" {
-		t.Fatalf("unexpected configuration %q", got)
+	if got, err := Load(); err != nil || got.Database.DSN != "" {
+		t.Fatalf("unexpected configuration %+v: %v", got, err)
 	}
 }
 

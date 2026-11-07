@@ -132,9 +132,12 @@ func run() int {
 	settle := time.AfterFunc(selfupdate.SettleDelay, selfupdate.Settle)
 	defer settle.Stop()
 
-	skillDir := config.SkillDir()
+	skillDir, skillErr := config.SkillDir()
 	if abs, err := filepath.Abs(skillDir); err == nil {
 		skillDir = abs
+	}
+	if skillErr != nil {
+		log.Printf("[config] 警告：%v；选用 skill 目录 %s，相关技能可能不可用", skillErr, skillDir)
 	}
 	log.Printf("[config] skill 目录: %s", skillDir)
 	srv := server.New(ctx, mgr, skillDir, *dataDir, authDir, baseDir)

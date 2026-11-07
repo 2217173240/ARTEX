@@ -297,6 +297,13 @@ func launcherServe(home string, stdout, stderr io.Writer) int {
 		phase = "starting"
 		message = "正在启动 ARTEX，请稍候…"
 		start <- struct{}{}
+	} else {
+		var loadErr *config.LoadError
+		if errors.As(e, &loadErr) {
+			phase = "failed"
+			pageError = true
+			message = loadErr.Error() + "。请修复该文件，然后停止并重新启动启动器。已有配置保持不变。"
+		}
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {

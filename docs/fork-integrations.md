@@ -1,5 +1,7 @@
 # 同源功能集成
 
+2026-11-07 适配 [BaaRai/ARTEX PR #141](https://github.com/BaaRai/ARTEX/pull/141) 的配置错误传播（head [`a20628d3`](https://github.com/BaaRai/ARTEX/commit/a20628d3348e464317fd670e146e10d7aeb459ee)，作者 **GRAB Racem / BaaRai**，AGPL-3.0）。配置读取或解码失败返回带路径的类型化安全错误，并丢弃部分解析结果；数据库解析、诊断命令与原生启动器据此提供修复提示。该处理遵循 [Unmarshal 的部分解码与错误语义](https://pkg.go.dev/encoding/json#Unmarshal)及 [Go 错误包装约定](https://pkg.go.dev/errors)。错误保留可检查的原始原因，公开诊断只输出类别和位置，避免字段值泄露。环境变量保持优先，缺失文件和显式系统空设备保持可选；有效数据库环境配置下，技能使用非空默认目录并显示警告，保留服务可用性。原生启动器保留已有文件并拒绝设置覆盖。沿用 Go 1.27 的兼容 JSON API、未知字段兼容、现有数据库策略及安装脚本的成熟序列化器。实际 CLI 与隔离 PostgreSQL 验收覆盖错误启动、环境优先级、健康接口和诊断；启动器通过真实 HTTP handler 验证修复页面及文件保留。
+
 2026-10-19 以 `7856b4b5853ad227da41b77188635508479c8a08` 为基线，继续适配四项有明确使用价值的能力：
 
 | 来源与归属 | 当前采用范围 |
