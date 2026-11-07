@@ -4,6 +4,7 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -120,16 +121,47 @@ func Path() string {
 	return candidates[0]
 }
 
-// Load reads and parses the config file. A missing/unreadable file yields a zero
-// Config (so callers fall back to defaults) rather than an error.
-func Load() Config {
-	var c Config
-	b, err := os.ReadFile(Path())
-	if err != nil {
-		return c
+// LoadError identifies an unreadable or invalid configuration without exposing
+// its contents. Unwrap preserves the original filesystem or JSON error.
+type LoadError struct {
+	Path string
+	Err  error
+}
+
+func (e *LoadError) Error() string {
+	var syntax *json.SyntaxError
+	var valueType *json.UnmarshalTypeError
+	switch {
+	case errors.As(e.Err, &syntax):
+		return fmt.Sprintf("配置文件 %s：JSON 语法错误（位置 %d）", e.Path, syntax.Offset)
+	case errors.As(e.Err, &valueType):
+		return fmt.Sprintf("配置文件 %s：JSON 字段类型错误（位置 %d）", e.Path, valueType.Offset)
+	default:
+		return fmt.Sprintf("配置文件 %s：读取失败", e.Path)
 	}
-	_ = json.Unmarshal(b, &c)
-	return c
+}
+
+func (e *LoadError) Unwrap() error { return e.Err }
+
+// Load treats a missing file or the platform's null device as optional. Other
+// read failures and invalid JSON return an error and no partial configuration.
+func Load() (Config, error) {
+	var c Config
+	path := Path()
+	if path == os.DevNull {
+		return c, nil
+	}
+	b, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return c, nil
+	}
+	if err != nil {
+		return c, &LoadError{Path: path, Err: err}
+	}
+	if err := json.Unmarshal(b, &c); err != nil {
+		return Config{}, &LoadError{Path: path, Err: err}
+	}
+	return c, nil
 }
 
 // SkillDir returns the skill root directory with precedence:
@@ -137,17 +169,25 @@ func Load() Config {
 //	env ARTEX_SKILL_DIR  >  config file (skill_dir)  >  BaseDir()/skills
 //
 // The directory is created if it does not exist.
-func SkillDir() string {
+// Configuration failures return the default directory and an error so optional
+// skills can degrade visibly without affecting the database-backed service.
+func SkillDir() (string, error) {
 	var d string
+	var loadErr error
 	if v := strings.TrimSpace(os.Getenv("ARTEX_SKILL_DIR")); v != "" {
 		d = v
-	} else if v := strings.TrimSpace(Load().SkillDir); v != "" {
-		d = v
 	} else {
-		d = filepath.Join(BaseDir(), "skills")
+		c, err := Load()
+		loadErr = err
+		d = strings.TrimSpace(c.SkillDir)
+		if d == "" {
+			d = filepath.Join(BaseDir(), "skills")
+		}
 	}
-	_ = os.MkdirAll(d, 0o755)
-	return d
+	if err := os.MkdirAll(d, 0o755); err != nil {
+		return d, errors.Join(loadErr, fmt.Errorf("创建 skill 目录 %s：%w", d, err))
+	}
+	return d, loadErr
 }
 
 // PostgresDSN resolves the connection string with precedence:
@@ -162,7 +202,11 @@ func PostgresDSN() (dsn, source string, err error) {
 	if v := strings.TrimSpace(os.Getenv("ARTEX_PG_DSN")); v != "" {
 		return v, "环境变量 ARTEX_PG_DSN", nil
 	}
-	db := Load().Database
+	c, err := Load()
+	if err != nil {
+		return "", "", err
+	}
+	db := c.Database
 	if d := strings.TrimSpace(db.DSN); d != "" {
 		return d, "配置文件 " + Path() + " (database.dsn)", nil
 	}

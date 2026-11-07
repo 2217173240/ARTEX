@@ -8,6 +8,7 @@ import (
 
 func TestPostgresDSNPrecedence(t *testing.T) {
 	dir := t.TempDir()
+	t.Setenv("ARTEX_HOME", dir)
 	cfgPath := filepath.Join(dir, "config.json")
 	os.WriteFile(cfgPath, []byte(`{"database":{"host":"10.1.2.3","port":6000,"user":"u","password":"p","dbname":"d","sslmode":"require"}}`), 0o644)
 	t.Setenv("ARTEX_CONFIG", cfgPath)

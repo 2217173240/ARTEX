@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -59,15 +60,13 @@ func runDoctor(args []string, out io.Writer) int {
 func inspectDoctor(data string) doctorReport {
 	r := doctorReport{}
 	add := func(status, name, detail string) { r.Checks = append(r.Checks, doctorCheck{name, status, detail}) }
-	b, err := os.ReadFile(config.Path())
-	var cfg config.Config
+	cfg, err := config.Load()
+	_, statErr := os.Stat(config.Path())
 	switch {
-	case os.IsNotExist(err):
-		add("WARN", "config", "file absent; database environment override may still be used")
 	case err != nil:
-		add("FAIL", "config", "file cannot be read")
-	case json.Unmarshal(b, &cfg) != nil:
-		add("FAIL", "config", "invalid JSON or field types")
+		add("FAIL", "config", err.Error())
+	case os.IsNotExist(statErr):
+		add("WARN", "config", "file absent; database environment override may still be used")
 	default:
 		add("OK", "config", "file parsed")
 	}
@@ -108,7 +107,12 @@ func inspectDoctor(data string) doctorReport {
 	}
 	dsn, _, err := config.PostgresDSN()
 	if err != nil {
-		add("FAIL", "database", "no database connection configured")
+		var loadErr *config.LoadError
+		if errors.As(err, &loadErr) {
+			add("FAIL", "database", loadErr.Error()+"; repair the file and retry")
+		} else {
+			add("FAIL", "database", "no database connection configured; create the config file or set ARTEX_PG_DSN")
+		}
 		add("SKIP", "LLM profiles", "database unavailable")
 		return r
 	}

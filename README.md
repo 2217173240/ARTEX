@@ -278,6 +278,10 @@ CGO_ENABLED=0 go build -tags embedui -o artex ./cmd/artex
 
 原生安装版和 `artex launch` 使用用户目录的配置；`ARTEX_HOME` 可显式指定独立运行目录。普通便携/源码启动仍沿用现有配置位置。
 
+`ARTEX_CONFIG` 可指定配置文件；文件缺失时仍可使用环境变量。已有文件无法读取、JSON 无效或字段类型错误时，会报告文件路径与错误类别，并丢弃该次读取的全部配置。数据库连接优先使用 `ARTEX_PG_DSN`；未设置时，需修复文件后启动。诊断不会输出配置中的密码或连接串。显式指定系统空设备（Unix 的 `/dev/null`、Windows 的 `NUL`）可关闭文件配置。
+
+技能目录优先使用 `ARTEX_SKILL_DIR`，其次为配置的 `skill_dir`，最后为程序基础目录下的 `skills`。数据库环境变量有效、文件配置损坏时，技能使用默认目录并显示警告，服务仍可启动；设置 `ARTEX_SKILL_DIR` 可明确指定技能位置。
+
 **数据库**（`config.json`，或用环境变量 `ARTEX_PG_DSN` 覆盖）：
 
 ```json
