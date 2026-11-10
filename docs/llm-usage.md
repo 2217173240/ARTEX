@@ -2,6 +2,8 @@
 
 轻量调用账本保存任务、exploration、Agent、会话、模型、配置名、耗时和提供方返回的 token 数。关闭请求与响应正文录制后，该账本继续写入；会话标识用于关联调用，不改变任务归属或工具权限。
 
+OpenAI 兼容网关分字段回报累计 usage 时，省略或 null 字段保留已收到的计数，明确返回的零值及修正值覆盖旧值。缓存命中优先读取标准 `prompt_tokens_details.cached_tokens`，其次为 DeepSeek 的 `prompt_cache_hit_tokens`，最后为可选 `opencode.tokens.cache_read`；这些别名表示同一项计数，不相加。每次调用保存最终快照，既有 Anthropic 差量统计继续使用原有口径。
+
 ## 查询接口
 
 `GET /api/llm/usage` 使用现有管理员登录认证。启用 HTTP Basic Auth 时，同时满足 Basic Auth 和管理员登录要求。

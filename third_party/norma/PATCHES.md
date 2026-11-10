@@ -1,5 +1,28 @@
 # Norma runtime dependency patch
 
+## OpenAI-compatible usage aliases and snapshots
+
+Adapted from lin9527ya's Norma commit
+[`f46fa0dd`](https://github.com/lin9527ya/Norma/commit/f46fa0dde683bca3a2e9553df633e5b0561912a7),
+under Apache-2.0, verified from LICENSE at that exact commit. GitHub compare
+records the vendored `320ae329` base as its merge base (17 ahead, 0 behind).
+The [DeepSeek API reference](https://api-docs.deepseek.com/api/create-chat-completion/)
+documents `prompt_cache_hit_tokens` as the cache-read count. OpenAI documents a
+[final full usage chunk](https://developers.openai.com/api/reference/resources/chat/subresources/completions/streaming-events);
+partial snapshot merging provides compatibility with gateways that split it.
+
+- Decode canonical cache reads first, then DeepSeek `prompt_cache_hit_tokens`,
+  then the optional `opencode.tokens.cache_read` extension. A present canonical
+  zero wins. Malformed or negative optional aliases are ignored independently;
+  existing canonical integer handling, including negative values, is retained.
+- Merge gateway partial cumulative usage by field presence: omitted/null fields
+  preserve their prior value; explicit zero and downward corrections replace it.
+  OpenAI's documented final full usage chunk remains supported. Stream-local
+  state emits the final snapshot once. Anthropic's signed-delta path is unchanged.
+- Declared JSON tests execute production nonstream and streaming parsers for
+  alias precedence, invalid extensions, partial/repeated/null/zero/corrected
+  snapshots and independent stream state. No provider traffic is simulated.
+
 This is the runtime dependency closure ARTEX uses from the official
 `github.com/Autumn-27/norma v0.4.3`, commit
 `320ae32989da97dd91469bb89164cbfe87d83d5d` (annotated tag

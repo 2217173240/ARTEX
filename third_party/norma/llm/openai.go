@@ -345,7 +345,7 @@ func (p *openaiProvider) Stream(ctx context.Context, req CompletionRequest) iter
 				if data == "[DONE]" {
 					break
 				}
-				evs, sr, u, ok := parseOpenAIFrame(data, started)
+				evs, sr, u, ok := parseOpenAIFrameSnapshot(data, started, usage)
 				if sr != "" {
 					stopReason = sr
 				}
@@ -447,13 +447,7 @@ func parseOpenAIResponse(raw []byte) (Message, string, Usage, error) {
 			} `json:"message"`
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
-		Usage *struct {
-			PromptTokens        int `json:"prompt_tokens"`
-			CompletionTokens    int `json:"completion_tokens"`
-			PromptTokensDetails struct {
-				CachedTokens int `json:"cached_tokens"`
-			} `json:"prompt_tokens_details"`
-		} `json:"usage"`
+		Usage *openaiUsageUpdate `json:"usage"`
 		Error *struct {
 			Message string `json:"message"`
 			Type    string `json:"type"`
@@ -467,11 +461,7 @@ func parseOpenAIResponse(raw []byte) (Message, string, Usage, error) {
 	}
 	var usage Usage
 	if r.Usage != nil {
-		usage = Usage{
-			InputTokens:     r.Usage.PromptTokens,
-			OutputTokens:    r.Usage.CompletionTokens,
-			CacheReadTokens: r.Usage.PromptTokensDetails.CachedTokens,
-		}
+		usage = r.Usage.merge(usage)
 	}
 	if len(r.Choices) == 0 {
 		return Message{}, "", usage, fmt.Errorf("openai: empty response (no choices; body: %s)", truncate(string(raw), 500))
@@ -529,6 +519,10 @@ func pickReasoning(fields ...string) string {
 }
 
 func parseOpenAIFrame(data string, started map[int]bool) (evs []StreamEvent, stopReason string, usage Usage, hasUsage bool) {
+	return parseOpenAIFrameSnapshot(data, started, Usage{})
+}
+
+func parseOpenAIFrameSnapshot(data string, started map[int]bool, previous Usage) (evs []StreamEvent, stopReason string, usage Usage, hasUsage bool) {
 	var f struct {
 		Choices []struct {
 			Delta struct {
@@ -541,19 +535,13 @@ func parseOpenAIFrame(data string, started map[int]bool) (evs []StreamEvent, sto
 			} `json:"delta"`
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
-		Usage *struct {
-			PromptTokens        int `json:"prompt_tokens"`
-			CompletionTokens    int `json:"completion_tokens"`
-			PromptTokensDetails struct {
-				CachedTokens int `json:"cached_tokens"`
-			} `json:"prompt_tokens_details"`
-		} `json:"usage"`
+		Usage *openaiUsageUpdate `json:"usage"`
 	}
 	if err := json.Unmarshal([]byte(data), &f); err != nil {
 		return nil, "", Usage{}, false
 	}
 	if f.Usage != nil {
-		usage = Usage{InputTokens: f.Usage.PromptTokens, OutputTokens: f.Usage.CompletionTokens, CacheReadTokens: f.Usage.PromptTokensDetails.CachedTokens}
+		usage = f.Usage.merge(previous)
 		hasUsage = true
 	}
 	if len(f.Choices) == 0 {
