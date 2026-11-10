@@ -1,5 +1,7 @@
 # 同源功能集成
 
+2026-11-10 适配 [BaaRai/ARTEX PR #132](https://github.com/BaaRai/ARTEX/pull/132) 的 MCP 版本协商思路（最终 head [`f6583b4b`](https://github.com/BaaRai/ARTEX/commit/f6583b4badfa24cd680301ae74401d97deba3204)，作者 **htjulia / htcom-code**，AGPL-3.0；前一提交为 `934568f33657a2c53583f0b3c921a45253dab2ca`，共同初始祖先为 `0ef8561411dd1757e41ba3c45d1436e1fd3774f1`）。按当前客户端独立实现：HTTP 仍优先声明 `2025-06-18`，支持协商至 `2025-03-26`；旧版 SSE 保持 `2024-11-05`。初始化结果必须包含受支持的版本，随后通知、调用及 HTTP DELETE 使用协商值，自定义头不能覆盖协议状态。初始化省略版本头以支持协商，依据 [MCP 生命周期](https://modelcontextprotocol.io/specification/2025-06-18/basic/lifecycle)与[传输规范](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports)处理后续通信。保留现有授权、同源重定向、捕获、session 和熔断约束；不引入来源的任意版本接收、错误字符串重试或默认协议升级。通过官方 Go SDK v1.8.0 的实际服务端验证两种 HTTP 版本的初始化、工具列表、调用与关闭，声明 JSON 输入验证无效结果拒绝，原有 SSE、凭据与熔断 race 回归继续执行；生产依赖保持不变。
+
 2026-11-07 适配 [BaaRai/ARTEX PR #141](https://github.com/BaaRai/ARTEX/pull/141) 的配置错误传播（head [`a20628d3`](https://github.com/BaaRai/ARTEX/commit/a20628d3348e464317fd670e146e10d7aeb459ee)，作者 **GRAB Racem / BaaRai**，AGPL-3.0）。配置读取或解码失败返回带路径的类型化安全错误，并丢弃部分解析结果；数据库解析、诊断命令与原生启动器据此提供修复提示。该处理遵循 [Unmarshal 的部分解码与错误语义](https://pkg.go.dev/encoding/json#Unmarshal)及 [Go 错误包装约定](https://pkg.go.dev/errors)。错误保留可检查的原始原因，公开诊断只输出类别和位置，避免字段值泄露。环境变量保持优先，缺失文件和显式系统空设备保持可选；有效数据库环境配置下，技能使用非空默认目录并显示警告，保留服务可用性。原生启动器保留已有文件并拒绝设置覆盖。沿用 Go 1.27 的兼容 JSON API、未知字段兼容、现有数据库策略及安装脚本的成熟序列化器。实际 CLI 与隔离 PostgreSQL 验收覆盖错误启动、环境优先级、健康接口和诊断；启动器通过真实 HTTP handler 验证修复页面及文件保留。
 
 2026-10-19 以 `7856b4b5853ad227da41b77188635508479c8a08` 为基线，继续适配四项有明确使用价值的能力：

@@ -79,6 +79,7 @@ type Client struct {
 	pendingMu    sync.Mutex
 	pending      map[int]chan *rpcResponse
 	protocol     string
+	initialized  bool
 }
 
 func normalizeHeaders(headers map[string]string) (map[string]string, error) {
@@ -275,14 +276,48 @@ func (c *Client) initialize(ctx context.Context) error {
 	if version == "" {
 		version = protocolVersion
 	}
-	if _, err := c.call(ctx, "initialize", map[string]any{
+	result, err := c.call(ctx, "initialize", map[string]any{
 		"protocolVersion": version,
 		"capabilities":    map[string]any{},
 		"clientInfo":      map[string]any{"name": "artex", "version": "0.2"},
-	}); err != nil {
+	})
+	if err != nil {
 		return err
 	}
+	selected, err := negotiatedProtocol(result, c.legacySSE)
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	c.protocol = selected
+	c.initialized = true
+	c.mu.Unlock()
 	return c.notify(ctx, "notifications/initialized", map[string]any{})
+}
+
+func negotiatedProtocol(result json.RawMessage, legacySSE bool) (string, error) {
+	var response struct {
+		ProtocolVersion string `json:"protocolVersion"`
+	}
+	if err := json.Unmarshal(result, &response); err != nil {
+		return "", fmt.Errorf("mcp: invalid initialize result: %w", err)
+	}
+	version := response.ProtocolVersion
+	if legacySSE && version == legacySSEProtocolVersion || !legacySSE && (version == protocolVersion || version == "2025-03-26") {
+		return version, nil
+	}
+	return "", fmt.Errorf("mcp: unsupported negotiated protocol version %q", version)
+}
+
+// applyProtocolHeader keeps transport state authoritative over custom headers.
+func (c *Client) applyProtocolHeader(req *http.Request) {
+	c.mu.Lock()
+	version, initialized := c.protocol, c.initialized
+	c.mu.Unlock()
+	req.Header.Del("MCP-Protocol-Version")
+	if initialized {
+		req.Header.Set("MCP-Protocol-Version", version)
+	}
 }
 
 // Tools lists the server's tools and adapts them to CoreTools.
@@ -420,6 +455,7 @@ func (c *Client) closeTransport() error {
 	for k, v := range c.headers {
 		req.Header.Set(k, v)
 	}
+	c.applyProtocolHeader(req)
 	if resp, err := c.http.Do(req); err == nil {
 		resp.Body.Close()
 	}
@@ -498,14 +534,10 @@ func (c *Client) transportRoundTrip(ctx context.Context, body rpcRequest, expect
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
-	version := c.protocol
-	if version == "" {
-		version = protocolVersion
-	}
-	req.Header.Set("MCP-Protocol-Version", version)
 	for k, v := range c.headers {
 		req.Header.Set(k, v)
 	}
+	c.applyProtocolHeader(req)
 	c.mu.Lock()
 	sid := c.sessionID
 	c.mu.Unlock()
