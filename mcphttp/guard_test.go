@@ -180,7 +180,11 @@ func TestLegacySSEGuardRecoveryAndClose(t *testing.T) {
 		}
 		w.WriteHeader(202)
 		if req.ID != 0 {
-			payload, _ := json.Marshal(rpcResponse{JSONRPC: "2.0", ID: req.ID, Result: json.RawMessage(`{"content":[]}`)})
+			result := json.RawMessage(`{"content":[]}`)
+			if req.Method == "initialize" {
+				result = json.RawMessage(`{"protocolVersion":"2024-11-05","capabilities":{},"serverInfo":{"name":"guard-test","version":"1"}}`)
+			}
+			payload, _ := json.Marshal(rpcResponse{JSONRPC: "2.0", ID: req.ID, Result: result})
 			messages <- payload
 		}
 	}))

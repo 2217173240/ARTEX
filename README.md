@@ -148,6 +148,8 @@ docker compose up -d          # 拉取 ghcr.io/2217173240/artex 镜像 + postgre
 `/message?sessionId=...` 接收 JSON-RPC 请求；配置时将 URL 填为 `/sse`，请求头按
 `Authorization=Bearer <token>` 填写。
 
+HTTP 连接支持 `2025-06-18` 和 `2025-03-26`，按初始化响应协商版本，后续请求与会话关闭使用所选版本；旧版 SSE 使用 `2024-11-05`。初始化响应无效、缺少版本或返回不支持的版本时，该连接返回错误。MCP 的地址、凭据、TLS 设置和调用仍遵循管理页的授权版本。
+
 ### 方式三：下载预编译二进制（Releases）
 
 到 [Releases](https://github.com/2217173240/ARTEX/releases) 下载对应平台的 zip，解压后得到 `artex` + `start.sh`（Windows 为 `start.bat`）+ `skills/` + `config.example.json`：
