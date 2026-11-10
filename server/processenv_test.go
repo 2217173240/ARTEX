@@ -161,7 +161,11 @@ func TestRemoteMCPHeaders(t *testing.T) {
 				var result any
 				switch request.Method {
 				case "initialize":
-					result = map[string]any{"protocolVersion": "2024-11-05", "capabilities": map[string]any{"tools": map[string]any{}}}
+					version := "2025-06-18"
+					if transport == "sse" {
+						version = "2024-11-05"
+					}
+					result = map[string]any{"protocolVersion": version, "capabilities": map[string]any{"tools": map[string]any{}}}
 				case "tools/list":
 					result = map[string]any{"tools": []any{}}
 				default:

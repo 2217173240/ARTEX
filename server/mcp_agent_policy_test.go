@@ -104,7 +104,7 @@ func TestMCPLiveClientRevocationAndScopeSentry(t *testing.T) {
 		var result any
 		switch req.Method {
 		case "initialize":
-			result = map[string]any{"protocolVersion": "2024-11-05", "capabilities": map[string]any{}, "serverInfo": map[string]any{"name": "fixture", "version": "1"}}
+			result = map[string]any{"protocolVersion": "2025-06-18", "capabilities": map[string]any{}, "serverInfo": map[string]any{"name": "fixture", "version": "1"}}
 		case "tools/list":
 			result = map[string]any{"tools": []any{map[string]any{"name": "echo", "description": "fixture", "inputSchema": map[string]any{"type": "object"}}}}
 		case "tools/call":
