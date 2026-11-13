@@ -175,14 +175,19 @@ jobs:
           sudo pkgutil --forget io.github.2217173240.artex
           grep -Fx preserve "$sentinel"
           rm "$sentinel"
-      - name: Package and validate unsigned MSI install, upgrade and uninstall
+      - name: Set up and verify pinned WiX
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          $wixBin = ./scripts/setup-wix.ps1 -Destination (Join-Path $env:RUNNER_TEMP 'artex-wix')
+          "WIX_BIN=$wixBin" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Package unsigned MSI installers
         if: matrix.os == 'windows'
         shell: pwsh
         env:
           VERSION: ${{ inputs.version }}
           ARCH: ${{ matrix.arch }}
         run: |
-          $env:WIX_BIN = ./scripts/setup-wix.ps1 -Destination (Join-Path $env:RUNNER_TEMP 'artex-wix')
           ./scripts/package-windows.ps1 -Binary dist/artex.exe -Version $env:VERSION -Architecture $env:ARCH -OutputDirectory dist
           ./scripts/package-windows.ps1 -Binary dist/artex.exe -Version 0.0.0 -Architecture $env:ARCH -OutputDirectory previous
           if ($env:ARCH -eq 'arm64') {
@@ -190,14 +195,35 @@ jobs:
             $env:CGO_ENABLED = '0'
             $env:GOOS = 'windows'
             $env:GOARCH = 'amd64'
+            $crossBuildTimer = [Diagnostics.Stopwatch]::StartNew()
+            Write-Host "[$([DateTimeOffset]::UtcNow.ToString('o'))] ARM runner x64 cross-build started."
             go build -tags embedui -trimpath -ldflags "-s -w -X main.version=$env:VERSION -X github.com/Autumn-27/artex/distribution.BuildChannel=msi" -o cross/artex.exe ./cmd/artex
             if ($LASTEXITCODE -ne 0) { throw 'Cross-architecture executable build failed.' }
+            Write-Host "[$([DateTimeOffset]::UtcNow.ToString('o'))] ARM runner x64 cross-build completed; elapsed=$($crossBuildTimer.Elapsed)."
             ./scripts/package-windows.ps1 -Binary cross/artex.exe -Version 0.0.0 -Architecture amd64 -OutputDirectory cross
             ./scripts/package-windows.ps1 -Binary cross/artex.exe -Version $env:VERSION -Architecture amd64 -OutputDirectory cross
-            ./packaging/windows/validate-msi.ps1 -Msi "dist/artex-$env:VERSION-windows-arm64.msi" -Architecture arm64 -PreviousMsi 'cross/artex-0.0.0-windows-amd64.msi' -PreviousMsiArchitecture amd64 -SameVersionMsi "cross/artex-$env:VERSION-windows-amd64.msi"
-          } else {
-            ./packaging/windows/validate-msi.ps1 -Msi "dist/artex-$env:VERSION-windows-$env:ARCH.msi" -Architecture $env:ARCH -PreviousMsi "previous/artex-0.0.0-windows-$env:ARCH.msi"
           }
+      - name: Validate MSI install, upgrade and uninstall
+        if: matrix.os == 'windows'
+        shell: pwsh
+        env:
+          VERSION: ${{ inputs.version }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          $logDirectory = Join-Path $env:RUNNER_TEMP 'artex-msi-logs'
+          if ($env:ARCH -eq 'arm64') {
+            ./packaging/windows/validate-msi.ps1 -Msi "dist/artex-$env:VERSION-windows-arm64.msi" -Architecture arm64 -PreviousMsi 'cross/artex-0.0.0-windows-amd64.msi' -PreviousMsiArchitecture amd64 -SameVersionMsi "cross/artex-$env:VERSION-windows-amd64.msi" -LogDirectory $logDirectory
+          } else {
+            ./packaging/windows/validate-msi.ps1 -Msi "dist/artex-$env:VERSION-windows-$env:ARCH.msi" -Architecture $env:ARCH -PreviousMsi "previous/artex-0.0.0-windows-$env:ARCH.msi" -LogDirectory $logDirectory
+          }
+      - name: Upload Windows MSI diagnostics
+        if: always() && matrix.os == 'windows'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ inputs.artifact-prefix }}-windows-${{ matrix.arch }}-msi-logs
+          path: ${{ runner.temp }}/artex-msi-logs/*.log
+          retention-days: 1
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: ${{ inputs.artifact-prefix }}-${{ matrix.os }}-${{ matrix.arch }}

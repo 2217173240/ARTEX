@@ -9,6 +9,8 @@ $ErrorActionPreference = 'Stop'
 # The pinned tool targets .NET 6; permit the installed SDK 8 runtime.
 $previousRollForward = $env:DOTNET_ROLL_FORWARD
 Set-StrictMode -Version Latest
+$packageTimer = [Diagnostics.Stopwatch]::StartNew()
+Write-Host "[$([DateTimeOffset]::UtcNow.ToString('o'))] MSI packaging started; binary=$Binary; version=$Version; architecture=$Architecture; output=$OutputDirectory."
 if ($env:OS -ne 'Windows_NT') { throw 'MSI packaging requires Windows and .NET SDK 8.' }
 $repo = Split-Path $PSScriptRoot -Parent
 $binaryPath = (Resolve-Path $Binary).Path
@@ -33,8 +35,10 @@ try {
     foreach ($name in @('config.example.json', 'LICENSE', 'THIRD-PARTY-NOTICES.txt', 'CHANGELOG.md')) {
         Copy-Item (Join-Path $repo $name) $stage -Recurse
     }
+    Write-Host "[$([DateTimeOffset]::UtcNow.ToString('o'))] MSI skill staging started."
     & python (Join-Path $repo 'scripts/stage-skills.py') (Join-Path $stage 'skills')
     if ($LASTEXITCODE -ne 0) { throw 'Tracked skill staging failed.' }
+    Write-Host "[$([DateTimeOffset]::UtcNow.ToString('o'))] MSI skill staging completed; packaging elapsed=$($packageTimer.Elapsed)."
     Copy-Item (Join-Path $repo 'packaging/windows/launch.vbs') $stage
     Copy-Item (Join-Path $repo 'packaging/windows/README.txt') $stage
     $toolPath = $env:WIX_BIN
@@ -115,8 +119,11 @@ try {
     [IO.File]::WriteAllText($source, $xml.ToString(), [Text.UTF8Encoding]::new($false))
     $platform = if ($Architecture -eq 'amd64') { 'x64' } else { 'arm64' }
     $msi = Join-Path $outputPath "artex-$Version-windows-$Architecture.msi"
+    $buildTimer = [Diagnostics.Stopwatch]::StartNew()
+    Write-Host "[$([DateTimeOffset]::UtcNow.ToString('o'))] WiX MSI build started; package=$msi."
     & $toolPath build $source -arch $platform -o $msi -pdbtype none
     if ($LASTEXITCODE -ne 0) { throw 'WiX MSI build or validation failed.' }
+    Write-Host "[$([DateTimeOffset]::UtcNow.ToString('o'))] WiX MSI build completed; elapsed=$($buildTimer.Elapsed); packaging elapsed=$($packageTimer.Elapsed)."
     Write-Output $msi
 } finally {
     $env:DOTNET_ROLL_FORWARD = $previousRollForward
