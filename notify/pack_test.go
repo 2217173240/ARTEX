@@ -91,7 +91,10 @@ func TestTelegramPackingUsesRuneBudget(t *testing.T) {
 
 func TestFeishuPackingReportsKept(t *testing.T) {
 	m := batchMsg(2000)
-	_, kept := feishuCard(m)
+	_, kept, err := feishuPayload(m, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if kept <= 0 || kept >= len(m.Items) {
 		t.Fatalf("卡片应只装下一部分，得到 %d", kept)
 	}
