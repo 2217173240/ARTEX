@@ -1,6 +1,6 @@
 # 参与贡献
 
-贡献者提供可复现的问题或代码变更，维护者结合测试与代码审阅决定是否合入；请先阅读 [LICENSE](LICENSE) 和 [README 的使用限制](README.md#许可与免责声明)。开发与验证使用本地隔离环境、合成数据和 mock，不连接真实测试目标或用户数据库。
+贡献者提供可复现的问题或代码变更，维护者结合测试与代码审阅决定是否合入；请先阅读 [LICENSE](LICENSE) 和 [README 的使用限制](README.md#许可与免责声明)。开发与验证使用隔离数据库、受控输入和真实本地依赖，不连接真实测试目标或用户数据库。
 
 ## 从源码开始
 
@@ -66,7 +66,9 @@ npm audit --audit-level=high
 
 涉及后端、前端或采集脚本时运行对应检查，并在 PR 中写明实际执行结果和跳过项。完整检查定义见 [quality.yml](.github/workflows/quality.yml)。其跨平台检查验证编译，镜像检查验证启动和文件层；不代表已在每种操作系统上执行所有运行测试。
 
-维护者遇到 PR 事件未生成 quality 运行时，可执行 `gh workflow run quality.yml --repo 2217173240/ARTEX --ref <branch>` 手动检查该分支。触发后确认实际运行的 `headSha` 等于 PR 当前 HEAD，全部检查成功后再正常合并；新增提交需要重新验证，手动触发成功不等于检查通过。
+维护者遇到 PR 事件未生成 quality 运行时，可执行 `gh workflow run quality.yml --repo 2217173240/ARTEX --ref <branch>` 手动诊断该分支。确认实际运行的 `headSha` 等于 PR 当前 HEAD，并检查完整结果。严格分支规则可能仍需 PR 事件产生的必需检查；合入前还要核对 PR 页面实际认可的 `quality` 和当前基线。手动运行成功本身不能证明 PR 已满足合并规则；恢复适用的 PR 检查后正常合并，新增提交需要新的检查结果。合并后继续验证该 main 提交实际触发的检查。
+
+每轮维护遵循[持续集成规范](docs/ci.md)：分析最近 50 次运行及历史重试，保留必要校验，按实测优化准备、构建与执行成本。纯维护文档变更保留轻量必需检查；代码、配置和安全输入执行完整检查。可选能力遵循[能力就绪与局部降级规范](docs/capabilities.md)，保留核心依赖、权限、参数、确认、事务及所需上下文的完整校验。
 
 若触发返回 HTTP 422 `Actions has been disabled for this repository`，先检查仓库 Actions 页的具体提示；权限 API 的 `enabled=true` 不代表工作流一定能执行。本 fork 曾因 GitHub Actions 使用规模而被暂停，需维护者按页面提示重新启用。恢复后确认新运行实际生成且开始作业；停用期间没有作业的旧排队记录不能作为 CI 证据。若页面没有恢复入口或重新启用后仍被拒绝，参照 [GitHub 官方说明](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-github-actions-settings-for-a-repository) 联系 Support，保留现有合并检查。
 
