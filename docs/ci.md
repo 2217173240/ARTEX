@@ -19,7 +19,7 @@ CodeQL 的 Go 任务也显式选择同一工具链；其他语言不安装 Go，
 
 | 任务 | 保留的校验 |
 | --- | --- |
-| backend-race | 动态枚举全部根模块 package，分成三个互不重叠的分片；每个 package 使用独立 PostgreSQL 数据库，执行 `go test -race -count=1`，仅排除需要真实模型凭据的既有 `TestLiveContextReview` |
+| backend-race | 动态枚举全部根模块 package，分成三个互不重叠的分片；分片按 `scripts/package-timings.json` 的实测时长做 LPT（最长优先）均衡，时长表缺失或包无数据时按默认估值，表整体缺失时退回轮转。每个 package 使用独立 PostgreSQL 数据库，执行 `go test -race -count=1`，仅排除需要真实模型凭据的既有 `TestLiveContextReview` |
 | backend-tools | 两个已修补的嵌套 Go 模块、静态采集回归、CI 辅助程序回归 |
 | frontend | Node 测试、TypeScript、翻译覆盖、静态导出、npm 依赖审计 |
 | native | Windows、macOS、Linux 的 AMD64/ARM64 普通构建和内嵌界面构建、原生回归、安装与升级生命周期 |
