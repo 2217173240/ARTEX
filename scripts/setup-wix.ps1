@@ -4,6 +4,8 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+$setupTimer = [Diagnostics.Stopwatch]::StartNew()
+Write-Host "[$([DateTimeOffset]::UtcNow.ToString('o'))] WiX setup started; destination=$Destination."
 
 # WiX 4.0.6 使用 MS-RL，早于维护费用政策；固定并校验官方 NuGet 包。
 $packageSha256 = 'a94dd42ae1fb56b32da180e2173ceda4f0d10b4c8871c5ee59ecb502131a1eb6'
@@ -25,18 +27,25 @@ try {
     $feed = Join-Path $work 'feed'
     New-Item -ItemType Directory -Path $feed | Out-Null
     $package = Join-Path $feed 'wix.4.0.6.nupkg'
+    $phaseTimer = [Diagnostics.Stopwatch]::StartNew()
+    Write-Host "[$([DateTimeOffset]::UtcNow.ToString('o'))] WiX package download started."
     Invoke-WebRequest 'https://api.nuget.org/v3-flatcontainer/wix/4.0.6/wix.4.0.6.nupkg' -OutFile $package
     if ((Get-FileHash $package -Algorithm SHA256).Hash.ToLowerInvariant() -ne $packageSha256) { throw 'WiX package checksum mismatch.' }
+    Write-Host "[$([DateTimeOffset]::UtcNow.ToString('o'))] WiX download and checksum completed; elapsed=$($phaseTimer.Elapsed)."
     $nugetConfig = Join-Path $work 'NuGet.Config'
     Set-Content $nugetConfig '<configuration><packageSources><clear /></packageSources></configuration>' -Encoding UTF8
 
     $env:DOTNET_ROLL_FORWARD = 'Major'
+    $phaseTimer.Restart()
+    Write-Host "[$([DateTimeOffset]::UtcNow.ToString('o'))] WiX tool installation started."
     & dotnet tool install wix --version $toolVersion --tool-path $destinationPath --configfile $nugetConfig --add-source $feed | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'WiX tool installation failed.' }
+    Write-Host "[$([DateTimeOffset]::UtcNow.ToString('o'))] WiX tool installation completed; elapsed=$($phaseTimer.Elapsed)."
     $tool = Join-Path $destinationPath 'wix.exe'
     if (-not (Test-Path -LiteralPath $tool -PathType Leaf)) { throw "WiX executable was not installed: $tool" }
     $versionOutput = (& $tool --version | Out-String).Trim()
     if ($LASTEXITCODE -ne 0 -or $versionOutput -notmatch '^4\.0\.6(?:\+.*)?$') { throw "Unexpected WiX version: $versionOutput" }
+    Write-Host "[$([DateTimeOffset]::UtcNow.ToString('o'))] WiX setup verified; version=$versionOutput; elapsed=$($setupTimer.Elapsed)."
     Write-Output ([IO.Path]::GetFullPath($tool))
 } finally {
     $env:DOTNET_ROLL_FORWARD = $previousRollForward

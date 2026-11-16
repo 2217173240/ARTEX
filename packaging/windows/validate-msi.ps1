@@ -6,10 +6,13 @@ param(
     [string]$PreviousMsi,
     [ValidateSet('amd64', 'arm64')][string]$PreviousMsiArchitecture,
     [string]$SameVersionMsi,
-    [switch]$MetadataOnly
+    [switch]$MetadataOnly,
+    [string]$LogDirectory = (Join-Path $env:TEMP 'artex-msi-logs')
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+$validationTimer = [Diagnostics.Stopwatch]::StartNew()
+Write-Host "[$([DateTimeOffset]::UtcNow.ToString('o'))] MSI metadata validation started; package=$Msi; architecture=$Architecture."
 $Msi = (Resolve-Path $Msi).Path
 $installer = New-Object -ComObject WindowsInstaller.Installer
 $db = $installer.OpenDatabase($Msi, 0)
@@ -30,6 +33,7 @@ $upgradeView = $db.OpenView('SELECT `Attributes` FROM `Upgrade` WHERE `ActionPro
 [void]$upgradeView.Execute()
 $upgradeRecord = $upgradeView.Fetch()
 if ($null -eq $upgradeRecord -or ($upgradeRecord.IntegerData(1) -band 512) -eq 0) { throw 'Same-version upgrades must include the maximum version.' }
+Write-Host "[$([DateTimeOffset]::UtcNow.ToString('o'))] MSI metadata validation completed; elapsed=$($validationTimer.Elapsed)."
 if ($MetadataOnly) { Write-Output "Verified $template per-user MSI metadata."; return }
 if (-not $PreviousMsiArchitecture) { $PreviousMsiArchitecture = $Architecture }
 $productCode = Read-Property 'ProductCode' $db
@@ -58,6 +62,7 @@ if ($SameVersionMsi) {
     $sameVersionCode = Read-Property 'ProductCode' $sameVersionDb
     if ($sameVersionCode -eq $productCode) { throw 'Different architectures require different product codes.' }
 }
+Write-Host "[$([DateTimeOffset]::UtcNow.ToString('o'))] MSI lifecycle validation started; package=$Msi; architecture=$Architecture; logs=$LogDirectory."
 $target = Join-Path $env:LOCALAPPDATA 'Programs/ARTEX'
 if (Test-Path $target) { throw 'Use a disposable runner without an existing ARTEX installation.' }
 $data = Join-Path $env:LOCALAPPDATA 'ARTEX'
@@ -65,8 +70,12 @@ New-Item -ItemType Directory -Force $data | Out-Null
 $sentinel = Join-Path $data ('installer-preservation-' + [guid]::NewGuid().ToString('N'))
 Set-Content $sentinel 'must survive install, upgrade, and uninstall'
 function Invoke-Msi([string]$operation, [string]$path, [bool]$expectFailure = $false) {
-    $log = Join-Path $env:TEMP ('artex-msi-' + [guid]::NewGuid().ToString('N') + '.log')
+    New-Item -ItemType Directory -Force $LogDirectory | Out-Null
+    $log = Join-Path ([IO.Path]::GetFullPath($LogDirectory)) ('artex-msi-' + [guid]::NewGuid().ToString('N') + '.log')
+    $operationTimer = [Diagnostics.Stopwatch]::StartNew()
+    Write-Host "[$([DateTimeOffset]::UtcNow.ToString('o'))] msiexec started; operation=$operation; package=$path; expectedFailure=$expectFailure; log=$log."
     $process = Start-Process msiexec.exe -ArgumentList @($operation, "`"$path`"", '/qn', '/norestart', 'DESKTOP_SHORTCUT=1', '/l*v', "`"$log`"") -Wait -PassThru
+    Write-Host "[$([DateTimeOffset]::UtcNow.ToString('o'))] msiexec completed; PID=$($process.Id); exit=$($process.ExitCode); elapsed=$($operationTimer.Elapsed); log=$log."
     if ($expectFailure) {
         if ($process.ExitCode -ne 1603) { throw "Expected downgrade rejection 1603, got $($process.ExitCode); $log" }
     } elseif ($process.ExitCode -notin @(0, 3010)) { throw "msiexec exited $($process.ExitCode); $log" }
@@ -107,13 +116,17 @@ try {
         Assert-Installed $productCode $Architecture $previousCode
     }
     if (-not (Test-Path $sentinel)) { throw 'Upgrade erased user data.' }
+    $smokeTimer = [Diagnostics.Stopwatch]::StartNew()
+    Write-Host "[$([DateTimeOffset]::UtcNow.ToString('o'))] Installed native smoke started."
     & python (Join-Path $repo 'scripts/native-smoke.py') (Join-Path $target 'artex.exe')
     if ($LASTEXITCODE -ne 0) { throw 'Installed native launcher failed its smoke check.' }
+    Write-Host "[$([DateTimeOffset]::UtcNow.ToString('o'))] Installed native smoke completed; elapsed=$($smokeTimer.Elapsed)."
     Invoke-Msi '/x' $Msi
     if ($installer.ProductState($productCode) -ne -1) { throw 'Uninstall left the MSI product registered.' }
     if (Test-Path (Join-Path $target 'artex.exe')) { throw 'Uninstall left the executable.' }
     if (Test-Path $shortcut) { throw 'Uninstall left Start menu shortcut.' }
     if (-not (Test-Path $sentinel)) { throw 'Uninstall erased user data.' }
+    Write-Host "[$([DateTimeOffset]::UtcNow.ToString('o'))] MSI lifecycle validation completed; elapsed=$($validationTimer.Elapsed)."
     Write-Output 'Install, payload, shortcuts, optional cross-architecture upgrade/downgrade and same-version switches, and uninstall checks passed.'
 } finally {
     Remove-Item $sentinel -Force -ErrorAction SilentlyContinue
