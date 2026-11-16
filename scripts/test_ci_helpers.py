@@ -81,6 +81,34 @@ class CIHelpersTest(unittest.TestCase):
         self.assertEqual(len(set(sum(groups, []))), len(items))
         self.assertTrue(all(groups))
 
+    def test_root_guidance_allowlist_preserves_code_and_rename_guards(self):
+        for path in ("README.md", "AGENTS.md", "CONTRIBUTING.md"):
+            with self.subTest(path=path):
+                self.assertTrue(changes.is_docs_only(f"M\0{path}\0".encode()))
+                self.assertFalse(changes.is_docs_only(f"M\0{path}\0M\0server/session.go\0".encode()))
+                self.assertFalse(changes.is_docs_only(f"R100\0{path}\0server/session.go\0".encode()))
+                self.assertFalse(changes.is_docs_only(f"R100\0server/session.go\0{path}\0".encode()))
+                self.assertFalse(changes.is_docs_only(f"C100\0server/session.go\0{path}\0".encode()))
+        for path in ("agents.md", "CONTRIBUTING.MD", "SECURITY.md", "other.md", "server/AGENTS.md", "docs/example.go", ".github/workflows/quality.yml", "config.json"):
+            with self.subTest(path=path):
+                self.assertFalse(changes.is_docs_only(f"M\0{path}\0".encode()))
+        self.assertFalse(changes.is_docs_only(b""))
+
+    def test_real_git_guidance_only_and_mixed_push(self):
+        base = self.git("rev-parse", "HEAD")
+        (self.root / "AGENTS.md").write_text("maintenance policy\n")
+        (self.root / "CONTRIBUTING.md").write_text("contribution guide\n")
+        self.git("add", ".")
+        self.git("commit", "-qm", "guidance")
+        output = self.root / "guidance-output"
+        result = self.run_changes("push", output, GITHUB_EVENT_BEFORE=base, GITHUB_SHA=self.git("rev-parse", "HEAD"))
+        self.assertIn('"run_ci":false', result.stdout)
+        (self.root / "config.json").write_text("{}\n")
+        self.git("add", ".")
+        self.git("commit", "-qm", "configuration")
+        result = self.run_changes("push", output, GITHUB_EVENT_BEFORE=base, GITHUB_SHA=self.git("rev-parse", "HEAD"))
+        self.assertIn('"run_ci":true', result.stdout)
+
     def test_dispatch_and_missing_sha_fail_open_to_full(self):
         root = pathlib.Path(__file__).resolve().parents[1]
         env = os.environ.copy()

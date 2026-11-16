@@ -6,7 +6,7 @@
 
 - PR 更新会取消同一个 PR 的旧运行，只验证最新版本。
 - 每次 main push 使用独立并发组，后续提交不会替换已排队的提交。
-- 只修改根目录 `README.md` 或 `docs/` 下 Markdown 文件时，保留路径分类和必需的 `quality` 检查，跳过编译、测试和打包任务。
+- 只修改根目录 `README.md`、`AGENTS.md`、`CONTRIBUTING.md` 或 `docs/` 下 Markdown 文件时，保留路径分类和必需的 `quality` 检查，跳过编译、测试和打包任务。`SECURITY.md`、工作流、配置及混合代码变更继续执行完整检查。
 - 路径分类使用 PR 的三点差异或 push 的前后提交差异，检查重命名两端。缺少可靠差异时执行全量检查。
 - 手动触发 `quality` 始终执行全量检查，可用于验证缓存和运行时间。
 - CodeQL 保留 Actions、Go、JavaScript/TypeScript、Python 四种语言、默认查询、remote threat model 和每周扫描。文档路径过滤只影响 push/PR 触发，每周及手动扫描仍检查完整源码。
@@ -42,9 +42,15 @@ Windows 打包在每个任务中安装一次固定版本、经过 SHA-256 校验
 
 ## 耗时判读
 
-比较相同 workflow、事件、平台及成功状态的运行，分别记录排队、准备和执行耗时。准备包含 checkout、工具安装、依赖恢复、产物传输与收尾；执行包含实际构建和功能验证。
+每轮维护先通过 `gh` 读取最近 50 次 workflow 运行，包含同一运行的历史重试 attempts 和各自 jobs。比较相同 workflow、事件、平台及成功状态，分别记录排队、准备和执行耗时；收尾单列。准备包含 checkout、工具安装、依赖恢复及产物传输；执行包含实际构建和功能验证。
 
-GitHub Jobs API 只提供步骤时间。一个 `go test` 步骤可能同时包含编译与测试，不能将全部时间视为纯测试时间。异常或缺失的时间戳保留为不可用值。端到端耗时与所有 runner 耗时之和分别比较，并标明冷、热缓存及重试情况。
+GitHub Jobs API 没有准确的逐 job 入队时间。run 创建到 job 开始的间隔包含依赖等待，只能作为开始前等待的上界。一个 `go test` 步骤可能同时包含编译与测试，不能将全部时间视为纯测试时间。异常或缺失的时间戳保留为不可用值。端到端耗时与所有 runner 耗时之和分别比较，并标明冷、热缓存及重试情况；历史重试的资源占用单列。
+
+缓存保持 10 GB 项目预算，优先使用 setup action 的能力；按任务实际读取的依赖配置键，定期检查大小和命中日志。格式化、lint 和依赖审计使用 Ubuntu；macOS 并发按所有 workflow 合计不超过五个任务安排。前端产物通过实际消费关系传给 native 和 image，不能删除这些 `needs`。
+
+修改构建或缓存行为时，在隔离输出路径用相同命令连续构建两次，记录时间及产物哈希。检查 Docker 依赖层是否位于变化频繁的源码之前、构建输入是否真实存在。缓存命中只减少可复用的准备与编译工作，功能测试仍实际执行。云端效果以 push 后的真实运行和匹配样本为准，不能把步骤拆分或不同事件的耗时差异直接归为提速。
+
+维护准则见 [AGENTS.md](../AGENTS.md)，并参考 [GitHub 并发控制](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)、[依赖缓存](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching)和[必需检查说明](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches#require-status-checks-before-merging)。
 
 Windows 原生任务分别显示 WiX 安装校验、MSI 打包和完整安装生命周期验证。脚本输出各阶段的 UTC 时间与耗时，`msiexec` 启动前记录操作、包和日志位置，结束后记录进程 ID、退出码与耗时；这些诊断使用 PowerShell 信息流，工具路径的成功流输出保持为单个路径。
 

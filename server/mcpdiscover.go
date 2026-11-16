@@ -22,6 +22,28 @@ type mcpClient interface {
 	Close() error
 }
 
+const mcpSetupTimeout = 90 * time.Second
+
+// setupAuthorizedMCP 将单个服务的初始化限制在预算内。成功客户端由调用方关闭，
+// 构造上下文只用于握手与工具发现，后续工具调用使用各自的上下文。
+func setupAuthorizedMCP(ctx context.Context, pg *db.DB, id, revision int64, budget time.Duration) (mcpClient, []actool.CoreTool, error) {
+	setupCtx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+	cl, err := connectAuthorizedMCP(setupCtx, pg, id, revision)
+	if err != nil {
+		return nil, nil, fmt.Errorf("MCP 初始化连接不可用: %w", err)
+	}
+	ts, err := cl.Tools(setupCtx)
+	if err == nil {
+		err = setupCtx.Err()
+	}
+	if err != nil {
+		_ = cl.Close()
+		return nil, nil, fmt.Errorf("MCP 初始化工具发现不可用: %w", err)
+	}
+	return cl, ts, nil
+}
+
 // connectMCP dials one MCP server per its transport. Callers must Close the client.
 func connectMCP(ctx context.Context, m *db.MCPServer) (mcpClient, error) {
 	switch m.Transport {
@@ -136,7 +158,7 @@ func (s *Server) discoverEmptyMCPsOnStartup() {
 		if !m.Enabled || !m.Approved || len(m.Tools) > 0 {
 			continue
 		}
-		ctx, cancel := context.WithTimeout(s.ctx, 90*time.Second)
+		ctx, cancel := context.WithTimeout(s.ctx, mcpSetupTimeout)
 		if err := s.discoverAndCacheMCP(ctx, m); err != nil {
 			log.Printf("[mcp] 启动自动发现 %s 失败: %v", m.Name, err)
 		}
