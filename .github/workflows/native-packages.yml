@@ -116,7 +116,18 @@ jobs:
           ARTEX_TEST_PYTHON=$("$python" -c 'import sys; assert sys.version_info.major == 3; print(sys.executable)')
           export ARTEX_TEST_PYTHON
           go test -timeout 60s -count=1 ./agent ./server -run '^Test(ProxyEnv|ExecutableToolEnvironment|CustomToolEnvironment|StdioMCPEnvironment|RemoteMCPHeaders|PythonLifecycle)'
-      - name: Package and test DEB and RPM install lifecycle
+      - name: Set up and verify pinned nfpm
+        if: matrix.os == 'linux'
+        run: |
+          set -euo pipefail
+          phase_started() { printf '[%s] %s started.\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1"; }
+          phase_finished() { printf '[%s] %s completed; elapsed=%ss.\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2"; }
+          phase_started "nfpm setup"
+          start=$SECONDS
+          NFPM_BIN="$(bash scripts/setup-nfpm.sh)"
+          printf 'NFPM_BIN=%s\n' "$NFPM_BIN" >> "$GITHUB_ENV"
+          phase_finished "nfpm setup" "$((SECONDS - start))"
+      - name: Package DEB and RPM installers
         if: matrix.os == 'linux'
         env:
           VERSION: ${{ inputs.version }}
@@ -124,18 +135,38 @@ jobs:
           CGO_ENABLED: "0"
         run: |
           set -euo pipefail
-          NFPM_BIN="$(bash scripts/setup-nfpm.sh)"
           export NFPM_BIN
+          phase_started() { printf '[%s] %s started.\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1"; }
+          phase_finished() { printf '[%s] %s completed; elapsed=%ss.\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2"; }
           mkdir -p previous
           for format in deb rpm; do
+            phase_started "package $format"
+            start=$SECONDS
             if [ "$format" = rpm ]; then
               go build -tags embedui -trimpath -ldflags "-s -w -X main.version=$VERSION -X github.com/Autumn-27/artex/distribution.BuildChannel=$format" -o dist/artex ./cmd/artex
             fi
             bash scripts/package-linux.sh --binary dist/artex --version "$VERSION" --arch "$ARCH" --format "$format" --outdir dist
             bash scripts/package-linux.sh --binary dist/artex --version 0.0.0 --arch "$ARCH" --format "$format" --outdir previous
             python3 packaging/linux/verify-package.py "dist/artex-$VERSION-linux-$ARCH.$format" "$ARCH"
+            phase_finished "package $format" "$((SECONDS - start))"
+          done
+      - name: Validate DEB and RPM install lifecycle
+        if: matrix.os == 'linux'
+        env:
+          VERSION: ${{ inputs.version }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          phase_started() { printf '[%s] %s started.\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1"; }
+          phase_finished() { printf '[%s] %s completed; elapsed=%ss.\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2"; }
+          for format in deb rpm; do
             image=ubuntu:24.04; if [ "$format" = rpm ]; then image=fedora:43; fi
+            phase_started "lifecycle $format upgrade"
+            start=$SECONDS
             docker run --rm -v "$PWD:/workspace:ro" -w /workspace "$image" bash packaging/linux/smoke-container.sh "$format" "/workspace/previous/artex-0.0.0-linux-$ARCH.$format" "/workspace/dist/artex-$VERSION-linux-$ARCH.$format"
+            phase_finished "lifecycle $format upgrade" "$((SECONDS - start))"
+            phase_started "lifecycle $format fresh install"
+            start=$SECONDS
             # Exercise the installed entry point in a separate disposable container.
             docker run --rm -e FORMAT="$format" -e PACKAGE="/workspace/dist/artex-$VERSION-linux-$ARCH.$format" -v "$PWD:/workspace:ro" -w /workspace "$image" bash -ec '
               if [ "$FORMAT" = deb ]; then
@@ -147,6 +178,7 @@ jobs:
               fi
               python3 scripts/native-smoke.py /usr/bin/artex
             '
+            phase_finished "lifecycle $format fresh install" "$((SECONDS - start))"
           done
       - name: Package and validate unsigned PKG installation
         if: matrix.os == 'darwin'
