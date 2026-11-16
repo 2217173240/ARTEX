@@ -4,11 +4,15 @@ name: CodeQL
   pull_request:
     paths-ignore:
       - README.md
+      - AGENTS.md
+      - CONTRIBUTING.md
       - docs/**/*.md
   push:
     branches: [main]
     paths-ignore:
       - README.md
+      - AGENTS.md
+      - CONTRIBUTING.md
       - docs/**/*.md
   schedule:
     - cron: '23 3 * * 1'

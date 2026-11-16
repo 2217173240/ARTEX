@@ -83,17 +83,12 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 				if !directVisible && !skillGated {
 					continue // neither directly visible nor referenced by a visible skill
 				}
-				cl, err := connectAuthorizedMCP(ctx, pg, m.ID, m.Revision)
+				cl, ts, err := setupAuthorizedMCP(ctx, pg, m.ID, m.Revision, mcpSetupTimeout)
 				if err != nil {
-					log.Printf("[mcp] %s 连接失败: %v", m.Name, err)
+					log.Printf("[mcp] %s 本次运行不可用: %v", m.Name, err)
 					continue
 				}
 				closers = append(closers, cl)
-				ts, err := cl.Tools(ctx)
-				if err != nil {
-					log.Printf("[mcp] %s tools/list 失败: %v", m.Name, err)
-					continue
-				}
 				for _, t := range ts {
 					extra = append(extra, t)
 					allNames = append(allNames, t.Name())

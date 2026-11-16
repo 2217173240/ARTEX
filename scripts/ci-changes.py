@@ -43,7 +43,7 @@ def is_docs_only(data):
         index += count
     if not paths:
         return False
-    return all(path == "README.md" or (path.startswith("docs/") and path.endswith(".md")) for path in paths)
+    return all(path in {"README.md", "AGENTS.md", "CONTRIBUTING.md"} or (path.startswith("docs/") and path.endswith(".md")) for path in paths)
 
 
 def main():
