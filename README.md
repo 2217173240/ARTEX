@@ -305,6 +305,8 @@ CGO_ENABLED=0 go build -tags embedui -o artex ./cmd/artex
 
 **并发**：每个任务的 work agent 数在「系统设置」里配置（默认 3）。
 
+**通知**：在「系统设置 → 通知」管理渠道与投递记录。飞书/Lark 摘要按实际 JSON 请求体大小组装，详见[通知投递说明](docs/notifications.md)。
+
 **常用参数**：`./start.sh -addr :8787 -proxy :8788`（`-addr` 前端+API，`-proxy` 流量录制代理）。启动脚本会把参数原样透传给 `artex`。
 
 ### 反向代理部署（HTTPS / 只开放 443）

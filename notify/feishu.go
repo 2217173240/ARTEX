@@ -46,16 +46,15 @@ func (c feishuChannel) Send(ctx context.Context, cfg map[string]any, m Message) 
 	if err := c.Validate(cfg); err != nil {
 		return 0, Permanent(err)
 	}
-	card, kept := feishuCard(m)
-	payload := map[string]any{
-		"msg_type": "interactive",
-		"card":     card,
-	}
+	ts, sign := "", ""
 	// 加签参数与消息同层，且只在配置了 secret 时出现。
 	if secret := cfgString(cfg, "secret"); secret != "" {
-		ts := strconv.FormatInt(time.Now().Unix(), 10)
-		payload["timestamp"] = ts
-		payload["sign"] = feishuSign(ts, secret)
+		ts = strconv.FormatInt(time.Now().Unix(), 10)
+		sign = feishuSign(ts, secret)
+	}
+	payload, kept, err := feishuPayload(m, ts, sign)
+	if err != nil {
+		return 0, Permanent(err)
 	}
 	raw, err := doJSON(ctx, "POST", cfgString(cfg, "webhook"), nil, payload)
 	if err != nil {
@@ -112,21 +111,62 @@ func feishuSeverityTemplate(severity string) string {
 	}
 }
 
-// feishuMaxCardBytes 是卡片内容的保守上限。飞书对卡片有体积限制，超了整条被拒；
-// 取一个明显低于官方上限的值，把 JSON 包装开销也算进来。
-const feishuMaxCardBytes = 24000
+// 飞书自定义机器人限制整个请求体为 20 KB；采用十进制字节数。
+const feishuMaxRequestBytes = 20000
 
-// feishuCard 构造交互式卡片，返回卡片与**实际写入的条目数**。
-// kept 的用途同 markdownBody：只有真正进了卡片的条目才该被标记为已送达。
-func feishuCard(m Message) (map[string]any, int) {
-	elements := []any{}
+// feishuPayload 使用与 doJSON 相同的序列化方式计量完整请求，保留可发送的条目前缀。
+func feishuPayload(m Message, timestamp, sign string) (map[string]any, int, error) {
+	if len(m.Items) == 0 {
+		return nil, 0, errors.New("飞书消息没有条目")
+	}
+	limit := len(m.Items)
+	if !m.Batch {
+		limit = 1
+	}
+	build := func(n int) (map[string]any, int, error) {
+		payload := map[string]any{"msg_type": "interactive", "card": feishuCard(m, n)}
+		if timestamp != "" {
+			payload["timestamp"] = timestamp
+			payload["sign"] = sign
+		}
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			return nil, 0, fmt.Errorf("构造飞书请求体失败: %w", err)
+		}
+		return payload, len(raw), nil
+	}
+	// 完整批次省略续发说明，可能比最后一个部分前缀更小，必须先单独判断。
+	full, size, err := build(limit)
+	if err != nil {
+		return nil, 0, err
+	}
+	if size <= feishuMaxRequestBytes {
+		return full, limit, nil
+	}
+	var best map[string]any
 	kept := 0
+	for n := 1; n < limit; n++ {
+		payload, size, err := build(n)
+		if err != nil {
+			return nil, 0, err
+		}
+		if size > feishuMaxRequestBytes {
+			break
+		}
+		best, kept = payload, n
+	}
+	if kept == 0 {
+		return nil, 0, errors.New("飞书首条消息及必要元数据超过请求体大小限制")
+	}
+	return best, kept, nil
+}
+
+// feishuCard 按指定条目前缀构造卡片，汇总说明保留原始总数及剩余条数。
+func feishuCard(m Message, kept int) map[string]any {
+	elements := []any{}
 	if m.Batch {
 		// 先按整条打包再拼头部：头部要写「其余 N 条将在下一条消息继续」，
 		// N 必须来自实际装下的条数。
-		kept = packItemCount(m.Items, feishuMaxCardBytes, markdownReservedBytes, "", byteSize, func(it Item, idx int) string {
-			return feishuBatchLine(it, idx+1)
-		})
 		items := m.Items[:kept]
 		elements = append(elements, feishuMarkdownDiv(markdownBatchIntro(m, items, len(m.Items))))
 		for i, it := range items {
@@ -136,7 +176,6 @@ func feishuCard(m Message) (map[string]any, int) {
 			elements = append(elements, feishuButton("在平台中查看全部", m.HomeURL))
 		}
 	} else if len(m.Items) > 0 {
-		kept = 1
 		it := m.Items[0]
 		elements = append(elements, feishuMarkdownDiv(feishuItemLines(it)))
 		if it.DetailURL != "" {
@@ -152,7 +191,7 @@ func feishuCard(m Message) (map[string]any, int) {
 	if len(m.Items) > 0 {
 		card["header"].(map[string]any)["template"] = feishuSeverityTemplate(m.Items[0].Severity)
 	}
-	return card, kept
+	return card
 }
 
 func feishuMarkdownDiv(content string) map[string]any {
