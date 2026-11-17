@@ -323,6 +323,10 @@ server {
     # ssl_certificate / ssl_certificate_key ...
 
     location / {
+        # 附件上传上限：512 MiB 文件数据 + 1 MiB multipart 开销
+        client_max_body_size 513m;
+        proxy_request_buffering off;
+
         proxy_pass http://127.0.0.1:8787;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto $scheme;

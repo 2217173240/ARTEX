@@ -203,3 +203,98 @@ for (const [name, options, picked] of [
     assert.equal(harness.uploadingStates.length, 0);
   });
 }
+
+// ---- 附件上传 512 MiB 合并上限（与 server/chatupload.go 的 maxChatUpload 对齐） ----
+// 把 api.ts 整体转译成 CommonJS 在 vm 中运行，验证 chatUpload 的合并大小预检在
+// MOCK 与真实两条路径上都先于 FormData/fetch 拦下超限请求。
+
+const MiB = 1024 * 1024;
+const apiModule = ts.transpileModule(apiSource, {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+}).outputText;
+
+// api.ts 顶层值依赖只有 auth、mock/enabled、mock/handler（type import 转译后消失），
+// 其余 FormData/fetch/Headers 用桩收集，确保超限时连构造 FormData 都不会发生。
+function apiSandbox(mock = false) {
+  const requests = [];
+  const forms = [];
+  const module = { exports: {} };
+  runInNewContext(apiModule, {
+    module,
+    exports: module.exports,
+    console,
+    require(name) {
+      if (name === "@/lib/auth") {
+        // api.ts 具名导入 { auth }，桩要提供同名导出。
+        return {
+          auth: { generation: () => 1, handleUnauthorized: async () => undefined, credentialsChanged: () => undefined },
+        };
+      }
+      if (name === "@/lib/mock/enabled") return { MOCK: mock };
+      if (name === "@/lib/mock/handler") return { mockHandle: () => assert.fail("unexpected mock request") };
+      throw new Error(`Unexpected import: ${name}`);
+    },
+    Headers: class {
+      constructor() {
+        this.entries = new Map();
+      }
+      has(name) {
+        return this.entries.has(name);
+      }
+      set(name, value) {
+        this.entries.set(name, value);
+      }
+    },
+    FormData: class {
+      fields = [];
+      constructor() {
+        forms.push(this);
+      }
+      append(name, value) {
+        this.fields.push([name, value]);
+      }
+    },
+    fetch: async (url, init) => {
+      requests.push({ url, init });
+      return { ok: true, status: 200, json: async () => ({ attachments: [] }) };
+    },
+  });
+  return { api: module.exports.api, requests, forms };
+}
+
+for (const mock of [false, true]) {
+  test(`chat upload rejects combined sizes over 512 MiB before FormData or fetch (mock=${mock})`, async () => {
+    const sandbox = apiSandbox(mock);
+    for (const sizes of [[512 * MiB + 1], [256 * MiB, 256 * MiB + 1]]) {
+      const picked = sizes.map((size, index) => ({ name: `${index}.apk`, size }));
+      for (const scope of ["task", "session", "staging"]) {
+        await assert.rejects(sandbox.api.chatUpload(scope, "42", picked), /512 MiB/);
+      }
+    }
+    assert.equal(sandbox.forms.length, 0);
+    assert.equal(sandbox.requests.length, 0);
+  });
+
+  test(`chat upload lets exactly 512 MiB through (mock=${mock})`, async () => {
+    const sandbox = apiSandbox(mock);
+    const picked = [{ name: "app.apk", size: 512 * MiB }];
+    const result = await sandbox.api.chatUpload("task", "42", picked);
+    if (mock) {
+      // 逐字段比较：attachments 来自 vm 隔离域，deepStrictEqual 会因跨域原型误报。
+      assert.equal(result.attachments.length, 1);
+      const [attachment] = result.attachments;
+      assert.equal(attachment.name, "app.apk");
+      assert.equal(attachment.path, "uploads/app.apk");
+      assert.equal(attachment.size, 512 * MiB);
+      assert.equal(attachment.abs, "/mock/app.apk");
+      assert.equal(sandbox.requests.length, 0);
+      assert.equal(sandbox.forms.length, 0);
+    } else {
+      assert.equal(sandbox.requests.length, 1);
+      assert.equal(sandbox.requests[0].url, "/api/chat/upload?scope=task&id=42");
+      assert.equal(sandbox.requests[0].init.method, "POST");
+      assert.equal(sandbox.requests[0].init.body, sandbox.forms[0]);
+      assert.deepEqual(sandbox.forms[0].fields, [["file", picked[0]]]);
+    }
+  });
+}
