@@ -574,3 +574,50 @@ func TestExpiredWindowIsClosed(t *testing.T) {
 		t.Fatal("expired window should read as closed")
 	}
 }
+
+// The exported failure classifiers exist so callers outside this package
+// (task_llm, which runs single profiles without a Pool) classify failures the
+// same way the Pool does. Pin both the concrete expectations and the delegation
+// to the internal rules, so a future edit to one side cannot silently diverge.
+func TestExportedFailureClassifiers(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		err      error
+		failover bool
+		hard     bool
+	}{
+		{errors.New("anthropic: status 402: credit balance is too low"), true, true},
+		{errors.New("openai: status 401: invalid api key"), true, true},
+		{errors.New("openai: status 404: model not found"), true, true},
+		{errors.New("openai: status 429: rate limit exceeded"), true, false},
+		{errors.New("openai: status 500: internal server error"), true, false},
+		{errors.New("openai: status 400: invalid request"), false, false},
+		{errors.New("dial tcp: connection reset by peer"), true, false},
+	}
+	ctx := context.Background()
+	for _, tc := range cases {
+		if got := ShouldFailover(ctx, tc.err); got != tc.failover || got != shouldFailover(ctx, tc.err) {
+			t.Errorf("ShouldFailover(%v)=%v, want %v (internal %v)", tc.err, got, tc.failover, shouldFailover(ctx, tc.err))
+		}
+		if got := IsHardFailure(tc.err); got != tc.hard || got != isHardFailure(tc.err) {
+			t.Errorf("IsHardFailure(%v)=%v, want %v (internal %v)", tc.err, got, tc.hard, isHardFailure(tc.err))
+		}
+		if got := TrimErr(tc.err); got != trimErr(tc.err) {
+			t.Errorf("TrimErr(%v)=%q, internal %q", tc.err, got, trimErr(tc.err))
+		}
+	}
+	// Cancellation never fails over: a cancelled ctx and a context.Canceled error
+	// each suppress it, whatever the wrapped status says.
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if ShouldFailover(cancelled, errors.New("openai: status 500: down")) {
+		t.Error("cancelled ctx must not fail over")
+	}
+	if ShouldFailover(ctx, context.Canceled) {
+		t.Error("context.Canceled must not fail over")
+	}
+	// TrimErr shortens provider bodies to 300 bytes + ellipsis.
+	if got, want := TrimErr(errors.New(strings.Repeat("x", 500))), strings.Repeat("x", 300)+"…"; got != want {
+		t.Errorf("TrimErr long error = %d bytes, want %d", len(got), len(want))
+	}
+}

@@ -13,6 +13,7 @@ import (
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/llmpool"
 	"github.com/Autumn-27/norma/harness"
 	"github.com/Autumn-27/norma/llm"
 )
@@ -744,4 +745,218 @@ func TestProfileDeleteRestoresQuotaBlockedIntentWhenFallbackAvailable(t *testing
 	if len(state.ProfileIDs) != 0 || state.FailoverState != "default" {
 		t.Fatalf("task did not return to fallback state: %+v", state)
 	}
+}
+
+// ---- 单 profile 路径向进程级熔断器上报成败（BaaRai/ARTEX#257 适配） ----
+// Pool 被绕过时(任务链上只有一个可用 profile),completeTaskLLM/streamTaskLLM 是
+// 唯一知道成败的地方;recordPass/recordFailure 钩子把结果送回 s.llmHealth,使
+// /system/llm/ 的健康徽标不因单 profile 任务而失真。守卫(profileID==0 不入
+// llm_profile_health、ctx 取消与确定性 400 不动状态)住在 streamHooks() 接线里,
+// 因此取消/全局路径的用例直接消费真实接线。
+
+// 单 profile 流成功:recordPass(profileID) 恰好一次,recordFailure 零次。
+func TestTaskLLMStreamRecordsPassOnSingleProfileSuccess(t *testing.T) {
+	t.Parallel()
+	provider := &scriptedLLMProvider{events: []llm.StreamEvent{{Type: llm.SETextDelta, Text: "ok"}}}
+	var passes, failures []int64
+	hooks := taskLLMStreamHooks{
+		current: func() (taskLLMSelection, error) {
+			return taskLLMSelection{profileID: 11, provider: provider}, nil
+		},
+		exhaust: func(taskLLMSelection, error) (db.TaskLLMTransition, error) {
+			t.Fatal("exhaust must not run for an ordinary success")
+			return db.TaskLLMTransition{}, nil
+		},
+		recordPass:    func(profileID int64) { passes = append(passes, profileID) },
+		recordFailure: func(context.Context, int64, error) { failures = append(failures, -1) },
+	}
+	events, err := collectTaskLLMStream(streamTaskLLM(context.Background(), "7", llm.CompletionRequest{}, hooks))
+	if err != nil || len(events) != 1 || events[0].Text != "ok" {
+		t.Fatalf("events=%+v err=%v", events, err)
+	}
+	if len(passes) != 1 || passes[0] != 11 {
+		t.Fatalf("recordPass calls=%v, want exactly one with profile 11", passes)
+	}
+	if len(failures) != 0 {
+		t.Fatalf("recordFailure must not run on success: %v", failures)
+	}
+}
+
+// 单 profile 普通错误(非额度,这里用确定性 404 避开同 provider 重试):透传给调用方,
+// 但 recordFailure 恰好一次且 profileID 正确,recordPass 零次。
+func TestTaskLLMStreamRecordsFailureOnSingleProfileError(t *testing.T) {
+	t.Parallel()
+	provider := &scriptedLLMProvider{err: errors.New("openai: status 404: model not found")}
+	var passes []int64
+	var failures []struct {
+		profileID int64
+		err       error
+	}
+	hooks := taskLLMStreamHooks{
+		current: func() (taskLLMSelection, error) {
+			return taskLLMSelection{profileID: 11, provider: provider}, nil
+		},
+		exhaust: func(taskLLMSelection, error) (db.TaskLLMTransition, error) {
+			t.Fatal("ordinary error must not exhaust the chain")
+			return db.TaskLLMTransition{}, nil
+		},
+		recordPass: func(profileID int64) { passes = append(passes, profileID) },
+		recordFailure: func(_ context.Context, profileID int64, err error) {
+			failures = append(failures, struct {
+				profileID int64
+				err       error
+			}{profileID, err})
+		},
+	}
+	_, err := collectTaskLLMStream(streamTaskLLM(context.Background(), "7", llm.CompletionRequest{}, hooks))
+	if err == nil || !strings.Contains(err.Error(), "status 404") {
+		t.Fatalf("err=%v, want the passthrough 404", err)
+	}
+	if len(passes) != 0 {
+		t.Fatalf("recordPass must not run on failure: %v", passes)
+	}
+	if len(failures) != 1 || failures[0].profileID != 11 || failures[0].err != err {
+		t.Fatalf("recordFailure calls=%+v, want exactly one with profile 11 and the surfaced error", failures)
+	}
+}
+
+// ctx 取消:调用点仍会走 recordFailure 钩子,但接线层的 ShouldFailover 守卫必须把
+// 这类失败挡在熔断器之外(不写 Trip、不改状态)。
+func TestTaskLLMStreamCancelDoesNotReachBreaker(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if llmpool.ShouldFailover(ctx, ctx.Err()) {
+		t.Fatal("sanity: a cancelled ctx with context.Canceled must classify as non-failover")
+	}
+	provider := &scriptedLLMProvider{err: ctx.Err()}
+	trips := 0
+	registry := llmpool.NewRegistry(func(int64, llmpool.State) { trips++ }, nil)
+	wired := (&taskLLMRuntime{s: &Server{llmHealth: registry}}).streamHooks()
+	hooks := taskLLMStreamHooks{
+		current: func() (taskLLMSelection, error) {
+			return taskLLMSelection{profileID: 11, provider: provider}, nil
+		},
+		exhaust:       func(taskLLMSelection, error) (db.TaskLLMTransition, error) { return db.TaskLLMTransition{}, nil },
+		recordPass:    wired.recordPass,
+		recordFailure: wired.recordFailure,
+	}
+	_, err := collectTaskLLMStream(streamTaskLLM(ctx, "7", llm.CompletionRequest{}, hooks))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err=%v, want context.Canceled", err)
+	}
+	if trips != 0 || len(registry.Snapshot()) != 0 {
+		t.Fatalf("cancelled stream must not touch the breaker: trips=%d state=%+v", trips, registry.Snapshot())
+	}
+}
+
+// profileID==0(绑定/全局路径,不入 llm_profile_health):成功与失败都不产生熔断器写入。
+func TestTaskLLMStreamGlobalPathNeverReachesBreaker(t *testing.T) {
+	t.Parallel()
+	trips := 0
+	forgets := 0
+	registry := llmpool.NewRegistry(func(int64, llmpool.State) { trips++ }, func(int64) { forgets++ })
+	wired := (&taskLLMRuntime{s: &Server{llmHealth: registry}}).streamHooks()
+	for _, tc := range []struct {
+		name     string
+		provider *scriptedLLMProvider
+	}{
+		{"success", &scriptedLLMProvider{events: []llm.StreamEvent{{Type: llm.SETextDelta, Text: "global"}}}},
+		{"failure", &scriptedLLMProvider{err: errors.New("openai: status 404: model not found")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hooks := taskLLMStreamHooks{
+				current: func() (taskLLMSelection, error) {
+					return taskLLMSelection{profileID: 0, provider: tc.provider}, nil
+				},
+				exhaust:       func(taskLLMSelection, error) (db.TaskLLMTransition, error) { return db.TaskLLMTransition{}, nil },
+				recordPass:    wired.recordPass,
+				recordFailure: wired.recordFailure,
+			}
+			if _, err := collectTaskLLMStream(streamTaskLLM(context.Background(), "7", llm.CompletionRequest{}, hooks)); tc.name == "failure" && err == nil {
+				t.Fatal("failure case must surface its error")
+			}
+		})
+	}
+	if trips != 0 || forgets != 0 || len(registry.Snapshot()) != 0 {
+		t.Fatalf("profile 0 must never reach the breaker: trips=%d forgets=%d state=%+v", trips, forgets, registry.Snapshot())
+	}
+}
+
+// completeTaskLLM 同样上报:成功一次 recordPass;普通错误(非额度、非取消)透传前
+// 一次 recordFailure。404 是确定性错误,不触发同 provider 重试,测试可并行。
+func TestTaskLLMCompleteRecordsPassAndFailure(t *testing.T) {
+	t.Parallel()
+	run := func(provider *scriptedLLMProvider) (passes []int64, failures []int64, err error) {
+		hooks := taskLLMStreamHooks{
+			current: func() (taskLLMSelection, error) {
+				return taskLLMSelection{profileID: 11, provider: provider}, nil
+			},
+			exhaust:       func(taskLLMSelection, error) (db.TaskLLMTransition, error) { return db.TaskLLMTransition{}, nil },
+			recordPass:    func(profileID int64) { passes = append(passes, profileID) },
+			recordFailure: func(context.Context, int64, error) { failures = append(failures, 11) },
+		}
+		_, _, _, err = completeTaskLLM(context.Background(), "7", llm.CompletionRequest{}, hooks)
+		return passes, failures, err
+	}
+
+	passes, failures, err := run(&scriptedLLMProvider{events: []llm.StreamEvent{{Type: llm.SETextDelta, Text: "ok"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(passes) != 1 || passes[0] != 11 || len(failures) != 0 {
+		t.Fatalf("complete success: passes=%v failures=%v, want one pass on 11 and no failure", passes, failures)
+	}
+
+	passes, failures, err = run(&scriptedLLMProvider{err: errors.New("openai: status 404: model not found")})
+	if err == nil || !strings.Contains(err.Error(), "status 404") {
+		t.Fatalf("complete failure err=%v, want the passthrough 404", err)
+	}
+	if len(passes) != 0 || len(failures) != 1 {
+		t.Fatalf("complete failure: passes=%v failures=%v, want no pass and exactly one failure", passes, failures)
+	}
+}
+
+// streamHooks() 的真实接线:recordPass 清除既有 Trip 状态,recordFailure 对确定性
+// hard error(402)立即 Open;瞬时错误(429)只累计 fails,不提前熔断。Server 缺少
+// llmHealth 或 runtime 无 Server 时静默 no-op,不 panic。
+func TestTaskLLMStreamHooksWiredToBreakerRegistry(t *testing.T) {
+	t.Parallel()
+	registry := llmpool.NewRegistry(nil, nil)
+	hooks := (&taskLLMRuntime{s: &Server{llmHealth: registry}}).streamHooks()
+
+	hooks.recordFailure(context.Background(), 11, errors.New("anthropic: status 402: credit balance is too low"))
+	if !registry.IsOpen(11) {
+		t.Fatal("hard failure must open the breaker immediately")
+	}
+	hooks.recordPass(11)
+	if registry.IsOpen(11) || len(registry.Snapshot()) != 0 {
+		t.Fatalf("pass must clear the tripped state: %+v", registry.Snapshot())
+	}
+
+	hooks.recordFailure(context.Background(), 11, errors.New("openai: status 429: rate limit exceeded"))
+	if st := registry.Get(11); st.Open() || st.Fails != 1 {
+		t.Fatalf("transient failure must only degrade: %+v", st)
+	}
+
+	// 守卫路径:profileID==0、nil error、ctx 取消都不写状态。
+	empty := llmpool.NewRegistry(nil, nil)
+	guarded := (&taskLLMRuntime{s: &Server{llmHealth: empty}}).streamHooks()
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	guarded.recordPass(0)
+	guarded.recordFailure(context.Background(), 0, errors.New("openai: status 500: down"))
+	guarded.recordFailure(context.Background(), 11, nil)
+	guarded.recordFailure(cancelled, 11, errors.New("openai: status 500: down"))
+	if len(empty.Snapshot()) != 0 {
+		t.Fatalf("guarded calls must be no-ops: %+v", empty.Snapshot())
+	}
+
+	// 无 Server / 无 llmHealth 的 runtime:接线为 no-op,不 panic。
+	bare := (&taskLLMRuntime{}).streamHooks()
+	bare.recordPass(11)
+	bare.recordFailure(context.Background(), 11, errors.New("dial tcp: reset"))
+	noHealth := (&taskLLMRuntime{s: &Server{}}).streamHooks()
+	noHealth.recordPass(11)
+	noHealth.recordFailure(context.Background(), 11, errors.New("dial tcp: reset"))
 }

@@ -171,7 +171,7 @@ ZIP 是运行包，不包含源码安装、更新脚本；`install.sh` / `update
 ```bash
 git clone https://github.com/2217173240/ARTEX.git
 cd ARTEX
-# 1) 前端静态导出
+# 1) 前端静态导出（BUILD_ID 默认取当前提交短哈希，可用 ARTEX_BUILD_ID 覆盖；无 .git 时回退 artex）
 cd web && npm ci && npm run build:static && cd ..
 # 2) 拷进内嵌目录
 mkdir -p server/webui/dist && cp -r web/out/. server/webui/dist/
@@ -264,6 +264,7 @@ cp -r <解压目录>/skills ./ && cp <解压目录>/artex ./
 
 ```bash
 git pull
+# BUILD_ID 默认取当前提交短哈希，可用 ARTEX_BUILD_ID 覆盖；无 .git 时回退 artex
 cd web && npm ci && npm run build:static && cd ..
 mkdir -p server/webui/dist && cp -r web/out/. server/webui/dist/
 CGO_ENABLED=0 go build -tags embedui -o artex ./cmd/artex
@@ -322,6 +323,10 @@ server {
     # ssl_certificate / ssl_certificate_key ...
 
     location / {
+        # 附件上传上限：512 MiB 文件数据 + 1 MiB multipart 开销
+        client_max_body_size 513m;
+        proxy_request_buffering off;
+
         proxy_pass http://127.0.0.1:8787;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto $scheme;

@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -12,8 +13,14 @@ import (
 	"github.com/Autumn-27/artex/db"
 )
 
-// maxChatUpload caps a single chat-attachment upload request (memory + spill).
-const maxChatUpload = 128 << 20 // 128 MiB
+const (
+	// maxChatUpload 是单个附件上传请求的合并文件数据上限（所有 file 字段之和）。
+	maxChatUpload = 512 << 20 // 512 MiB
+	// chatUploadMultipartOverhead 预留给 multipart 头与边界的余量：MaxBytesReader
+	// 卡的是整个请求体，比文件数据多放 1 MiB，避免恰好合规的上传被误拦。
+	chatUploadMultipartOverhead = 1 << 20 // 1 MiB
+	chatUploadLimitMessage      = "文件总大小超出 512 MiB 上传上限"
+)
 
 // safeChatID guards the {id} path segment against traversal — task ids are numeric,
 // session ids are alnum/_/- ; anything with "/" or ".." is rejected.
@@ -85,19 +92,35 @@ func (s *Server) chatUpload(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, "建目录失败: "+err.Error())
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, maxChatUpload)
+	r.Body = http.MaxBytesReader(w, r.Body, maxChatUpload+chatUploadMultipartOverhead)
 	defer r.Body.Close()
 	err = r.ParseMultipartForm(32 << 20)
 	if r.MultipartForm != nil {
 		defer r.MultipartForm.RemoveAll()
 	}
 	if err != nil {
-		writeErr(w, 400, "解析上传失败或超出大小限制: "+err.Error())
+		// 请求体超过上限走专门的 413，不再与解析错误混在同一个 400 里。
+		var sizeErr *http.MaxBytesError
+		if errors.As(err, &sizeErr) {
+			writeErr(w, http.StatusRequestEntityTooLarge, chatUploadLimitMessage)
+			return
+		}
+		writeErr(w, 400, "解析上传失败: "+err.Error())
 		return
 	}
 	files := r.MultipartForm.File["file"]
 	if len(files) == 0 {
 		writeErr(w, 400, "缺少上传文件(表单字段 file)")
+		return
+	}
+	// MaxBytesReader 卡的是整个请求体；这里再按文件数据本身合并校验一次，保证
+	// 多文件合计恰好/超过 512 MiB 的判定不依赖 multipart 开销大小。
+	var totalSize int64
+	for _, hdr := range files {
+		totalSize += hdr.Size
+	}
+	if totalSize > maxChatUpload {
+		writeErr(w, http.StatusRequestEntityTooLarge, chatUploadLimitMessage)
 		return
 	}
 	out := make([]chatAttachment, 0, len(files))

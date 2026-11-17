@@ -14,6 +14,7 @@ import (
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/llmpool"
 	"github.com/Autumn-27/artex/llmrec"
 	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/transcript"
@@ -101,6 +102,17 @@ type taskLLMStreamHooks struct {
 	current    func() (taskLLMSelection, error)
 	exhaust    func(taskLLMSelection, error) (db.TaskLLMTransition, error)
 	transition func(taskLLMSelection, db.TaskLLMTransition, error)
+	// recordPass reports a successful call to the process-wide breaker so a
+	// profile that was previously failing is cleared. Mirrors Pool.Pass but
+	// covers the single-profile task path where no Pool wraps the provider.
+	// No-op when profileID == 0 (binding/global path — not keyed in
+	// llm_profile_health).
+	recordPass func(profileID int64)
+	// recordFailure is the matching failure callback: it classifies err with
+	// the same rules the Pool uses (ShouldFailover / IsHardFailure) and only
+	// trips on failures that would have tripped the Pool — ctx cancel and
+	// deterministic 400s leave the state untouched.
+	recordFailure func(ctx context.Context, profileID int64, err error)
 }
 
 // current resolves the provider this role runs on, by precedence:
@@ -218,6 +230,24 @@ func (r *taskLLMRuntime) streamHooks() taskLLMStreamHooks {
 		transition: func(selection taskLLMSelection, transition db.TaskLLMTransition, cause error) {
 			r.s.emitTaskLLMTransition(selection.task, transition, cause)
 		},
+		recordPass: func(profileID int64) {
+			if profileID == 0 || r.s == nil || r.s.llmHealth == nil {
+				return
+			}
+			r.s.llmHealth.Pass(profileID)
+		},
+		recordFailure: func(ctx context.Context, profileID int64, err error) {
+			if profileID == 0 || err == nil || r.s == nil || r.s.llmHealth == nil {
+				return
+			}
+			if !llmpool.ShouldFailover(ctx, err) {
+				return
+			}
+			hard := llmpool.IsHardFailure(err)
+			if r.s.llmHealth.Trip(profileID, llmpool.TrimErr(err), hard) {
+				log.Printf("[task-llm] profile #%d breaker tripped: %s", profileID, llmpool.TrimErr(err))
+			}
+		},
 	}
 }
 
@@ -266,7 +296,17 @@ func completeTaskLLM(ctx context.Context, taskID string, req llm.CompletionReque
 			break
 		}
 		if callErr == nil {
+			if hooks.recordPass != nil {
+				hooks.recordPass(selection.profileID)
+			}
 			return msg, sr, usage, nil
+		}
+		// Report the failure to the process-wide breaker BEFORE any
+		// return/escalation branch below, so the /system/llm/ "Healthy" badge
+		// reflects reality for single-profile tasks (where no Pool wraps the
+		// provider to call Trip on its own).
+		if hooks.recordFailure != nil {
+			hooks.recordFailure(ctx, selection.profileID, callErr)
 		}
 		// profileID=0: 显式链已被清空;非额度错误:透传。二者都不改任务 failover 状态。
 		if selection.profileID == 0 || !isQuotaExhaustedError(callErr) {
@@ -340,12 +380,22 @@ func streamTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest
 				break
 			}
 			if streamErr == nil {
+				if hooks.recordPass != nil {
+					hooks.recordPass(selection.profileID)
+				}
 				for _, buffered := range pending {
 					if !yield(buffered, nil) {
 						return
 					}
 				}
 				return
+			}
+			// Report the failure to the process-wide breaker BEFORE any
+			// return/escalation branch below, so the /system/llm/ "Healthy" badge
+			// reflects reality for single-profile tasks (where no Pool wraps the
+			// provider to call Trip on its own).
+			if hooks.recordFailure != nil {
+				hooks.recordFailure(ctx, selection.profileID, streamErr)
 			}
 			// profileID=0 means the explicit chain was cleared while this stable task
 			// bundle was still in use. Agent/global fallback errors never mutate

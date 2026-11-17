@@ -118,6 +118,9 @@ import type {
   WorkspaceListing,
 } from "@/lib/types";
 
+// 单次附件上传的合并文件数据上限；与 server/chatupload.go 的 maxChatUpload 对齐。
+const MAX_CHAT_UPLOAD_BYTES = 512 * 1024 * 1024;
+
 export class ApiError extends Error {
   constructor(
     public readonly status: number,
@@ -964,6 +967,11 @@ export const api = {
   chatStatus: (taskId: string) => get<{ running: boolean }>(`/tasks/${taskId}/chat/status`),
   // 方式1 文件上传:落到会话/任务工作目录 uploads/，返回可供 agent Read 的相对路径。
   chatUpload: async (scope: "task" | "session" | "staging", id: string, files: File[]) => {
+    // 合并大小预检：超限直接本地报错，MOCK 与真实路径都被拦下，不再白发一次请求。
+    const totalSize = files.reduce((total, file) => total + file.size, 0);
+    if (totalSize > MAX_CHAT_UPLOAD_BYTES) {
+      throw new Error("Files exceed the 512 MiB upload limit (combined size).");
+    }
     if (MOCK)
       return {
         attachments: files.map((f) => ({
