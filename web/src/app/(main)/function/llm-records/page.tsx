@@ -413,7 +413,7 @@ export default function LLMRecordsPage() {
                 ) : records.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={8} className="py-12 text-center text-sm text-muted-foreground">
-                      {uiText("暂无 LLM 调用记录")}
+                      {!recEnabled ? uiText("LLM 调用录制已关闭，开启顶部开关后开始记录") : uiText("暂无 LLM 调用记录")}
                     </TableCell>
                   </TableRow>
                 ) : (

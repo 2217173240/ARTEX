@@ -763,6 +763,7 @@
   "已关闭": "Closed",
   "延迟": "Delay",
   "暂无 LLM 调用记录": "No LLM call records",
+  "LLM 调用录制已关闭，开启顶部开关后开始记录": "LLM call recording is off — enable the toggle at the top to start capturing",
   "原文视图开关。旧记录没有原文，此时禁用而非静默回退，避免看着像": "Original view toggle – disabled for old records lacking original text",
   "原文与解析一致": "Original matches analysis",
   "查看与 provider 实际收发的 HTTP 原文": "View raw HTTP request/response with provider",
