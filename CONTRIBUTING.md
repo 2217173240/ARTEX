@@ -56,6 +56,10 @@ docker stop artex-contrib-pg
 
 前端检查与 CI 相同：
 
+前端暂存文件校验由现有 Husky 入口调用固定版本的 Lefthook：先生成并暂存 theme presets，再对暂存的 JS/TS/JSX/TSX 执行 Biome 自动修复与暂存，保留部分暂存内容的隐藏与恢复保护。入口会定位 Git 根目录下的 `web/`，仅执行本地已安装的工具。原 lint-staged 引入的未修复 picomatch 依赖已移除，审计门槛保持不变。格式修复与隐藏的未暂存改动发生冲突时，工具会明确报错并保留恢复补丁，处理后再提交。
+
+CI 及受控安装继续使用 `npm ci --ignore-scripts`，不安装 Git hook；`--no-auto-install` 只禁止运行阶段同步 hook。普通非 CI 的 npm 安装仍可能执行 Lefthook 的 postinstall 安装器，不能将运行阶段选项理解为全局禁止安装；已有自定义 `core.hooksPath` 应保持其原有管理方式。
+
 ```bash
 cd web
 node --test src/lib/*.test.mjs

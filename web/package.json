@@ -14,11 +14,6 @@
     "prepare": "husky",
     "generate:presets": "ts-node -P tsconfig.scripts.json src/scripts/generate-theme-presets.ts"
   },
-  "lint-staged": {
-    "*.{js,ts,jsx,tsx}": [
-      "biome check --write --no-errors-on-unmatched"
-    ]
-  },
   "dependencies": {
     "@antv/g6": "^5.1.1",
     "@antv/graphin": "^3.0.5",
@@ -71,7 +66,7 @@
     "@types/topojson-client": "^3.1.5",
     "babel-plugin-react-compiler": "^1.0.0",
     "husky": "^9.1.7",
-    "lint-staged": "^16.4.0",
+    "lefthook": "2.2.2",
     "postcss": "^8.5.23",
     "tailwindcss": "^4.1.5",
     "ts-node": "^10.9.2",
