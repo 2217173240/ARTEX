@@ -1,3 +1,2 @@
-npm run generate:presets
-git add src/lib/preferences/theme.ts
-npm exec -- lint-staged
+cd "$(git rev-parse --show-toplevel)/web" || exit 1
+npx --no-install lefthook run pre-commit --no-auto-install

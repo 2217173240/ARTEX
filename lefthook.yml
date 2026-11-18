@@ -1,0 +1,12 @@
+no_auto_install: true
+
+pre-commit:
+  piped: true
+  commands:
+    01-generate-presets:
+      run: cd web && npm run generate:presets && git add src/lib/preferences/theme.ts
+    02-biome:
+      root: web/
+      glob: '*.{js,ts,jsx,tsx}'
+      run: npx --no-install biome check --write --no-errors-on-unmatched {staged_files}
+      stage_fixed: true
