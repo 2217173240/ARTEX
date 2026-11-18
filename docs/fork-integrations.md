@@ -1,5 +1,7 @@
 # 同源功能集成
 
+2026-11-18 借鉴 [BaaRai/ARTEX PR #311](https://github.com/BaaRai/ARTEX/pull/311) 的意图摘要数据封装（merge [`729f935a`](https://github.com/BaaRai/ARTEX/commit/729f935a21948a7296fbff3b59c39cd90f7d1dea)，原始 head `9777163bbfaef3edeac06c84d1bcccca0ec90f2a`，作者 **BaaRai**，固定提交 LICENSE blob 为 `be3f7b28e564e7dd05eaf59d64adba1a4065ac0e`、AGPL-3.0）。经名单外的 patrickbp fork 取得相同不可变提交与实际 diff；来源与本 fork 均包含初始祖先 `0ef8561411dd1757e41ba3c45d1436e1fd3774f1`，未整体合并来源历史。当前 graph overview 已整体封装，只适配 planner finding、done、cancelled 三处唤醒摘要，复用既有 JSON 转义封装；删除后捕获的摘要与数据库回读路径都保持数据边界。保留触发编号、操作者目标、提示、删除原因、数据库原文、权限和生命周期。真实隔离 PostgreSQL 的八项普通/特殊摘要回归在修复前失败，修复后的针对性 race 与既有边界测试通过。该处理修正呈现边界，不代表已经证明模型服从攻击、真实利用或鉴权绕过，也不将封装视为权限保证。
+
 2026-11-17 适配三项同源改进，基线 `856515487e5806b438ea1d890322c264db991bd6`：
 
 | 来源与归属 | 本 fork 的适配 |
