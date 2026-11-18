@@ -1,5 +1,7 @@
 # 同源功能集成
 
+2026-11-18 从 bradleyXIE 的 [RuoJi6/ARTEX PR #164](https://github.com/RuoJi6/ARTEX/pull/164)（精确 head `369f21f89fdb4aebc94b4271bcb2fb3792ad9380`，LICENSE blob `be3f7b28e564e7dd05eaf59d64adba1a4065ac0e`、AGPL-3.0）发现默认 Opus 4.8 的请求兼容缺口。按照 [Anthropic 官方迁移说明](https://platform.claude.com/docs/en/models/opus-5-5/migration-guide)，在 Norma 的 Anthropic 实际序列化边界，对精确 `claude-opus-4-7`、`claude-opus-4-8` 省略不受支持的 `temperature`；流式和非流式共用该路径。独立适配保留原调用参数、思考开关、强度与预算，112 项实际序列化组合回归先失败后通过，嵌套模块 llm race 回归通过。账本的标准化请求保留调用参数，`RawRequest` 由既有 HTTP capture 记录实际发送报文。来源的模型版本推断、provider 包装和自动移除显式 `disabled` 未采用；其他模型的思考兼容仍需按明确能力处理。来源 PR base `6997a4661921395072290becc50380db8dacb04e` 不在本 fork 历史中，本次未复制其历史或包装实现。详细边界见 [Norma 补丁记录](../third_party/norma/PATCHES.md)；此次未调用外部模型，未验证供应商实际响应。
+
 2026-11-18 借鉴 [BaaRai/ARTEX PR #311](https://github.com/BaaRai/ARTEX/pull/311) 的意图摘要数据封装（merge [`729f935a`](https://github.com/BaaRai/ARTEX/commit/729f935a21948a7296fbff3b59c39cd90f7d1dea)，原始 head `9777163bbfaef3edeac06c84d1bcccca0ec90f2a`，作者 **BaaRai**，固定提交 LICENSE blob 为 `be3f7b28e564e7dd05eaf59d64adba1a4065ac0e`、AGPL-3.0）。经名单外的 patrickbp fork 取得相同不可变提交与实际 diff；来源与本 fork 均包含初始祖先 `0ef8561411dd1757e41ba3c45d1436e1fd3774f1`，未整体合并来源历史。当前 graph overview 已整体封装，只适配 planner finding、done、cancelled 三处唤醒摘要，复用既有 JSON 转义封装；删除后捕获的摘要与数据库回读路径都保持数据边界。保留触发编号、操作者目标、提示、删除原因、数据库原文、权限和生命周期。真实隔离 PostgreSQL 的八项普通/特殊摘要回归在修复前失败，修复后的针对性 race 与既有边界测试通过。该处理修正呈现边界，不代表已经证明模型服从攻击、真实利用或鉴权绕过，也不将封装视为权限保证。
 
 2026-11-17 适配三项同源改进，基线 `856515487e5806b438ea1d890322c264db991bd6`：

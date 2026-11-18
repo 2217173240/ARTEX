@@ -71,6 +71,11 @@ func (p *anthropicProvider) buildBody(req CompletionRequest, stream bool) ([]byt
 		Stream:        stream,
 		System:        buildAnthropicSystem(req),
 	}
+	// Opus 4.7 和 4.8 不接受 sampling 参数；仅调整出站请求。
+	switch body.Model {
+	case "claude-opus-4-7", "claude-opus-4-8":
+		body.Temperature = nil
+	}
 	for _, t := range req.Tools {
 		body.Tools = append(body.Tools, anthropicTool{Name: t.Name, Description: t.Description, InputSchema: t.InputSchema})
 	}

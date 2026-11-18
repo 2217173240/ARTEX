@@ -1,5 +1,30 @@
 # Norma runtime dependency patch
 
+## Anthropic Opus sampling parameters (2026-11-18)
+
+Local protocol adaptation discovered through bradleyXIE's
+[RuoJi6/ARTEX PR #164](https://github.com/RuoJi6/ARTEX/pull/164), reviewed at
+exact head `369f21f89fdb4aebc94b4271bcb2fb3792ad9380`.
+The protocol reference is Anthropic's
+[Opus migration guide](https://platform.claude.com/docs/en/models/opus-5-5/migration-guide),
+which documents removal of sampling parameters starting with Opus 4.7.
+
+- `llm/anthropic.go` omits `temperature` at the shared Stream/Complete JSON
+  serialization boundary for the exact model IDs `claude-opus-4-7` and
+  `claude-opus-4-8`. The original request, provider configuration, thinking
+  overrides (including `disabled`) and reasoning effort retain their values.
+  Other model IDs and both OpenAI providers retain their existing behavior.
+- `llm/anthropic_sampling_test.go` executes the production body serializer
+  with declared inputs for streaming and nonstreaming requests, zero/nonzero
+  temperature, thinking overrides, old/unknown model IDs and source immutability.
+  No external model calls or simulated providers are used.
+
+The source PR supplies discovery context; its provider wrapper implementation
+is not copied into this patch. This local change introduces no wrapper,
+provider interface, model alias inference or future-version comparison.
+The retained Norma baseline, original hashes and license provenance remain
+unchanged. Live provider acceptance is outside this regression's scope.
+
 ## OpenAI-compatible usage aliases and snapshots
 
 Adapted from lin9527ya's Norma commit
