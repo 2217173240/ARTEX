@@ -3,7 +3,9 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -480,7 +482,14 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		opts.SessionID = WorkerSessionID(ts.ID(), intent.ID)
 	}
 	intentID := intent.ID
+	// toolCalls counts tool_use activities across every prompt run on this session,
+	// so after the run we can tell a worker that actually did something from a
+	// "thinking-only" no-op that never acted.
+	var toolCalls int
 	emitWrap := func(r db.Activity) {
+		if r.Kind == "tool_use" {
+			toolCalls++
+		}
 		if emit != nil {
 			r.NodeID, r.Worker = &intentID, name
 			emit(r)
@@ -536,6 +545,63 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// enters the wrap-up phase on the live ctx, so a run whose tool overran the budget
 	// still settles (no external hard-timeout backstop needed). ctx itself carries only
 	// pause / planner kill / shutdown, which the engine distinguishes and re-queues/stops.
-	_, reason, err := captureRunSession(ctx, s, input, emitWrap)
+	finalText, reason, err := captureRunSession(ctx, s, input, emitWrap)
+	// Thinking-only no-op rescue: some reasoning models spend a whole turn
+	// thinking and end it with neither text nor a tool call. The SDK reports
+	// that as a natural completion, and the empty-turn Stop hook (steerHooks.Stop)
+	// is only allowed to nudge once — harness stopHookActive blocks a second
+	// consecutive nudge without an intervening tool-turn. For a model that stays
+	// thinking-only that single nudge is not enough, so the run ends having done
+	// literally nothing — the task then stalls because the intent looks done.
+	// Re-prompt the live session with an explicit "act now, stop thinking"
+	// instruction a bounded number of times; each is a fresh turn that also lets
+	// the Stop-hook nudge fire again. A run that called even one tool, produced any
+	// final text, errored, or was canceled is left untouched.
+	// 适配说明：captureRunSession 会把这种自然完成改写成 ReasonModelError +
+	// errNoUsableOutput（见 capture.go），isUnproductiveNoop 同时识别两种形态。
+	for attempt := 1; attempt <= emptyTurnRescueAttempts &&
+		isUnproductiveNoop(reason, err, toolCalls, finalText) &&
+		ctx.Err() == nil; attempt++ {
+		log.Printf("[worker %s] intent %d: thinking-only turn produced no action, re-prompting to force execution (%d/%d)",
+			name, intent.ID, attempt, emptyTurnRescueAttempts)
+		finalText, reason, err = captureRunSession(ctx, s, emptyTurnRescueInput, emitWrap)
+	}
+	// Still a pure no-op after the rescue: surface it as unproductive (not a
+	// successful `done`) so the engine marks the intent `exhausted` and the planner
+	// re-approaches the direction instead of treating it as covered. 清掉改写
+	// errNoUsableOutput 时留下的哨兵错误：此刻它已分类为「非产出」而非「失败」，
+	// 引擎按 reason 分流（err!=nil 会先落成 blocked）。
+	if isUnproductiveNoop(reason, err, toolCalls, finalText) {
+		reason = ReasonUnproductiveNoop
+		err = nil
+	}
 	return reason, tsx.Writes(), err
+}
+
+// emptyTurnRescueAttempts bounds how many times the worker re-prompts a
+// thinking-only run to force it to act before giving up. It mirrors
+// the default empty-response-retries knob that the Stop-hook nudge reuses.
+const emptyTurnRescueAttempts = 2
+
+// emptyTurnRescueInput is the forceful re-prompt for a thinking-only no-op. It is
+// an internal behavior instruction, kept in the original Chinese like the rest of
+// the agent prompts (it is never surfaced as user-facing output).
+const emptyTurnRescueInput = "你上一轮只输出了思考，既没有调用任何工具，也没有给出正文结论，这一轮等于没有产出。" +
+	"现在立刻执行你刚才想好的下一步：直接调用一个工具开始动手，不要再只思考。"
+
+// isUnproductiveNoop reports whether a finished worker run did literally nothing:
+// it ended naturally (ReasonCompleted) with no error, yet called no tool and left
+// no final text — the thinking-only no-op. A run that called a tool, produced any
+// text, or ended for any other reason is NOT a no-op (a tool run that legitimately
+// found nothing is a real `done`, not this case). captureRunSession 把「SDK 自然
+// 完成但整轮无可用产出」本地改写成 ReasonModelError + errNoUsableOutput，这里把该
+// 哨兵形态还原为同一判定；真正的模型/API 错误不是这个哨兵，仍判为非空转。
+func isUnproductiveNoop(reason harness.TerminalReason, err error, toolCalls int, finalText string) bool {
+	if toolCalls > 0 || strings.TrimSpace(finalText) != "" {
+		return false
+	}
+	if errors.Is(err, errNoUsableOutput) {
+		return reason == harness.ReasonModelError
+	}
+	return err == nil && reason == harness.ReasonCompleted
 }

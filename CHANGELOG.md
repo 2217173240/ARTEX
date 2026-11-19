@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+- 整轮只思考、既不调用工具也不输出正文的 worker 运行不再让任务停滞：worker 会先以强制执行指令重发该回合（有界 2 次，与空转续跑同一默认配额），仍无任何产出时意图标记为 exhausted 而非 done，规划者据此换方向重新逼近，不再把该方向当作已覆盖。
+
 - 附件上传上限从 128 MiB 提高到 512 MiB（按一次请求的合并文件数据计），超出返回明确的 413 与上限提示；请求体读入上限另留 1 MiB multipart 开销。前端在发起请求前按合并大小本地拦截（mock 模式同样生效），nginx 示例补充 `client_max_body_size 513m` 与 `proxy_request_buffering off`。
 
 - 构建固定前端 `BUILD_ID`：默认取当前提交短哈希，可用 `ARTEX_BUILD_ID` 覆盖，无 `.git` 的源码包回退 `artex`；同一提交重复构建的前端产物逐字节一致，便于与源码对账。

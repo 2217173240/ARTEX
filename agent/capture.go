@@ -33,6 +33,13 @@ func captureRun(ctx context.Context, opts agentcore.Options, input string, emit 
 	return captureRunSession(ctx, s, input, emit)
 }
 
+// errNoUsableOutput marks a run the SDK completed naturally (ReasonCompleted)
+// whose prompt produced neither usable text nor a single tool call — e.g. a
+// thinking-only turn. captureRunSession rewrites the terminal to ReasonModelError
+// + this error so callers treat it as a failure; the worker additionally matches
+// this sentinel to recognize and rescue such runs (see isUnproductiveNoop).
+var errNoUsableOutput = errors.New("model completed without usable text or tool calls")
+
 // captureRunSession is captureRun over an existing session, so a caller can run
 // multiple prompts on the SAME conversation (e.g. a settlement round that reuses
 // the worker's accumulated context after the main run hit max_turns).
@@ -148,7 +155,7 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 				if terminal.Reason == harness.ReasonCompleted && terminal.Err == nil && ctx.Err() == nil &&
 					!hasUsableOutput && strings.TrimSpace(terminal.Text) == "" {
 					terminal.Reason = harness.ReasonModelError
-					terminal.Err = errors.New("model completed without usable text or tool calls")
+					terminal.Err = errNoUsableOutput
 				}
 				if terminal.Reason != harness.ReasonAbortedStreaming {
 					sidequestion.Finish(ctx, terminal.Messages)
