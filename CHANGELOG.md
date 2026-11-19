@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+- 控制台网页响应统一附带 `Content-Security-Policy: frame-ancestors 'self'`、`X-Frame-Options: SAMEORIGIN` 与 `Referrer-Policy: same-origin`，操作台不能被跨站嵌入 iframe、页面地址不随引用外泄；API 响应不带这些头，路由与认证行为不变。
+
 - 整轮只思考、既不调用工具也不输出正文的 worker 运行不再让任务停滞：worker 会先以强制执行指令重发该回合（有界 2 次，与空转续跑同一默认配额），仍无任何产出时意图标记为 exhausted 而非 done，规划者据此换方向重新逼近，不再把该方向当作已覆盖。
 
 - 附件上传上限从 128 MiB 提高到 512 MiB（按一次请求的合并文件数据计），超出返回明确的 413 与上限提示；请求体读入上限另留 1 MiB multipart 开销。前端在发起请求前按合并大小本地拦截（mock 模式同样生效），nginx 示例补充 `client_max_body_size 513m` 与 `proxy_request_buffering off`。
