@@ -203,6 +203,7 @@ jobs:
       frontend-artifact: ci-only-mock-ui
       version: 0.0.1
       artifact-prefix: ci-native
+      macos-arm64-runner: macos-26
 
   image:
     needs: frontend

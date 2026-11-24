@@ -11,6 +11,10 @@ on:
       artifact-prefix:
         required: true
         type: string
+      macos-arm64-runner:
+        description: Runner for native macOS ARM64 validation
+        type: string
+        default: macos-15
 permissions:
   contents: read
 jobs:
@@ -23,7 +27,7 @@ jobs:
           - { os: linux, arch: amd64, runner: ubuntu-24.04, channel: deb }
           - { os: linux, arch: arm64, runner: ubuntu-24.04-arm, channel: deb }
           - { os: darwin, arch: amd64, runner: macos-15-intel, channel: pkg }
-          - { os: darwin, arch: arm64, runner: macos-15, channel: pkg }
+          - { os: darwin, arch: arm64, runner: "${{ inputs.macos-arm64-runner }}", channel: pkg }
           - { os: windows, arch: amd64, runner: windows-2022, channel: msi }
           - { os: windows, arch: arm64, runner: windows-11-arm, channel: msi }
     runs-on: ${{ matrix.runner }}
