@@ -38,6 +38,10 @@ Node 使用 `setup-node` 的 npm 缓存，仍通过 lockfile 执行 `npm ci`。G
 
 PR 缓存限定在 merge ref，不能污染 main 缓存。main push 可更新可信缓存；release 和 offline workflow 的 `cache-mode: read` 继续限制缓存写入。缓存不保存应用配置、模型凭据、数据库、发行包或容器镜像层。
 
+PR 关闭后，独立 `cache-cleanup.yml` 使用 `pull_request_target: closed` 回收该 PR 的 `refs/pull/<number>/merge` 缓存。该任务不检出代码、不安装工具链、不读写构建缓存，仅授予删除缓存所需的 `actions: write` 和核实 PR 当前状态所需的 `pull-requests: read`；先核实 PR 已关闭，再通过分页 REST 查询和精确 ref 筛选逐 ID 删除。main 与开放 PR 的缓存保留。[GitHub 缓存管理文档](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manage-caches)说明了关闭 PR 后清理缓存的用途和事件权限。
+
+image 与 Linux amd64 native 使用 Ubuntu 24.04、相同的三个模块依赖键及 `-trimpath` 编译参数。image 只读取缓存，两个任务在 frontend 成功后并行；frontend 因文档变更跳过或执行失败时，image 同样跳过。backend-race 的缓存键仅跟随模块依赖变化，执行脚本仍使用 `-count=1` 强制运行测试。
+
 Linux 打包在每个任务中下载一次固定版本的预编译 nFPM，并校验 SHA-256。DEB、RPM 和 previous 包复用该工具，分别保留安装生命周期验证。仓库没有 Rust 构建，无需 Rust 缓存。
 
 缓存命中以对应 setup action 的恢复日志或命中输出为依据。nFPM 的安装脚本每次执行下载与校验，没有单独配置 Actions 工具缓存；阶段记录的 `0s` 受整秒计时精度影响，不能据此判定缓存命中。分阶段计时用于定位耗时，setup-go 的缓存恢复与工具链安装仍需查看各自日志。
