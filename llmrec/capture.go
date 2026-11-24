@@ -10,7 +10,8 @@ import (
 
 type captureContextKey struct{}
 
-// Capture collects the untouched wire bodies of one logical LLM call. The
+// Capture collects the untouched wire bodies of one logical LLM call, or only
+// metadata when created with NewMetadataCapture. The
 // Recorder creates it and puts it on the context; the HTTP transport that norma
 // dials through (agent.quotaAwareTransport) finds it there and fills it in.
 //
@@ -27,14 +28,16 @@ type captureContextKey struct{}
 // The transport writes from norma's stream-reading goroutine while the Recorder
 // snapshots at stream end, so all state is mutex-guarded.
 type Capture struct {
-	mu       sync.Mutex
-	request  string
-	attempts []*attempt
+	mu           sync.Mutex
+	request      string
+	attempts     []*attempt
+	metadataOnly bool
 }
 
 type attempt struct {
-	status int
-	body   strings.Builder
+	status    int
+	body      strings.Builder
+	bytesRead int64
 }
 
 // NewCapture returns a context carrying a fresh Capture, plus the Capture itself.
@@ -42,6 +45,16 @@ func NewCapture(ctx context.Context) (context.Context, *Capture) {
 	c := &Capture{}
 	return context.WithValue(ctx, captureContextKey{}, c), c
 }
+
+// NewMetadataCapture records attempt status and bytes actually read, retaining
+// neither outgoing request bodies nor response bodies.
+func NewMetadataCapture(ctx context.Context) (context.Context, *Capture) {
+	c := &Capture{metadataOnly: true}
+	return context.WithValue(ctx, captureContextKey{}, c), c
+}
+
+// RecordsBodies reports whether the transport needs to copy wire payloads.
+func (c *Capture) RecordsBodies() bool { return c != nil && !c.metadataOnly }
 
 // CaptureFrom returns the Capture attached to ctx, or nil when raw capture is
 // off. Callers must tolerate nil — recording is a toggle, and non-recorded
@@ -57,7 +70,7 @@ func CaptureFrom(ctx context.Context) *Capture {
 // SetRequest stores the outgoing request body. Retries re-send identical bytes,
 // so only the first attempt's body is kept.
 func (c *Capture) SetRequest(body string) {
-	if c == nil || body == "" {
+	if c == nil || c.metadataOnly || body == "" {
 		return
 	}
 	c.mu.Lock()
@@ -67,8 +80,8 @@ func (c *Capture) SetRequest(body string) {
 	}
 }
 
-// TeeResponse opens a new attempt and wraps rc so everything read from it is
-// mirrored into that attempt. It tees rather than reads because a successful
+// TeeResponse opens a new attempt and counts bytes read from rc. Full captures
+// also mirror those bytes. It tees rather than reads because a successful
 // response is an SSE stream that must keep streaming to the caller.
 func (c *Capture) TeeResponse(status int, rc io.ReadCloser) io.ReadCloser {
 	if c == nil || rc == nil {
@@ -96,7 +109,7 @@ func (c *Capture) RawRequest() string {
 // attempts are concatenated behind per-attempt header lines so a retry sequence
 // stays readable.
 func (c *Capture) RawResponse() string {
-	if c == nil {
+	if !c.RecordsBodies() {
 		return ""
 	}
 	c.mu.Lock()
@@ -123,6 +136,9 @@ func (c *Capture) RawResponse() string {
 type Attempt struct {
 	Status int
 	Body   string
+	// BytesRead is the number of response bytes consumed through the capture,
+	// which may be less than the full response when a retry closes it early.
+	BytesRead int64
 }
 
 // Attempts returns every round trip in order. Unlike RawResponse — which drops
@@ -136,7 +152,7 @@ func (c *Capture) Attempts() []Attempt {
 	defer c.mu.Unlock()
 	out := make([]Attempt, 0, len(c.attempts))
 	for _, a := range c.attempts {
-		out = append(out, Attempt{Status: a.status, Body: a.body.String()})
+		out = append(out, Attempt{Status: a.status, Body: a.body.String(), BytesRead: a.bytesRead})
 	}
 	return out
 }
@@ -153,7 +169,10 @@ func (t *teeBody) Read(p []byte) (int, error) {
 	n, err := t.rc.Read(p)
 	if n > 0 {
 		t.c.mu.Lock()
-		t.a.body.Write(p[:n])
+		t.a.bytesRead += int64(n)
+		if !t.c.metadataOnly {
+			t.a.body.Write(p[:n])
+		}
 		t.c.mu.Unlock()
 	}
 	return n, err

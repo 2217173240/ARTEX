@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -375,7 +376,7 @@ func (t quotaAwareTransport) RoundTrip(req *http.Request) (*http.Response, error
 	// them: norma builds the request body internally and decodes the SSE response
 	// before either reaches the recorder.
 	capt := llmrec.CaptureFrom(req.Context())
-	if capt != nil {
+	if capt.RecordsBodies() {
 		capt.SetRequest(requestBodySnapshot(req))
 	}
 
@@ -450,36 +451,42 @@ func quotaAwareHTTPClient(proxy, sessionHeaderKey string) (*http.Client, error) 
 	}, nil
 }
 
-// logTestConnection prints the raw HTTP status code(s) and response body of a
-// connection test to the server log, so "点击测试" leaves a diagnosable trail of
-// exactly what the gateway returned — 401 bodies, quota text, empty frames — not
-// just the collapsed ok/err the UI shows. Bodies are clipped to keep a chatty
-// SSE stream from flooding the log.
+// logTestConnection records diagnostic metadata only. Gateway bodies can contain
+// credentials, so even clipped bodies must not be copied into the server log.
 func logTestConnection(c Config, capt *llmrec.Capture) {
 	attempts := capt.Attempts()
+	model := testConnectionLogValue(c.Model)
+	origin := testConnectionLogValue(testConnectionOrigin(llm.ResolveBaseURL(c.Format, c.BaseURL)))
 	if len(attempts) == 0 {
 		log.Printf("[llm-test] %s / %s @ %s — 未发出任何 HTTP 请求(配置解析或建连即失败)",
-			c.Provider(), c.Model, c.BaseURL)
+			c.Provider(), model, origin)
 		return
 	}
 	for i, a := range attempts {
-		log.Printf("[llm-test] %s / %s @ %s — 尝试 %d/%d HTTP %d\n响应体: %s",
-			c.Provider(), c.Model, c.BaseURL, i+1, len(attempts), a.Status, clipBody(a.Body))
+		log.Printf("[llm-test] %s / %s @ %s — 尝试 %d/%d HTTP %d 已捕获响应字节数: %d",
+			c.Provider(), model, origin, i+1, len(attempts), a.Status, a.BytesRead)
 	}
 }
 
-// clipBody trims a wire body for logging. 4K is plenty to show an error JSON or
-// the head of an SSE stream while bounding a runaway response.
-func clipBody(s string) string {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return "(空)"
+// testConnectionLogValue keeps untrusted values within a quoted, ASCII field;
+// escaping brackets also prevents their contents from posing as log tags.
+func testConnectionLogValue(s string) string {
+	return strings.NewReplacer("[", `\u005b`, "]", `\u005d`).Replace(strconv.QuoteToASCII(s))
+}
+
+func testConnectionOrigin(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+		return "(invalid origin)"
 	}
-	const max = 4096
-	if len(s) > max {
-		return s[:max] + fmt.Sprintf("…(截断,共 %d 字节)", len(s))
+	// Restrict the logged authority to DNS/IP characters, including IPv6 and
+	// ports. Reject escaped, Unicode, control and tag-like host content.
+	for _, ch := range u.Host {
+		if !(ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' || strings.ContainsRune(".-:[]", ch)) {
+			return "(invalid origin)"
+		}
 	}
-	return s
+	return u.Scheme + "://" + u.Host
 }
 
 // TestConnection makes a minimal real completion to verify the provider/model/
@@ -492,10 +499,8 @@ func TestConnection(ctx context.Context, c Config) (time.Duration, string, error
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	// 抓取原始 wire 报文:连接测试最需要看到的就是网关到底回了什么(状态码+响应体),
-	// 而 norma 把响应解码成 StreamEvent 后这些就没了。quotaAwareTransport 会在
-	// context 里找到这个 Capture 并填入每次 HTTP 尝试的状态码与 body。
-	ctx, capt := llmrec.NewCapture(ctx)
+	// 连接测试仅保留状态码与实际读取的响应字节数，不缓存请求或响应原文。
+	ctx, capt := llmrec.NewMetadataCapture(ctx)
 	defer logTestConnection(c, capt)
 	// 连接测试是一条单发路径,不经过 agentcore 的会话循环,因此没人往 context 上挂
 	// session id。对配了 SessionHeaderKey 的端点(如 opencode zen 强制要求
