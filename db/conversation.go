@@ -247,14 +247,24 @@ RETURNING id`, convID, utf8Clean(a.Worker), utf8Clean(a.Kind), utf8Clean(a.Tool)
 // ConvActivityList returns a conversation's steps after sinceID (exclusive) with
 // the summary-only column set (detail is lazy-loaded via ConvActivityDetail).
 func (d *DB) ConvActivityList(convID, sinceID int64, limit int) ([]Activity, int64, error) {
+	items, cursor, _, err := d.ConvActivityListPage(convID, sinceID, limit)
+	return items, cursor, err
+}
+
+// ConversationActivityTailLimit bounds each incremental conversation page.
+const ConversationActivityTailLimit = 1000
+
+// ConvActivityListPage also reports whether another incremental page remains.
+func (d *DB) ConvActivityListPage(convID, sinceID int64, limit int) ([]Activity, int64, bool, error) {
 	if limit <= 0 {
 		limit = 500
 	}
+	limit = min(limit, ConversationActivityTailLimit)
 	const cols = `id, COALESCE(worker,''), COALESCE(kind,''), COALESCE(tool,''), COALESCE(tool_use_id,''), is_error, COALESCE(summary,''), created_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens`
 	rows, err := d.Query(`SELECT `+cols+`
-FROM conversation_activities WHERE conversation_id=$1 AND id>$2 ORDER BY id LIMIT $3`, convID, sinceID, limit)
+FROM conversation_activities WHERE conversation_id=$1 AND id>$2 ORDER BY id LIMIT $3`, convID, sinceID, limit+1)
 	if err != nil {
-		return nil, sinceID, err
+		return nil, sinceID, false, err
 	}
 	defer rows.Close()
 	out := []Activity{}
@@ -263,14 +273,21 @@ FROM conversation_activities WHERE conversation_id=$1 AND id>$2 ORDER BY id LIMI
 		var a Activity
 		if err := rows.Scan(&a.ID, &a.Worker, &a.Kind, &a.Tool, &a.ToolUseID, &a.IsError, &a.Summary, &a.CreatedAt,
 			&a.InputTokens, &a.OutputTokens, &a.CacheReadTokens, &a.CacheWriteTokens); err != nil {
-			return nil, sinceID, err
-		}
-		if a.ID > cursor {
-			cursor = a.ID
+			return nil, sinceID, false, err
 		}
 		out = append(out, a)
 	}
-	return out, cursor, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, sinceID, false, err
+	}
+	hasMore := len(out) > limit
+	if hasMore {
+		out = out[:limit]
+	}
+	if len(out) > 0 {
+		cursor = out[len(out)-1].ID
+	}
+	return out, cursor, hasMore, nil
 }
 
 // ConvActivityPage returns one page for reverse (newest-first) pagination: up to
@@ -282,6 +299,7 @@ func (d *DB) ConvActivityPage(convID, before int64, limit int) ([]Activity, bool
 	if limit <= 0 {
 		limit = 200
 	}
+	limit = min(limit, 200)
 	const cols = `id, COALESCE(worker,''), COALESCE(kind,''), COALESCE(tool,''), COALESCE(tool_use_id,''), is_error, COALESCE(summary,''), created_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens`
 	// fetch one extra row to detect whether older history remains before this window.
 	rows, err := d.Query(`SELECT `+cols+`

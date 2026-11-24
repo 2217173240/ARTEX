@@ -56,7 +56,7 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectVa
 import { Spinner } from "@/components/ui/spinner";
 import { useSideQuestions } from "@/hooks/use-side-questions";
 import { mergeActivities } from "@/lib/activity-merge";
-import { ApiError, api } from "@/lib/api";
+import { ApiError, api, conversationTailRetryDelay } from "@/lib/api";
 import { shouldSubmitOnKey, useChatSendMode } from "@/lib/chat-send-mode";
 import { getLocalStorageValue, setLocalStorageValue } from "@/lib/local-storage.client";
 import { isBtwCommand } from "@/lib/side-questions";
@@ -523,6 +523,8 @@ function ChatView({
   const approvalFocus = useApprovalFocus({ conversationId: conv.id });
   const [messages, setMessages] = React.useState<Activity[]>([]);
   const [running, setRunning] = React.useState(false);
+  const [tailPending, setTailPending] = React.useState(false);
+  const [tailError, setTailError] = React.useState<string | null>(null);
   const [input, setInput] = React.useState(initial?.input ?? "");
   const [sending, setSending] = React.useState(false);
   const [stopping, setStopping] = React.useState(false);
@@ -573,6 +575,8 @@ function ChatView({
     setMessages([]);
     setHistoryLoaded(false);
     setRunning(false);
+    setTailPending(false);
+    setTailError(null);
     let live = true;
     api
       .conversationHistory(conv.id, 0, HISTORY_PAGE)
@@ -604,26 +608,39 @@ function ChatView({
 
   // poll while a turn is running: pull new steps after the cursor.
   React.useEffect(() => {
-    if (!running) return;
+    if ((!running && !tailPending) || tailError) return;
     let live = true;
+    let failures = 0;
     let timer: ReturnType<typeof setTimeout>;
     const tick = async () => {
       let keepPolling = true;
+      let delay = 1000;
       try {
         const r = await api.conversationMessages(conv.id, cursorRef.current);
         if (!live) return;
         if (r.items.length) {
           setMessages((prev) => mergeActivities(prev, r.items));
         }
+        const advanced = r.items.length > 0 && r.cursor > cursorRef.current;
         cursorRef.current = Math.max(cursorRef.current, r.cursor);
-        keepPolling = r.running;
+        keepPolling = r.running || (r.hasMore && advanced);
+        setTailPending(r.hasMore);
         setRunning(r.running);
+        failures = 0;
+        if (r.hasMore && !advanced) {
+          keepPolling = false;
+          setTailError(uiText("消息加载未取得进展，请重试"));
+        }
         if (!r.running) onTitleMaybeChanged(); // first-turn auto-title landed
-      } catch {
-        /* transient — keep polling */
+      } catch (error) {
+        if (!live) return;
+        const retryDelay = conversationTailRetryDelay(error, ++failures);
+        keepPolling = retryDelay !== null;
+        delay = retryDelay ?? 1000;
+        if (!keepPolling) setTailError(error instanceof Error ? error.message : String(error));
       } finally {
         // Slow responses must not overlap another poll with the same cursor.
-        if (live && keepPolling) timer = setTimeout(() => void tick(), 1000);
+        if (live && keepPolling) timer = setTimeout(() => void tick(), delay);
       }
     };
     void tick();
@@ -631,7 +648,7 @@ function ChatView({
       live = false;
       clearTimeout(timer);
     };
-  }, [running, conv.id, onTitleMaybeChanged]);
+  }, [running, tailPending, tailError, conv.id, onTitleMaybeChanged, uiText]);
 
   const loadFocusPage = React.useCallback(
     (before: number) => api.conversationHistory(conv.id, before, HISTORY_PAGE),
@@ -826,6 +843,18 @@ function ChatView({
       </div>
 
       <ApprovalExecutionFocus focus={approvalFocus} history={focusHistory} />
+
+      {tailError && (
+        <div role="alert" className="flex items-center gap-2 px-4 py-2 text-sm">
+          <span>
+            {uiText("消息加载失败：")}
+            {tailError}
+          </span>
+          <Button variant="outline" size="sm" onClick={() => setTailError(null)}>
+            {uiText("重试")}
+          </Button>
+        </div>
+      )}
 
       {/* messages */}
       <ScrollArea type="auto" className="min-h-0 min-w-0 flex-1 [&_[data-slot=scroll-area-viewport]>div]:block!">

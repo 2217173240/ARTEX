@@ -452,6 +452,8 @@
   "及其独占下游已彻底删除": "And its exclusive downstream have been fully deleted",
   "已删除（原因已记录，规划者将据此重新规划": "Deleted (reason recorded, planner will replan accordingly)",
   "加载失败": "Load Failed",
+  "消息加载失败：": "Could not load messages: ",
+  "消息加载未取得进展，请重试": "The message cursor did not advance. Try again.",
   "请稍后重试": "Please Try Again Later",
   "消息不能超过": "Message Cannot Exceed",
   "个字符": "characters",

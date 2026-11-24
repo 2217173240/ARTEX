@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/Autumn-27/artex/db"
@@ -125,32 +126,44 @@ func SingleFindingMarkdown(f *db.DBFinding, generatedAt time.Time) string {
 	return b.String()
 }
 
-var unsafeFilenameChars = regexp.MustCompile(`[^\p{Han}\p{L}\p{N}._-]+`)
+var unsafeFilenameChars = regexp.MustCompile(`[^\p{L}\p{M}\p{N}._-]+`)
 
 // FindingFilename 为「一漏洞一文件」生成安全的 .md 文件名,形如
-// `critical_SQL注入_#123.md`。去掉路径分隔符与控制字符,避免 zip 内非法路径。
+// `critical_SQL注入__123.md`。为真实 finding/case ID 保留字节预算，
+// 去掉路径分隔符与危险双向控制符，保留国际文字及其组合符。
 func FindingFilename(f *db.DBFinding) string {
 	sev := nz(f.Severity, "info")
 	title := findingTitle(f)
-	name := fmt.Sprintf("%s_%s_#%d", sev, title, f.ID)
+	name := fmt.Sprintf("%s_%s", sev, title)
+	suffix := fmt.Sprintf("__%d", f.ID)
 	if f.ExportCaseID > 0 {
-		name = fmt.Sprintf("case_%d_%s_%s", f.ExportCaseID, sev, title)
+		name = fmt.Sprintf("case_%d_%s", f.ExportCaseID, name)
+		suffix = ""
 	}
+	name = strings.Map(func(r rune) rune {
+		if unicode.Is(unicode.Bidi_Control, r) {
+			return -1
+		}
+		return r
+	}, name)
 	name = unsafeFilenameChars.ReplaceAllString(name, "_")
-	name = strings.Trim(name, "._")
+	name = strings.TrimLeft(name, "._")
+	if f.ExportCaseID > 0 {
+		name = strings.TrimRight(name, "._")
+	}
 	if name == "" {
 		name = fmt.Sprintf("finding_%d", f.ID)
 	}
 	// 防御性:再剥一层路径,杜绝 zip slip。
 	name = path.Base(name)
-	if len(name) > 120 {
-		end := 120
+	if budget := 120 - len(suffix); len(name) > budget {
+		end := budget
 		for !utf8.RuneStart(name[end]) {
 			end--
 		}
 		name = name[:end]
 	}
-	return name + ".md"
+	return name + suffix + ".md"
 }
 
 // FindingsCSV 把一批 findings 渲染成 CSV(带 UTF-8 BOM,便于 Excel 正确识别中文)。
@@ -170,18 +183,36 @@ func FindingsCSV(fs []*db.DBFinding) []byte {
 		}
 		_ = w.Write([]string{
 			id,
-			findingTitle(f),
-			f.VulnClass,
-			nz(f.Severity, "info"),
-			nz(f.Status, "pending"),
-			f.TaskDescription,
+			csvCell(findingTitle(f)),
+			csvCell(f.VulnClass),
+			csvCell(nz(f.Severity, "info")),
+			csvCell(nz(f.Status, "pending")),
+			csvCell(f.TaskDescription),
 			f.CreatedAt.Format("2006-01-02 15:04:05"),
-			strings.TrimSpace(f.Summary),
+			csvCell(strings.TrimSpace(f.Summary)),
 			fmt.Sprint(len(f.TrafficBindings)), findingTrafficIDs(f),
 		})
 	}
 	w.Flush()
 	return buf.Bytes()
+}
+
+var csvNumber = regexp.MustCompile(`^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$`)
+
+// CSV quoting preserves delimiters; an apostrophe prevents spreadsheet formula
+// interpretation, including after leading whitespace or invisible controls.
+func csvCell(s string) string {
+	trimmed := strings.TrimLeftFunc(s, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsControl(r) || unicode.Is(unicode.Cf, r)
+	})
+	first, _ := utf8.DecodeRuneInString(trimmed)
+	if trimmed != "" && strings.ContainsRune("=+-@＝＋－＠", first) && !csvNumber.MatchString(trimmed) {
+		return "'" + s
+	}
+	if len(s) > 0 && (s[0] == '\t' || s[0] == '\r' || s[0] == '\n' || s[0] == 0) {
+		return "'" + s
+	}
+	return s
 }
 
 func findingTrafficIDs(f *db.DBFinding) string {
