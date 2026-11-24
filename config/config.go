@@ -245,16 +245,10 @@ func (d Database) buildDSN() string {
 	return u.String()
 }
 
-// String is a redacted view of the resolved DSN (password masked) for logging.
+// Redact omits the entire DSN: credentials can occur in any connection field.
 func Redact(dsn string) string {
-	u, err := url.Parse(dsn)
-	if err != nil {
-		return dsn
+	if dsn == "" {
+		return ""
 	}
-	if u.User != nil {
-		if _, hasPw := u.User.Password(); hasPw {
-			u.User = url.UserPassword(u.User.Username(), "****")
-		}
-	}
-	return fmt.Sprintf("%s", u.String())
+	return "[REDACTED DSN]"
 }
