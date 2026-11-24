@@ -575,6 +575,10 @@ func (s *Server) cancelSideRequest(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) sideEvents(w http.ResponseWriter, r *http.Request) {
+	authorized, ok := s.streamAuthorization(w, r)
+	if !ok {
+		return
+	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writePublicErr(w, 500, "streaming unavailable")
@@ -596,7 +600,7 @@ func (s *Server) sideEvents(w http.ResponseWriter, r *http.Request) {
 	seq := int64(-1)
 	tick := time.NewTicker(250 * time.Millisecond)
 	defer tick.Stop()
-	heartbeat := time.NewTicker(15 * time.Second)
+	heartbeat := time.NewTicker(streamAuthInterval)
 	defer heartbeat.Stop()
 	for {
 		e := first
@@ -605,6 +609,9 @@ func (s *Server) sideEvents(w http.ResponseWriter, r *http.Request) {
 			e, err = s.m.pg.SideRequest(r.Context(), id)
 		}
 		if err != nil {
+			return
+		}
+		if !authorized(false) {
 			return
 		}
 		if e == nil {
@@ -628,6 +635,9 @@ func (s *Server) sideEvents(w http.ResponseWriter, r *http.Request) {
 			return
 		case <-tick.C:
 		case <-heartbeat.C:
+			if !authorized(true) {
+				return
+			}
 			fmt.Fprint(w, ": keepalive\n\n")
 			flusher.Flush()
 		}

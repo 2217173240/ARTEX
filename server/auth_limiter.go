@@ -1,6 +1,8 @@
 package server
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"net/netip"
 	"strconv"
@@ -24,9 +26,10 @@ type authAttemptBucket struct {
 	attempts int
 }
 
-// authRequestLimiter uses fixed windows starting at each peer's first attempt.
-// Login and initialization share it, so switching endpoints does not reset the
-// quota. Only RemoteAddr identifies a peer; forwarding headers are untrusted.
+// authRequestLimiter uses bounded, expiring fixed windows per key. The peer
+// quota is shared by login, initialization and authenticated password changes.
+// Password changes also use a separate instance keyed by session digest.
+// Only RemoteAddr identifies a peer; forwarding headers are untrusted.
 // Behind a reverse proxy, the gateway must enforce limits per actual client,
 // since ARTEX sees the gateway's IP and applies one shared quota to that peer.
 // The zero value is usable and expired entries are pruned during requests; no
@@ -51,7 +54,10 @@ func authRemoteIP(remoteAddr string) string {
 
 // reserve consumes one attempt, or returns the time until an attempt is allowed.
 func (l *authRequestLimiter) reserve(remoteAddr string) time.Duration {
-	ip := authRemoteIP(remoteAddr)
+	return l.reserveKey(authRemoteIP(remoteAddr))
+}
+
+func (l *authRequestLimiter) reserveKey(key string) time.Duration {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := time.Now()
@@ -61,15 +67,15 @@ func (l *authRequestLimiter) reserve(remoteAddr string) time.Duration {
 	if l.clients == nil {
 		l.clients = make(map[string]authAttemptBucket)
 	}
-	if bucket, ok := l.clients[ip]; ok && now.Before(bucket.expires) {
+	if bucket, ok := l.clients[key]; ok && now.Before(bucket.expires) {
 		if bucket.attempts >= authAttemptLimit {
 			return bucket.expires.Sub(now)
 		}
 		bucket.attempts++
-		l.clients[ip] = bucket
+		l.clients[key] = bucket
 		return 0
 	}
-	if _, exists := l.clients[ip]; !exists && len(l.clients) >= maxAuthClients {
+	if _, exists := l.clients[key]; !exists && len(l.clients) >= maxAuthClients {
 		// Scan only when capacity is needed, keeping the normal peer path O(1).
 		// Expired buckets can be removed safely; live ones retain their quota.
 		retry := authAttemptPeriod
@@ -84,12 +90,27 @@ func (l *authRequestLimiter) reserve(remoteAddr string) time.Duration {
 			return retry
 		}
 	}
-	l.clients[ip] = authAttemptBucket{expires: now.Add(authAttemptPeriod), attempts: 1}
+	l.clients[key] = authAttemptBucket{expires: now.Add(authAttemptPeriod), attempts: 1}
 	return 0
 }
 
 func (s *Server) allowAuthAttempt(w http.ResponseWriter, r *http.Request) bool {
-	if retry := s.authLimiter.reserve(r.RemoteAddr); retry > 0 {
+	return allowAuthRetry(w, s.authLimiter.reserve(r.RemoteAddr))
+}
+
+// Only verified administrator sessions reach this quota. Store a fixed-size
+// digest rather than credentials, and reject exhausted sessions before they
+// can consume a new peer's login quota.
+func (s *Server) allowPasswordChangeAttempt(w http.ResponseWriter, r *http.Request) bool {
+	digest := sha256.Sum256([]byte(extractToken(r)))
+	if !allowAuthRetry(w, s.passwordChangeLimiter.reserveKey(hex.EncodeToString(digest[:]))) {
+		return false
+	}
+	return s.allowAuthAttempt(w, r)
+}
+
+func allowAuthRetry(w http.ResponseWriter, retry time.Duration) bool {
+	if retry > 0 {
 		seconds := (retry + time.Second - 1) / time.Second
 		w.Header().Set("Retry-After", strconv.FormatInt(int64(seconds), 10))
 		writeErr(w, http.StatusTooManyRequests, "尝试过于频繁，请稍后重试")

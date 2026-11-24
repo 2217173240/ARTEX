@@ -281,6 +281,9 @@ func (s *Server) authChangePassword(w http.ResponseWriter, r *http.Request) {
 	if !authenticated {
 		return
 	}
+	if !s.allowPasswordChangeAttempt(w, r) {
+		return
+	}
 	pg := s.m.pg
 	var req struct {
 		OldPassword string `json:"old_password"`

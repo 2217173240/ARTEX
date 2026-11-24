@@ -58,7 +58,25 @@ func TestActivityStreamReconnectAfterOverflowPrefix(t *testing.T) {
 	if count != 256 || last != ids[255] {
 		t.Fatalf("prefix count=%d last=%d", count, last)
 	}
-	s := &Server{m: m, engine: &Engine{bc: b}}
+	s := &Server{m: m, engine: &Engine{bc: b}, jwtKey: []byte("activity-stream-test-private-key-32bytes")}
+	previousHash, existed, err := m.pg.GetSetting(authPassKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if existed {
+			_ = m.pg.SetSetting(authPassKey, previousHash)
+		} else {
+			_, _ = m.pg.Exec(`DELETE FROM settings WHERE key=$1`, authPassKey)
+		}
+	}()
+	if err := m.pg.SetSetting(authPassKey, "activity-stream-test-credential"); err != nil {
+		t.Fatal(err)
+	}
+	token, err := s.signAdminJWT("activity-stream-test-credential")
+	if err != nil {
+		t.Fatal(err)
+	}
 	httpServer := httptest.NewServer(http.HandlerFunc(s.streamActivity))
 	defer httpServer.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -68,6 +86,7 @@ func TestActivityStreamReconnectAfterOverflowPrefix(t *testing.T) {
 		t.Fatal(err)
 	}
 	req.Header.Set("Last-Event-ID", strconv.FormatInt(last, 10))
+	req.Header.Set("Authorization", "Bearer "+token)
 	response, err := httpServer.Client().Do(req)
 	if err != nil {
 		t.Fatal(err)
