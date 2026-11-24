@@ -139,7 +139,13 @@ func tokenize(s string) ([]tok, error) {
 type dslParser struct {
 	tokens []tok
 	pos    int
+	depth  int
 }
+
+const (
+	dslMaxLen   = 4096
+	dslMaxDepth = 32
+)
 
 func (p *dslParser) peek() tok {
 	if p.pos >= len(p.tokens) {
@@ -201,8 +207,13 @@ func (p *dslParser) parseAtom() (*astNode, error) {
 		p.consume()
 		return leafNode(*t.expr), nil
 	case tkLP:
+		if p.depth >= dslMaxDepth {
+			return nil, fmt.Errorf("DSL 语法错误：括号嵌套不能超过 %d 层", dslMaxDepth)
+		}
+		p.depth++
 		p.consume()
 		node, err := p.parseOr()
+		p.depth--
 		if err != nil {
 			return nil, err
 		}
@@ -231,6 +242,9 @@ func (p *dslParser) parseAtom() (*astNode, error) {
 // Operators: AND OR (case-insensitive), parentheses for grouping.
 // AND binds tighter than OR.
 func ParseDSL(s string) (*astNode, error) {
+	if len(s) > dslMaxLen {
+		return nil, fmt.Errorf("DSL 查询不能超过 %d 字节", dslMaxLen)
+	}
 	if strings.TrimSpace(s) == "" {
 		return nil, nil
 	}

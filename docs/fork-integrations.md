@@ -13,6 +13,10 @@
 
 依赖更新参考了 ldevbr 的 [#415](https://github.com/BaaRai/ARTEX/pull/415)（`3feeb37a`）和 BaaRai 的 [#518](https://github.com/BaaRai/ARTEX/pull/518)（`375b4913`）。版本按本项目的 Go 模块图和 Go 漏洞数据库选择，根模块与保留的代理模块同步更新。Python 基础镜像的固定与每周刷新参考了 YunzhouLi-hub 的 [#397](https://github.com/BaaRai/ARTEX/pull/397)（`39ae2562`）和 BaaRai 的 [#511](https://github.com/BaaRai/ARTEX/pull/511)（`fde08775`）。[容器镜像维护说明](container-image-pins.md)
 
+工作区文件保护参考了 BaaRai 的 [#387](https://github.com/BaaRai/ARTEX/pull/387)（`73ab430c`），保留本 fork 的 `os.Root` 和合法工作区别名。Coff0xc 的 [#352](https://github.com/BaaRai/ARTEX/pull/352)（`bf6feefb`）与 [#353](https://github.com/BaaRai/ARTEX/pull/353)（`16b04cfb`）用于核查会话分页和查询解析器的资源上限。会话增量读取通过游标保留后续页，任务停止后页面继续读取剩余消息。资产过滤表达式在分词前检查字节数，在解析时检查括号深度。
+
+2026-11-24 适配 [BaaRai/ARTEX PR #340](https://github.com/BaaRai/ARTEX/pull/340)（Coff0xc，head `fde809dd0ca5cd6eca452a7a0a1e9b929bac7f4b`）的 CSV 公式防护与 [PR #445](https://github.com/BaaRai/ARTEX/pull/445)（Dr. Mohammed Lubbad / mlubbad，head `da23d7df473b976a3144f68c071c213b2ba15893`）的导出文件名身份保留。两份固定来源的 LICENSE blob 均为 `be3f7b28e564e7dd05eaf59d64adba1a4065ac0e`（AGPL-3.0），与本仓库的 merge-base 均为 `ad9f14f140eb240d635c896aceb39ef40af4b2dd`。CSV 在实际文本输出点为公式候选及前导制表、换行、NUL 控制添加单引号，检查前导空白和不可见控制后面的公式符号，并保留全角公式前缀的原始可读字符；普通文本、数字列及完整十进制数字文本保持原有语义。继续使用 encoding/csv 处理分隔符与引号。Markdown 文件名保留 120 字节基本名预算和有效 UTF-8，为原 finding ID 后缀（`__7.md`）预留字节，统一 case 沿用真实 ID 前缀（`case_42_`），正常短文件名保持兼容；危险双向控制符被删除，国际字符及组合符保持可读。未采用来源删除全部组合符的处理。合成文本回归在原实现上失败；report race 与真实 ZIP 序列化回归通过，未在办公软件执行内容。全角符号按 [OWASP CSV Injection](https://community.owasp.org/attacks/CSV_Injection) 的地区及应用差异说明处理，未宣称验证了特定办公软件或保存后重开行为。
+
 2026-11-24 根据 Coff0xc 的 [PostgreSQL 连接串脱敏修复](https://github.com/BaaRai/ARTEX/commit/7d28638980ce5d7494856386c258b80760aa7bcd) 核查了数据库启动报错。ARTEX 的日志省略整个连接串，避免关键字参数、转义值和 URL 查询参数泄露密码。数据库连接错误显示失败阶段和原因类别，调用方仍可通过 Go 的 `errors.Is` 和 `errors.As` 判断取消、超时与驱动错误。回归测试使用合成凭据及实际 pgx 解析器。来源采用 AGPL-3.0，与本仓库的共同祖先为 `ad9f14f140eb240d635c896aceb39ef40af4b2dd`。
 
 2026-11-19 适配三项同源改进，基线 `fad1557ea004ee4b84abd7032f1c4bda88d446d2`：

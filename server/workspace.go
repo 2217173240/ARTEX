@@ -2,12 +2,14 @@ package server
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -46,7 +48,7 @@ func (s *Server) wsRel(name string) string {
 
 // wsOpen pins the workspace directory for the entire request, so later path
 // lookups do not reopen it by name if it is renamed or replaced.
-func (s *Server) wsOpen(w http.ResponseWriter, rel string) (*os.Root, string) {
+func (s *Server) wsOpen(w http.ResponseWriter, rel string) (*workspaceRoot, string) {
 	name, ok := s.wsResolve(rel)
 	if !ok {
 		writeErr(w, 400, "非法路径")
@@ -57,7 +59,182 @@ func (s *Server) wsOpen(w http.ResponseWriter, rel string) (*os.Root, string) {
 		writeErr(w, 500, "工作区不可用："+err.Error())
 		return nil, ""
 	}
-	return root, name
+	guard := &workspaceRoot{handle: root}
+	if _, err := guard.resolve(name, false); err != nil {
+		root.Close()
+		writeErr(w, 403, "工作区路径不可访问")
+		return nil, ""
+	}
+	return guard, name
+}
+
+// workspaceRoot protects internal storage from ordinary file-manager operations.
+// Resolution uses the already opened root and operations use the resolved name,
+// preserving stable workspace aliases. A process with filesystem write access can
+// still replace directories concurrently; this is not a process sandbox.
+type workspaceRoot struct{ handle *os.Root }
+
+func (root *workspaceRoot) Close() error { return root.handle.Close() }
+
+func workspaceReserved(name string, ancestors bool) bool {
+	parts := strings.Split(filepath.ToSlash(filepath.Clean(name)), "/")
+	for i := range parts {
+		if runtime.GOOS == "windows" {
+			parts[i] = strings.TrimRight(parts[i], ". ")
+		}
+		parts[i] = strings.ToLower(parts[i])
+	}
+	name = strings.Join(parts, "/")
+	for _, reserved := range []string{"traffic/_ca", "traffic/_index"} {
+		if name == reserved || strings.HasPrefix(name, reserved+"/") ||
+			(ancestors && (name == "." || strings.HasPrefix(reserved, name+"/"))) {
+			return true
+		}
+	}
+	return false
+}
+
+func (root *workspaceRoot) resolve(name string, ancestors bool) (string, error) {
+	resolved, err := root.resolvePath(name, true)
+	if err != nil {
+		return "", err
+	}
+	if workspaceReserved(resolved, ancestors) {
+		return "", os.ErrPermission
+	}
+	if ancestors {
+		// traffic itself may be a legitimate workspace symlink. Protect the
+		// backing directories' parents as well as their public path names.
+		for _, reserved := range []string{"traffic/_ca", "traffic/_index"} {
+			internal, err := root.resolvePath(filepath.FromSlash(reserved), false)
+			if err != nil {
+				// An unavailable or out-of-root internal target cannot be
+				// removed through this root; keep ordinary workspace files usable.
+				continue
+			}
+			rel, err := filepath.Rel(resolved, internal)
+			if err == nil && filepath.IsLocal(rel) {
+				return "", os.ErrPermission
+			}
+			// Compare ancestor identity as well: the requested spelling can use
+			// native case or short-name aliases which filepath.Rel cannot match.
+			requested, statErr := root.handle.Stat(resolved)
+			if statErr == nil {
+				for parent := internal; ; parent = filepath.Dir(parent) {
+					info, err := root.handle.Stat(parent)
+					if err == nil && os.SameFile(requested, info) {
+						return "", os.ErrPermission
+					}
+					if parent == "." {
+						break
+					}
+				}
+			}
+		}
+	}
+	return resolved, nil
+}
+
+func (root *workspaceRoot) resolvePath(name string, protect bool) (string, error) {
+	pending := strings.Split(filepath.ToSlash(name), "/")
+	resolved := "."
+	links := 0
+	for len(pending) > 0 {
+		part := pending[0]
+		pending = pending[1:]
+		candidate := filepath.Join(resolved, part)
+		if !filepath.IsLocal(candidate) || (protect && workspaceReserved(candidate, false)) {
+			return "", os.ErrPermission
+		}
+		info, err := root.handle.Lstat(candidate)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		if err == nil && info.Mode()&os.ModeSymlink != 0 {
+			links++
+			if links > 40 {
+				return "", os.ErrPermission
+			}
+			target, err := root.handle.Readlink(candidate)
+			if err != nil || !filepath.IsLocal(filepath.Join(resolved, target)) || filepath.IsAbs(target) {
+				return "", os.ErrPermission
+			}
+			pending = append(strings.Split(filepath.ToSlash(target), "/"), pending...)
+			continue
+		}
+		// Filesystem identity also catches platform aliases such as Windows short
+		// directory names, without assuming a particular case-folding filesystem.
+		if protect && err == nil && info.IsDir() {
+			for _, reserved := range []string{"traffic/_ca", "traffic/_index"} {
+				internal, statErr := root.handle.Stat(filepath.FromSlash(reserved))
+				if statErr == nil && os.SameFile(info, internal) {
+					return "", os.ErrPermission
+				}
+			}
+		}
+		resolved = candidate
+	}
+	return resolved, nil
+}
+
+func (root *workspaceRoot) Open(name string) (*os.File, error) {
+	resolved, err := root.resolve(name, false)
+	if err != nil {
+		return nil, err
+	}
+	return root.handle.Open(resolved)
+}
+
+func (root *workspaceRoot) Stat(name string) (os.FileInfo, error) {
+	resolved, err := root.resolve(name, false)
+	if err != nil {
+		return nil, err
+	}
+	return root.handle.Stat(resolved)
+}
+
+func (root *workspaceRoot) Lstat(name string) (os.FileInfo, error) {
+	if _, err := root.resolve(name, false); err != nil {
+		return nil, err
+	}
+	return root.handle.Lstat(name)
+}
+
+func (root *workspaceRoot) MkdirAll(name string, perm os.FileMode) error {
+	resolved, err := root.resolve(name, false)
+	if err != nil {
+		return err
+	}
+	return root.handle.MkdirAll(resolved, perm)
+}
+
+func (root *workspaceRoot) WriteFile(name string, data []byte, perm os.FileMode) error {
+	resolved, err := root.resolve(name, false)
+	if err != nil {
+		return err
+	}
+	return root.handle.WriteFile(resolved, data, perm)
+}
+
+func (root *workspaceRoot) Create(name string) (*os.File, error) {
+	resolved, err := root.resolve(name, false)
+	if err != nil {
+		return nil, err
+	}
+	return root.handle.Create(resolved)
+}
+
+func (root *workspaceRoot) RemoveAll(name string) error {
+	if _, err := root.resolve(name, true); err != nil {
+		return err
+	}
+	// Resolve only the parent for removal: deleting a legitimate symlink must
+	// unlink the alias, preserving its target and the target's contents.
+	parent, err := root.resolve(filepath.Dir(name), false)
+	if err != nil {
+		return err
+	}
+	return root.handle.RemoveAll(filepath.Join(parent, filepath.Base(name)))
 }
 
 type wsEntry struct {
@@ -234,6 +411,10 @@ func (s *Server) wsDelete(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "不能删除工作区根目录")
 		return
 	}
+	if _, err := root.resolve(name, true); err != nil {
+		writeErr(w, 403, "工作区路径不可删除")
+		return
+	}
 	if _, err := root.Stat(name); err != nil {
 		writeErr(w, 404, "路径不存在")
 		return
@@ -296,6 +477,17 @@ func (s *Server) wsUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	saved := 0
+	// Validate every final filename before saving any part of this request.
+	for _, hdr := range files {
+		name := filepath.Base(hdr.Filename)
+		if name == "" || name == "." || name == ".." {
+			continue
+		}
+		if _, err := root.resolve(filepath.Join(dirName, name), false); err != nil {
+			writeErr(w, 403, "工作区路径不可访问")
+			return
+		}
+	}
 	for _, hdr := range files {
 		name := filepath.Base(hdr.Filename) // strip any path component
 		if name == "" || name == "." || name == ".." {

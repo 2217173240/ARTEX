@@ -121,6 +121,19 @@ import type {
 // 单次附件上传的合并文件数据上限；与 server/chatupload.go 的 maxChatUpload 对齐。
 const MAX_CHAT_UPLOAD_BYTES = 512 * 1024 * 1024;
 
+export function conversationTailRetryDelay(error: unknown, failures: number): number | null {
+  if (
+    error instanceof ApiError &&
+    error.status >= 400 &&
+    error.status < 500 &&
+    error.status !== 408 &&
+    error.status !== 429
+  ) {
+    return null;
+  }
+  return failures >= 1 && failures <= 3 ? 1000 * 2 ** (failures - 1) : null;
+}
+
 export class ApiError extends Error {
   constructor(
     public readonly status: number,
@@ -1105,9 +1118,9 @@ export const api = {
     post<{ items: { id: number; ok: boolean; error?: string }[] }>("/conversations/delete/batch", { ids }),
   // Incremental tail: steps after `since` (id ASC) — live poll + post-send fetch.
   conversationMessages: (id: number, since = 0) =>
-    get<{ items: Activity[]; cursor: number; running: boolean }>(`/conversations/${id}/messages?since=${since}`).then(
-      (r) => ({ items: arr(r.items), cursor: r.cursor ?? 0, running: !!r.running }),
-    ),
+    get<{ items: Activity[]; cursor: number; running: boolean; hasMore: boolean }>(
+      `/conversations/${id}/messages?since=${since}`,
+    ).then((r) => ({ items: arr(r.items), cursor: r.cursor ?? 0, running: !!r.running, hasMore: !!r.hasMore })),
   // Reverse pagination: the latest `limit` steps (before=0) or the page of older
   // steps ending before id `before`. hasMore = still-older steps exist.
   conversationHistory: (id: number, before = 0, limit = 200) => {
