@@ -8,6 +8,7 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"strings"
 	"time"
@@ -129,14 +130,55 @@ func ensureDatabase(dsn string) error {
 	return nil
 }
 
+// connectionError keeps driver diagnostics out of user-facing logs while
+// preserving errors.Is and errors.As for cancellation and retry decisions.
+type connectionError struct {
+	operation string
+	cause     error
+}
+
+func (e *connectionError) Error() string {
+	detail := "connection failed"
+	var parseErr *pgconn.ParseConfigError
+	var networkErr net.Error
+	var postgresErr *pgconn.PgError
+	switch {
+	case errors.As(e.cause, &parseErr):
+		detail = "invalid connection configuration"
+	case errors.Is(e.cause, context.Canceled):
+		detail = "connection canceled"
+	case errors.Is(e.cause, context.DeadlineExceeded):
+		detail = "connection deadline exceeded"
+	case errors.As(e.cause, &postgresErr):
+		switch postgresErr.Code {
+		case "28P01", "28000":
+			detail = "authentication failed"
+		case "3D000":
+			detail = "database does not exist"
+		case "53300":
+			detail = "connection limit reached"
+		default:
+			detail = "database rejected connection"
+		}
+	case errors.As(e.cause, &networkErr):
+		if networkErr.Timeout() {
+			detail = "network connection timed out"
+		} else {
+			detail = "network connection failed"
+		}
+	}
+	return e.operation + ": " + detail
+}
+func (e *connectionError) Unwrap() error { return e.cause }
+
 // Open connects, applies the schema (idempotent), and seeds builtin rows.
 func Open(dsn string) (*DB, error) {
 	if err := ensureDatabase(dsn); err != nil {
-		return nil, err
+		return nil, &connectionError{operation: "prepare postgres", cause: err}
 	}
 	sqlDB, err := sql.Open("pgx", dsn)
 	if err != nil {
-		return nil, err
+		return nil, &connectionError{operation: "open postgres", cause: err}
 	}
 	// database/sql 默认不限制连接数：池里没有空闲连接时会无条件新建，一路顶到
 	// PostgreSQL 的 max_connections（默认 100）才被拒，于是高峰期的查询拿到的是
@@ -150,7 +192,7 @@ func Open(dsn string) (*DB, error) {
 	sqlDB.SetConnMaxIdleTime(5 * time.Minute)
 	if err := sqlDB.Ping(); err != nil {
 		sqlDB.Close()
-		return nil, fmt.Errorf("ping postgres (%s): %w", config.Redact(dsn), err)
+		return nil, &connectionError{operation: "ping postgres", cause: err}
 	}
 	d := &DB{sqlDB}
 	// pgx runs multi-statement Exec via the simple protocol when there are no args.

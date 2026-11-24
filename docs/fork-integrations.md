@@ -1,5 +1,7 @@
 # 同源功能集成
 
+2026-11-24 根据 Coff0xc 的 [PostgreSQL 连接串脱敏修复](https://github.com/BaaRai/ARTEX/commit/7d28638980ce5d7494856386c258b80760aa7bcd) 核查了数据库启动报错。ARTEX 的日志省略整个连接串，避免关键字参数、转义值和 URL 查询参数泄露密码。数据库连接错误显示失败阶段和原因类别，调用方仍可通过 Go 的 `errors.Is` 和 `errors.As` 判断取消、超时与驱动错误。回归测试使用合成凭据及实际 pgx 解析器。来源采用 AGPL-3.0，与本仓库的共同祖先为 `ad9f14f140eb240d635c896aceb39ef40af4b2dd`。
+
 2026-11-19 适配三项同源改进，基线 `fad1557ea004ee4b84abd7032f1c4bda88d446d2`：
 
 | 来源与归属 | 本 fork 的适配 |
