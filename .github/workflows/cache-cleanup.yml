@@ -1,0 +1,42 @@
+name: Cleanup closed PR caches
+
+"on":
+  pull_request_target:
+    types: [closed]
+
+permissions: {}
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    cache-mode: none
+    permissions:
+      actions: write
+      pull-requests: read
+    steps:
+      - name: Delete only the closed PR merge-ref caches
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          ref="refs/pull/$PR_NUMBER/merge"
+          state=$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER" --jq .state)
+          if [ "$state" != closed ]; then
+            echo "PR is open; retaining its caches."
+            exit 0
+          fi
+          ids=$(gh api --method GET "repos/$GH_REPO/actions/caches" -f ref="$ref" -f per_page=100 --paginate --jq ".actions_caches[] | select(.ref == \"$ref\") | .id")
+          for id in $ids; do
+            [[ "$id" =~ ^[0-9]+$ ]]
+            if ! output=$(gh api --method DELETE "repos/$GH_REPO/actions/caches/$id" 2>&1); then
+              if [[ "$output" != *"(HTTP 404)"* ]]; then
+                printf '%s\n' "$output" >&2
+                exit 1
+              fi
+            fi
+          done

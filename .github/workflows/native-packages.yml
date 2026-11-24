@@ -41,7 +41,7 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
         with:
           go-version-file: go.mod
-          # PR caches are merge-ref scoped; only trusted main pushes populate reusable caches.
+          # PR writes remain merge-ref scoped; main pushes populate default-branch caches.
           # Release callers explicitly remain read-only through their caller workflow.
           cache-dependency-path: |
             go.mod
