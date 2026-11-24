@@ -10,7 +10,7 @@
 #   mkdir -p server/webui/dist && cp -r web/out/. server/webui/dist/
 #   CGO_ENABLED=0 GOARCH=amd64 go build -tags embedui -o dist/amd64/artex ./cmd/artex
 #   docker build -t artex:local .
-FROM python:3.12-slim-bookworm
+FROM python:3.12-slim-bookworm@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df
 ARG TARGETARCH
 # 常用工具：ripgrep / curl / vim，加一批 recon 常备件（按需增删）。
 # Node 从 NodeSource 装 22.x：与 CI 保持一致，采集脚本要求 >=22.12。

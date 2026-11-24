@@ -1,5 +1,14 @@
 version: 2
 updates:
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    allow:
+      - dependency-name: python
+    ignore:
+      - dependency-name: python
+        versions: [">=3.13"]
   - package-ecosystem: gomod
     directory: /
     schedule:
