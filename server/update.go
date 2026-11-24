@@ -359,6 +359,10 @@ func (s *Server) updateRollback(w http.ResponseWriter, r *http.Request) {
 
 // updateStream 以 SSE 推送更新进度。
 func (s *Server) updateStream(w http.ResponseWriter, r *http.Request) {
+	authorized, ok := s.streamAuthorization(w, r)
+	if !ok {
+		return
+	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writePublicErr(w, 500, "streaming unsupported")
@@ -379,10 +383,13 @@ func (s *Server) updateStream(w http.ResponseWriter, r *http.Request) {
 	}
 	// 先补一条当前状态，页面刷新后能立刻看到进行中的升级。
 	cur, _ := updHub.snapshot()
+	if !authorized(false) {
+		return
+	}
 	send(cur)
 
 	ctx := r.Context()
-	ping := time.NewTicker(20 * time.Second)
+	ping := time.NewTicker(streamAuthInterval)
 	defer ping.Stop()
 	for {
 		select {
@@ -392,8 +399,14 @@ func (s *Server) updateStream(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
+			if !authorized(false) {
+				return
+			}
 			send(p)
 		case <-ping.C:
+			if !authorized(true) {
+				return
+			}
 			fmt.Fprint(w, ": ping\n\n")
 			flusher.Flush()
 		}

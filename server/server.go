@@ -44,11 +44,12 @@ type Server struct {
 	engine *Engine
 	ctx    context.Context
 
-	skillDir    string // root directory for skill subdirectories
-	jwtKey      []byte // private base key stored in keyDir/jwt.key
-	setupToken  string // private bootstrap ownership proof; never returned by an API
-	basicAuth   basicAuthGate
-	authLimiter authRequestLimiter // shared login/init quota; zero value is ready for use
+	skillDir              string // root directory for skill subdirectories
+	jwtKey                []byte // private base key stored in keyDir/jwt.key
+	setupToken            string // private bootstrap ownership proof; never returned by an API
+	basicAuth             basicAuthGate
+	authLimiter           authRequestLimiter // shared login/init quota; zero value is ready for use
+	passwordChangeLimiter authRequestLimiter // verified session quota; stores token digests
 
 	// concMu serializes concurrency-cap decisions (admission + reconcile) so a
 	// scheduler tick and an HTTP settings change / task creation can't both count
@@ -3127,6 +3128,10 @@ func (s *Server) getLogsHistory(w http.ResponseWriter, r *http.Request) {
 // streamLogs is the live SSE tail of the backend log: replays history after
 // ?since=<seq>, then pushes each new line.
 func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request) {
+	authorized, ok := s.streamAuthorization(w, r)
+	if !ok {
+		return
+	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writePublicErr(w, 500, "streaming unsupported")
@@ -3140,6 +3145,8 @@ func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request) {
 
 	ch, unsub := logSink.subscribe()
 	defer unsub()
+	ping := time.NewTicker(streamAuthInterval)
+	defer ping.Stop()
 	send := func(l LogLine) {
 		b, _ := json.Marshal(l)
 		fmt.Fprintf(w, "data: %s\n\n", b)
@@ -3147,6 +3154,9 @@ func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	lines, cursor := logSink.recent(since, 1000)
 	for _, l := range lines {
+		if !authorized(false) {
+			return
+		}
 		send(l)
 	}
 	if cursor > since {
@@ -3155,8 +3165,6 @@ func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request) {
 	flusher.Flush()
 
 	ctx := r.Context()
-	ping := time.NewTicker(20 * time.Second)
-	defer ping.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -3169,8 +3177,14 @@ func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			since = l.Seq
+			if !authorized(false) {
+				return
+			}
 			send(l)
 		case <-ping.C:
+			if !authorized(true) {
+				return
+			}
 			fmt.Fprint(w, ": ping\n\n")
 			flusher.Flush()
 		}
@@ -3178,6 +3192,10 @@ func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) streamActivity(w http.ResponseWriter, r *http.Request) {
+	authorized, ok := s.streamAuthorization(w, r)
+	if !ok {
+		return
+	}
 	t := s.m.ResolveTask(r.URL.Query().Get("task"))
 	if t == nil {
 		writeErr(w, 404, "task not found")
@@ -3214,6 +3232,8 @@ func (s *Server) streamActivity(w http.ResponseWriter, r *http.Request) {
 	// overlap by skipping channel events whose id was already replayed.
 	ch, unsub := s.engine.Broadcaster().Subscribe(t.ID)
 	defer unsub()
+	ping := time.NewTicker(streamAuthInterval)
+	defer ping.Stop()
 
 	// Emit a standard SSE id: line so the browser echoes it as Last-Event-ID on
 	// auto-reconnect (see cursor precedence above).
@@ -3232,12 +3252,18 @@ func (s *Server) streamActivity(w http.ResponseWriter, r *http.Request) {
 	// the id<=since skip below drops any that this replay already covered.
 	const replayBatch = 500
 	for {
+		if !authorized(false) {
+			return
+		}
 		items, cursor, err := t.Store.ActivityList(intentPtr, since, replayBatch)
 		if err != nil {
 			log.Printf("[activity/stream] task=%s replay since=%d: %v", t.ID, since, err)
 			return
 		}
 		for _, a := range items {
+			if !authorized(false) {
+				return
+			}
 			sendSSE(a)
 		}
 		if cursor > since {
@@ -3250,8 +3276,6 @@ func (s *Server) streamActivity(w http.ResponseWriter, r *http.Request) {
 	flusher.Flush()
 
 	ctx := r.Context()
-	ping := time.NewTicker(20 * time.Second)
-	defer ping.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -3267,8 +3291,14 @@ func (s *Server) streamActivity(w http.ResponseWriter, r *http.Request) {
 				continue // scoped session: only this intent's steps
 			}
 			since = a.ID
+			if !authorized(false) {
+				return
+			}
 			sendSSE(a)
 		case <-ping.C:
+			if !authorized(true) {
+				return
+			}
 			fmt.Fprint(w, ": ping\n\n")
 			flusher.Flush()
 		}

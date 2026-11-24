@@ -101,3 +101,62 @@ func TestCaptureEmptyWhenNoHTTPHappened(t *testing.T) {
 		t.Fatal("unused capture should be empty")
 	}
 }
+
+func TestCaptureMetadataAndFullModes(t *testing.T) {
+	for _, metadataOnly := range []bool{false, true} {
+		t.Run(map[bool]string{false: "full", true: "metadata"}[metadataOnly], func(t *testing.T) {
+			constructor := NewCapture
+			if metadataOnly {
+				constructor = NewMetadataCapture
+			}
+			ctx, c := constructor(context.Background())
+			if CaptureFrom(ctx) != c {
+				t.Fatal("capture missing from context")
+			}
+			c.SetRequest("synthetic-request-credential")
+			const body = "synthetic-response-credential"
+			unread := c.TeeResponse(429, io.NopCloser(strings.NewReader(body)))
+			if err := unread.Close(); err != nil {
+				t.Fatal(err)
+			}
+			partial := c.TeeResponse(401, io.NopCloser(strings.NewReader(body)))
+			buf := make([]byte, 3)
+			if _, err := io.ReadFull(partial, buf); err != nil {
+				t.Fatal(err)
+			}
+			if string(buf) != body[:3] {
+				t.Fatal("capture changed response bytes")
+			}
+			if err := partial.Close(); err != nil {
+				t.Fatal(err)
+			}
+			full := c.TeeResponse(200, io.NopCloser(strings.NewReader(body)))
+			got, err := io.ReadAll(full)
+			if err != nil || string(got) != body {
+				t.Fatalf("response changed: %q, %v", got, err)
+			}
+			if err := full.Close(); err != nil {
+				t.Fatal(err)
+			}
+			attempts := c.Attempts()
+			if len(attempts) != 3 || attempts[0].Status != 429 || attempts[1].Status != 401 || attempts[2].Status != 200 {
+				t.Fatalf("attempt metadata: %+v", attempts)
+			}
+			for i, want := range []int64{0, 3, int64(len(body))} {
+				if attempts[i].BytesRead != want {
+					t.Fatalf("attempt %d consumed %d bytes, want %d", i, attempts[i].BytesRead, want)
+				}
+				if metadataOnly && (attempts[i].Body != "" || c.attempts[i].body.Len() != 0) {
+					t.Fatal("metadata capture retained response bytes")
+				}
+			}
+			if metadataOnly {
+				if c.request != "" || c.RawRequest() != "" || c.RawResponse() != "" {
+					t.Fatal("metadata capture retained raw content")
+				}
+			} else if c.RawRequest() != "synthetic-request-credential" || attempts[1].Body != body[:3] || attempts[2].Body != body || !strings.Contains(c.RawResponse(), body) {
+				t.Fatal("full capture did not retain original content")
+			}
+		})
+	}
+}

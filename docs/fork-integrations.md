@@ -1,5 +1,18 @@
 # 同源功能集成
 
+2026-11-24 核查并适配了以下 BaaRai/ARTEX 的安全改进。
+
+| 来源 | 在本仓库的采用范围 |
+|---|---|
+| Coff0xc，[改密限流 #343](https://github.com/BaaRai/ARTEX/pull/343)，`389825a6` | 管理员通过会话认证后，再按真实连接来源和会话摘要限制旧密码尝试。 |
+| Protonmatter，[会话撤销 #301](https://github.com/BaaRai/ARTEX/pull/301)，`95bd9c24` | 四个 SSE 入口定期使用数据库中的当前凭据重验订阅。普通 HTTP 请求继续使用已有的密码哈希绑定。 |
+| Coff0xc，[日志订阅 #458](https://github.com/BaaRai/ARTEX/pull/458)，`9a8f3665` | 日志广播与移除订阅共用同一把锁，保持非阻塞发送，取消订阅时可以安全关闭通道。 |
+| Coff0xc，[连接测试日志 #493](https://github.com/BaaRai/ARTEX/pull/493)，`cdced668` | 连接测试只捕获各次 HTTP 状态和读取字节数。日志保留端点 origin，模型名称按单行转义。 |
+
+以上四个来源提交采用 AGPL-3.0，LICENSE 对象为 `be3f7b28e564e7dd05eaf59d64adba1a4065ac0e`，与本 fork 的共同祖先为 `ad9f14f140eb240d635c896aceb39ef40af4b2dd`。
+
+依赖更新参考了 ldevbr 的 [#415](https://github.com/BaaRai/ARTEX/pull/415)（`3feeb37a`）和 BaaRai 的 [#518](https://github.com/BaaRai/ARTEX/pull/518)（`375b4913`）。版本按本项目的 Go 模块图和 Go 漏洞数据库选择，根模块与保留的代理模块同步更新。Python 基础镜像的固定与每周刷新参考了 YunzhouLi-hub 的 [#397](https://github.com/BaaRai/ARTEX/pull/397)（`39ae2562`）和 BaaRai 的 [#511](https://github.com/BaaRai/ARTEX/pull/511)（`fde08775`）。[容器镜像维护说明](container-image-pins.md)
+
 2026-11-24 根据 Coff0xc 的 [PostgreSQL 连接串脱敏修复](https://github.com/BaaRai/ARTEX/commit/7d28638980ce5d7494856386c258b80760aa7bcd) 核查了数据库启动报错。ARTEX 的日志省略整个连接串，避免关键字参数、转义值和 URL 查询参数泄露密码。数据库连接错误显示失败阶段和原因类别，调用方仍可通过 Go 的 `errors.Is` 和 `errors.As` 判断取消、超时与驱动错误。回归测试使用合成凭据及实际 pgx 解析器。来源采用 AGPL-3.0，与本仓库的共同祖先为 `ad9f14f140eb240d635c896aceb39ef40af4b2dd`。
 
 2026-11-19 适配三项同源改进，基线 `fad1557ea004ee4b84abd7032f1c4bda88d446d2`：

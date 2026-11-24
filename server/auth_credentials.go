@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -12,12 +13,44 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"time"
 
 	"github.com/Autumn-27/artex/db"
 	"github.com/golang-jwt/jwt/v5"
 )
 
 const setupTokenFilename = "setup.token"
+
+// Streams revalidate on a fixed five-second deadline, including while idle.
+// Output does not extend the deadline. A credential read has a two-second
+// budget, so revocation closes a responsive subscription within seven seconds.
+const streamAuthInterval = 5 * time.Second
+
+func (s *Server) streamAuthorization(w http.ResponseWriter, r *http.Request) (func(bool) bool, bool) {
+	if _, ok := s.authenticatedAdminHash(w, r); !ok {
+		return nil, false
+	}
+	token := extractToken(r)
+	next := time.Now().Add(streamAuthInterval)
+	return func(force bool) bool {
+		if r.Context().Err() != nil {
+			return false
+		}
+		now := time.Now()
+		if !force && now.Before(next) {
+			return true
+		}
+		// Set before querying so query latency never extends the cache window.
+		next = now.Add(streamAuthInterval)
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		var hash string
+		err := s.m.pg.QueryRowContext(ctx, `SELECT value FROM settings WHERE key=$1`, authPassKey).Scan(&hash)
+		// The response may already be SSE. Fail closed by ending only this
+		// subscription, without appending a JSON error or cancelling its task.
+		return err == nil && s.verifyAdminJWT(token, hash)
+	}, true
+}
 
 // Both credentials derive from the private base key with distinct domains.
 // Binding admin sessions to the stored hash invalidates all older sessions on
