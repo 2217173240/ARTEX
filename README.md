@@ -166,7 +166,7 @@ ZIP 是运行包，不包含源码安装、更新脚本；`install.sh` / `update
 
 ### 方式四：从源码编译单二进制
 
-源码构建使用 Go 1.27.3 或更新的受支持版本，以及 Node.js 22。Go 1.27 默认采用 JSON v2 引擎，现有 JSON API 保留兼容语义。使用该工具链构建的 macOS 版本要求 macOS 13+；历史安装包按对应版本的系统要求使用。
+源码构建使用 Go 1.27.4 或更新的受支持版本，以及 Node.js 22。Go 1.27 默认采用 JSON v2 引擎，现有 JSON API 保留兼容语义。使用该工具链构建的 macOS 版本要求 macOS 13+；历史安装包按对应版本的系统要求使用。
 
 ```bash
 git clone https://github.com/2217173240/ARTEX.git

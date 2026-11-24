@@ -19,7 +19,7 @@ the blank line after SetFormatter in `proxy/instance_logger.go`. Neither changes
 Go behavior. `UPSTREAM-MANIFEST.json` deliberately retains original upstream
 hashes; these two files and `internal/helper/proxy.go` are the exact three
 runtime-source differences against that manifest. The local `go.mod` minimum is
-Go 1.27.3, matching ARTEX and its retained Norma module. This metadata change
+Go 1.27.4, matching ARTEX and its retained Norma module. This metadata change
 selects the default JSON v2 engine while retaining the existing JSON API and
 compatibility semantics; original upstream manifest hashes remain unchanged.
 
@@ -34,3 +34,15 @@ module's public package surface. Future imports may require explicitly adding th
 runtime sources and manifest entries. Upgrades require refreshing retained files,
 checking the minimal patch and manifest, and rerunning helper and traffic tests.
 Remove the replacement once an upstream release fixes the actual helper.
+
+The local module pins dependency security fixes independently of the retained
+upstream source manifest: `github.com/andybalholm/brotli v1.2.7`
+([GO-2026-6888](https://pkg.go.dev/vuln/GO-2026-6888)),
+`github.com/klauspost/compress v1.20.2`
+([GO-2026-6865](https://pkg.go.dev/vuln/GO-2026-6865)), and
+`github.com/gorilla/websocket v1.5.4-0.20240701034025-d67f41855da4`
+([GO-2026-6278](https://pkg.go.dev/vuln/GO-2026-6278)). The WebSocket version
+is the official upstream fix commit
+[`d67f41855da42d7bccd9ef050c49f7e54e783b95`](https://github.com/gorilla/websocket/commit/d67f41855da42d7bccd9ef050c49f7e54e783b95);
+the latest stable upstream tag, v1.5.3, remains affected as of 2026-11-24.
+Root and replacement module manifests select the same fixed versions.
