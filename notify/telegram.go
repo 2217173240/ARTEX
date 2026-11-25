@@ -33,6 +33,9 @@ func (telegramChannel) SecretKeys() []string { return []string{"bot_token"} }
 func (telegramChannel) DestinationKeys() []string { return []string{"base_url"} }
 
 func (telegramChannel) Validate(cfg map[string]any) error {
+	if _, err := telegramPrivacyBrief(cfg); err != nil {
+		return err
+	}
 	if cfgString(cfg, "bot_token") == "" {
 		return errors.New("缺少 Bot Token")
 	}
@@ -55,7 +58,10 @@ func (c telegramChannel) Send(ctx context.Context, cfg map[string]any, m Message
 	if err != nil {
 		return 0, Permanent(err)
 	}
-	text, kept := telegramHTML(m)
+	text, kept, err := telegramConfiguredHTML(cfg, m)
+	if err != nil {
+		return 0, Permanent(err)
+	}
 	payload := map[string]any{
 		"chat_id":                  cfgString(cfg, "chat_id"),
 		"text":                     text,
@@ -83,6 +89,67 @@ func (c telegramChannel) Send(ctx context.Context, cfg map[string]any, m Message
 		return 0, fmt.Errorf("Telegram 限流: %s", res.Description)
 	}
 	return 0, Permanent(fmt.Errorf("Telegram 返回错误 %d: %s", res.ErrorCode, res.Description))
+}
+
+// 配置必须为 JSON 布尔值；错误配置阻止发送，避免降级为完整正文。
+func telegramPrivacyBrief(cfg map[string]any) (bool, error) {
+	v, present := cfg["privacy_brief"]
+	if !present {
+		return false, nil
+	}
+	enabled, ok := v.(bool)
+	if !ok {
+		return false, errors.New("隐私简报必须为布尔值")
+	}
+	return enabled, nil
+}
+
+func telegramConfiguredHTML(cfg map[string]any, m Message) (string, int, error) {
+	brief, err := telegramPrivacyBrief(cfg)
+	if err != nil {
+		return "", 0, err
+	}
+	if brief {
+		text, kept := telegramBriefHTML(m)
+		return text, kept, nil
+	}
+	text, kept := telegramHTML(m)
+	return text, kept, nil
+}
+
+// 简报只从数值编号与白名单严重性构造正文，不读取任何自由文本或链接。
+func telegramBriefLine(it Item) string {
+	severity := "unknown"
+	switch strings.ToLower(strings.TrimSpace(it.Severity)) {
+	case "critical":
+		severity = "critical"
+	case "high":
+		severity = "high"
+	case "medium":
+		severity = "medium"
+	case "low":
+		severity = "low"
+	}
+	if it.FindingID > 0 {
+		return fmt.Sprintf("FindingID %d · %s", it.FindingID, severity)
+	}
+	return severity
+}
+
+func telegramBriefHTML(m Message) (string, int) {
+	items := m.Items
+	if !m.Batch && len(items) > 1 {
+		items = items[:1]
+	}
+	kept := packItemCount(items, telegramTextLimit, telegramReservedRunes, "", runeSize, func(it Item, _ int) string {
+		return "\n" + telegramBriefLine(it)
+	})
+	var b strings.Builder
+	fmt.Fprintf(&b, "<b>Privacy brief · %d</b>", kept)
+	for _, it := range items[:kept] {
+		b.WriteString("\n" + telegramBriefLine(it))
+	}
+	return b.String(), kept
 }
 
 // telegramEndpoint 拼出 sendMessage 地址。base_url 留空时用官方 API，

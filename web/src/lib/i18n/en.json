@@ -1,4 +1,6 @@
 {
+  "隐私简报": "Privacy brief",
+  "仅发送漏洞编号、严重性和数量，测试及状态变更通知同样适用。即使未配置详情链接，也会公开已有漏洞编号；名称、资产、摘要和链接均不发送。默认关闭。": "Send only finding IDs, severity and counts, including test and status change notifications. Existing finding IDs will be disclosed even without a detail link. Names, assets, summaries and links are omitted. Off by default.",
   "缺少漏洞组 ID，请返回漏洞列表重新打开报告。": "The finding case ID is missing. Return to the findings list and reopen the report.",
   "实时": "Real-time",
   "移除": "Remove",

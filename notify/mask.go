@@ -99,6 +99,12 @@ func (e *ErrDestinationChangedWithoutCredentials) Error() string {
 // （webhook 的 headers、email 的 password）会静默变成「鉴权没了但接口返回 200」，
 // 比报错更难排查。宁可让操作者多填一次。
 func PrepareConfigUpdate(kind string, stored, incoming map[string]any) (map[string]any, error) {
+	// 合并会清除空字符串；先检查原始简报选项，防止非法值删除隐私限制。
+	if kind == KindTelegram {
+		if _, err := telegramPrivacyBrief(incoming); err != nil {
+			return nil, err
+		}
+	}
 	channel, ok := Get(kind)
 	if !ok {
 		return nil, fmt.Errorf("渠道类型 %q 未注册", kind)

@@ -1,5 +1,7 @@
 "use client";
 
+import { useId } from "react";
+
 import { Settings } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -23,6 +25,7 @@ import { applyThemePreset } from "@/lib/preferences/theme-utils";
 import { usePreferencesStore } from "@/stores/preferences/preferences-provider";
 
 export function LayoutControls() {
+  const themePresetId = useId();
   const themeMode = usePreferencesStore((s) => s.themeMode);
   const resolvedThemeMode = usePreferencesStore((s) => s.resolvedThemeMode);
   const setThemeMode = usePreferencesStore((s) => s.setThemeMode);
@@ -99,7 +102,7 @@ export function LayoutControls() {
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <Button size="icon">
+        <Button size="icon" aria-label="Preferences">
           <Settings />
         </Button>
       </PopoverTrigger>
@@ -111,9 +114,11 @@ export function LayoutControls() {
           </div>
           <div className="space-y-3 **:data-[slot=toggle-group]:w-full **:data-[slot=toggle-group-item]:flex-1 **:data-[slot=toggle-group-item]:text-xs">
             <div className="space-y-1">
-              <Label className="font-medium text-xs">Theme Preset</Label>
+              <Label htmlFor={themePresetId} className="font-medium text-xs">
+                Theme Preset
+              </Label>
               <Select value={themePreset} onValueChange={onThemePresetChange}>
-                <SelectTrigger size="sm" className="w-full text-xs">
+                <SelectTrigger id={themePresetId} size="sm" className="w-full text-xs">
                   <SelectValue placeholder="Preset" />
                 </SelectTrigger>
                 <SelectContent>

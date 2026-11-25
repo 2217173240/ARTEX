@@ -1,7 +1,5 @@
 "use client";
 
-import { useI18n } from "@/lib/i18n";
-
 import { CheckIcon } from "lucide-react";
 
 import { Input } from "@/components/ui/input";
@@ -9,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { useI18n } from "@/lib/i18n";
 import type { NotificationFilter } from "@/lib/types";
 
 // asText / inputType 是本文件内的取值辅助（与控件渲染强相关），不放在 channel-fields。
@@ -59,7 +58,7 @@ export function ConfigField({
       <div className="flex items-center gap-2 text-sm">
         <Switch checked={value === true} onCheckedChange={onChange} aria-label={uiText(def.label)} />
         {uiText(def.label)}
-        {def.help && <span className="text-muted-foreground">（{def.help}）</span>}
+        {def.help && <span className="text-muted-foreground">（{uiText(def.help)}）</span>}
       </div>
     );
   }

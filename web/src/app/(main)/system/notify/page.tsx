@@ -90,6 +90,11 @@ export default function NotifyPage() {
 
   function openEdit(ch: NotificationChannel) {
     setEditing(ch);
+    const config = { ...ch.config };
+    // 历史非法值保持收窄模式，操作者可通过开关明确关闭。
+    if (ch.kind === "telegram" && "privacy_brief" in config && typeof config.privacy_brief !== "boolean") {
+      config.privacy_brief = true;
+    }
     // filter 在后端是 Go 结构体，永远序列化成对象（不会是 null），所以不需要兜底。
     const f = ch.filter;
     setForm({
@@ -100,7 +105,7 @@ export default function NotifyPage() {
       ratePerMin: String(ch.rate_per_min),
       // 后端回显的 config 里凭据是掩码值；原样放进表单，提交时原样送回，
       // 后端据此保留库中原值。
-      config: { ...ch.config },
+      config,
       minSeverity: f.min_severity ?? "",
       includeText: (f.vulnclass_include ?? []).join("\n"),
       excludeText: (f.vulnclass_exclude ?? []).join("\n"),
