@@ -57,6 +57,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { useSideQuestions } from "@/hooks/use-side-questions";
 import { mergeActivities } from "@/lib/activity-merge";
 import { ApiError, api, conversationTailRetryDelay } from "@/lib/api";
+import { auth } from "@/lib/auth";
 import { shouldSubmitOnKey, useChatSendMode } from "@/lib/chat-send-mode";
 import { getLocalStorageValue, setLocalStorageValue } from "@/lib/local-storage.client";
 import { isBtwCommand } from "@/lib/side-questions";
@@ -382,10 +383,12 @@ function DraftChat({
   agents,
   profiles,
   onStarted,
+  onEdit,
 }: {
   agents: Agent[];
   profiles: LLMProfile[];
   onStarted: (c: Conversation, pending?: { input?: string; attachments?: ChatAttachment[] }) => void;
+  onEdit: () => void;
 }) {
   const { t: uiText } = useI18n();
   const [agentKey, setAgentKey] = React.useState("");
@@ -402,6 +405,7 @@ function DraftChat({
   const agent = agents.find((a) => a.key === agentKey);
 
   async function send() {
+    onEdit();
     const msg = input.trim();
     if (!msg || !agentKey || sending) return;
     setSending(true);
@@ -421,6 +425,7 @@ function DraftChat({
   // user sends from there). Mirrors the task main-agent console's upload, adapted to
   // the ChatGPT-style lazy-create flow.
   async function pickFiles(files: File[]) {
+    if (files.length > 0) onEdit();
     if (files.length === 0 || !agentKey || uploading || sending) return;
     setUploading(true);
     let c: Conversation | undefined;
@@ -440,7 +445,13 @@ function DraftChat({
   }
 
   const agentPicker = (
-    <Select value={agentKey} onValueChange={setAgentKey}>
+    <Select
+      value={agentKey}
+      onValueChange={(value) => {
+        onEdit();
+        setAgentKey(value);
+      }}
+    >
       <SelectTrigger className="w-full sm:w-40">
         <SelectValue placeholder={uiText("选择 Agent…")} />
       </SelectTrigger>
@@ -481,7 +492,10 @@ function DraftChat({
 
       <Composer
         value={input}
-        onChange={setInput}
+        onChange={(value) => {
+          onEdit();
+          setInput(value);
+        }}
         onSend={send}
         disabled={sending || uploading || !agentKey}
         placeholder={uiText("输入消息，@ 引用记录，Enter 发送")}
@@ -492,7 +506,10 @@ function DraftChat({
       <LLMProfileRow
         profiles={profiles}
         selected={llmProfileId}
-        onChange={setLlmProfileId}
+        onChange={(value) => {
+          onEdit();
+          setLlmProfileId(value);
+        }}
         disabled={sending || uploading}
       />
     </>
@@ -1121,6 +1138,9 @@ function AgentGroupHeader({
   );
 }
 
+// 仅在当前标签页内存中记录 ID，并绑定认证代次。
+let lastViewedConversation: { generation: string; id: number } | null = null;
+
 export default function ChatPage() {
   const { t: uiText } = useI18n();
   const [agents, setAgents] = React.useState<Agent[]>([]);
@@ -1130,8 +1150,12 @@ export default function ChatPage() {
   const [selectedId, setSelectedId] = React.useState<number | null>(null);
   const [sourceRequested, setSourceRequested] = React.useState(false);
   const [convsLoaded, setConvsLoaded] = React.useState(false);
+  const [navigationReady, setNavigationReady] = React.useState(false);
+  const restorePending = React.useRef(false);
   const selectConversation = React.useCallback(
     (id: number | null) => {
+      restorePending.current = false;
+      setNavigationReady(true);
       if (id !== selectedId) {
         const url = new URL(window.location.href);
         url.searchParams.delete("approval");
@@ -1164,11 +1188,28 @@ export default function ChatPage() {
   >({});
 
   const conversationListSeq = React.useRef(0);
+  const navigationGeneration = React.useRef<string | null>(null);
   const reloadConvs = React.useCallback(async () => {
     const seq = ++conversationListSeq.current;
+    const generation = auth.generation();
+    navigationGeneration.current ??= generation;
     try {
       const items = await api.conversations();
-      if (seq === conversationListSeq.current) {
+      if (
+        seq === conversationListSeq.current &&
+        generation === auth.generation() &&
+        navigationGeneration.current === generation
+      ) {
+        if (restorePending.current) {
+          restorePending.current = false;
+          const remembered = lastViewedConversation;
+          if (remembered?.generation === auth.generation() && items.some((item) => item.id === remembered.id)) {
+            setSelectedId(remembered.id);
+          } else {
+            lastViewedConversation = null;
+          }
+          setNavigationReady(true);
+        }
         setConvs(items);
         setConvsLoaded(true);
       }
@@ -1247,17 +1288,25 @@ export default function ChatPage() {
     const c = params.get("c");
     const id = c ? Number(c) : NaN;
     if (Number.isFinite(id)) setSelectedId(id);
+    // 显式导航（含无效参数）优先，避免把审批或消息定位带到其他会话。
+    restorePending.current = params.size === 0 && !window.location.hash;
+    setNavigationReady(!restorePending.current);
   }, []);
   // Mirror the current selection into the URL (replaceState → no history spam). A
   // selectedId with no matching conversation (e.g. a stale ?c=, or a just-created
   // one before reloadConvs lands) simply renders the draft view — harmless — so we
   // deliberately do NOT auto-clear it here (that raced new-conversation creation).
   React.useEffect(() => {
+    if (!navigationReady || navigationGeneration.current !== auth.generation()) return;
     const url = new URL(window.location.href);
     if (selectedId != null) url.searchParams.set("c", String(selectedId));
     else url.searchParams.delete("c");
-    window.history.replaceState(null, "", url);
-  }, [selectedId]);
+    if (url.href !== window.location.href) window.history.replaceState(null, "", url);
+    if (selectedId === null) lastViewedConversation = null;
+    else if (convs.some((conversation) => conversation.id === selectedId)) {
+      lastViewedConversation = { generation: auth.generation(), id: selectedId };
+    }
+  }, [selectedId, navigationReady, convs]);
 
   const selected = React.useMemo(() => convs.find((c) => c.id === selectedId) ?? null, [convs, selectedId]);
   const agentByKey = React.useMemo(() => new Map(agents.map((agent) => [agent.key, agent])), [agents]);
@@ -1621,6 +1670,9 @@ export default function ChatPage() {
             <DraftChat
               agents={chatAgents}
               profiles={profiles}
+              onEdit={() => {
+                if (restorePending.current) selectConversation(null);
+              }}
               onStarted={(c, pending) => {
                 if (agentFilter !== null && agentFilter !== c.agent_key) changeAgentFilter(null);
                 // Insert the new conversation immediately so `selected` resolves to
