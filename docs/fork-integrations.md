@@ -1,5 +1,15 @@
 # 同源功能集成
 
+2026-11-25 采用了三项面向操作员的功能。
+
+| 来源 | 本仓库的实现 |
+|---|---|
+| jackybabes 的[会话导航 #482](https://github.com/BaaRai/ARTEX/pull/482)，`527e2f2eecff646adeefe1289812b87df2acc0b8` | 返回聊天页时，按当前登录状态和可访问会话列表恢复同标签页上次查看的会话。记忆只含 ID；显式链接和正在编辑的新草稿优先。 |
+| YunzhouLi-hub（李云周）的 [Neon 预设 #401](https://github.com/BaaRai/ARTEX/pull/401)，`84c77021c481011b4e35860e1f3641d806962b95` | Neon 接入现有主题菜单、浅深模式及偏好保存。配色沿用来源 CSS，选项由本仓库的预设生成器生成。 |
+| chevyphillip 的[通知来源标识 #68](https://github.com/jiwoochris/artex-global/pull/68)，`bd1ad0976922b7c58192d2202b8e8b1ee5dbc161` | 借鉴用编号辨识记录的需求，独立实现可选的 Telegram 隐私简报。操作员可按渠道限制外发字段，实时和汇总消息共用该选择。详见[通知投递说明](notifications.md)。 |
+
+两个 BaaRai 来源与本 fork 的共同祖先是 `ad9f14f140eb240d635c896aceb39ef40af4b2dd`，jiwoochris 来源的共同祖先是 `d0033724a63aefbbcc1ed022b0faf4dc4a1fce51`。三处固定提交均含 AGPL-3.0 根许可证 `be3f7b28e564e7dd05eaf59d64adba1a4065ac0e`；前端同时保留原有 `web/LICENSE`。
+
 2026-11-24 核查并适配了以下 BaaRai/ARTEX 的安全改进。
 
 | 来源 | 在本仓库的采用范围 |
