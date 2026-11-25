@@ -405,9 +405,9 @@ function DraftChat({
   const agent = agents.find((a) => a.key === agentKey);
 
   async function send() {
-    onEdit();
     const msg = input.trim();
     if (!msg || !agentKey || sending) return;
+    onEdit();
     setSending(true);
     try {
       const c = await api.createConversation(agentKey, "", llmProfileId);
@@ -425,8 +425,8 @@ function DraftChat({
   // user sends from there). Mirrors the task main-agent console's upload, adapted to
   // the ChatGPT-style lazy-create flow.
   async function pickFiles(files: File[]) {
-    if (files.length > 0) onEdit();
     if (files.length === 0 || !agentKey || uploading || sending) return;
+    onEdit();
     setUploading(true);
     let c: Conversation | undefined;
     try {

@@ -57,6 +57,7 @@ function draftHarness(options = {}) {
   const handoffs = [];
   const toasts = [];
   const uploadingStates = [];
+  const editEvents = [];
   const create = deferred();
   const upload = deferred();
   const api = {
@@ -79,11 +80,12 @@ function draftHarness(options = {}) {
     uploading: false,
     sending: false,
     ...options,
+    onEdit: () => editEvents.push("cancel-restore"),
     setUploading: (value) => uploadingStates.push(value),
     toast: { error: (message) => toasts.push(message) },
     onStarted: (conversation, pending) => handoffs.push({ conversation, pending }),
   });
-  return { pickFiles, create, upload, creates, uploads, handoffs, toasts, uploadingStates };
+  return { pickFiles, create, upload, creates, uploads, handoffs, toasts, uploadingStates, editEvents };
 }
 
 const files = [new File(["one"], "one.txt"), new File(["two"], "two.txt")];
@@ -91,6 +93,7 @@ const conversation = { id: 42, agent_key: "auto" };
 
 async function createForUpload(harness) {
   const done = harness.pickFiles(files);
+  assert.deepEqual(harness.editEvents, ["cancel-restore"]);
   assert.deepEqual(harness.creates, [["auto", "", 7]]);
   assert.deepEqual(harness.uploadingStates, [true]);
   assert.equal(harness.uploads.length, 0);
@@ -201,6 +204,7 @@ for (const [name, options, picked] of [
     assert.equal(harness.handoffs.length, 0);
     assert.equal(harness.toasts.length, 0);
     assert.equal(harness.uploadingStates.length, 0);
+    assert.deepEqual(harness.editEvents, []);
   });
 }
 
