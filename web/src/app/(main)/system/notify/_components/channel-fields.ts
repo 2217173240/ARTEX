@@ -87,6 +87,12 @@ export const CHANNEL_FIELDS: Record<string, FieldDef[]> = {
     },
   ],
   telegram: [
+    {
+      key: "privacy_brief",
+      label: "隐私简报",
+      kind: "switch",
+      help: "仅发送漏洞编号、严重性和数量，测试及状态变更通知同样适用。即使未配置详情链接，也会公开已有漏洞编号；名称、资产、摘要和链接均不发送。默认关闭。",
+    },
     { key: "bot_token", label: "Bot Token", kind: "password", placeholder: "123456:ABC-DEF..." },
     { key: "chat_id", label: "Chat ID", kind: "text", placeholder: "-1001234567890" },
     {
