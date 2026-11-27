@@ -10,10 +10,16 @@ import (
 )
 
 func TestDeferredSystem_NoGlobal(t *testing.T) {
-	// No global MCP names → plain single-segment system, no cache boundary.
+	// No global MCP names, non-empty prompt → boundary 1 enables Anthropic caching.
 	sys, boundary := deferredSystem("SYS", DeferredInfo{})
-	if len(sys) != 1 || sys[0] != "SYS" || boundary != 0 {
-		t.Fatalf("expected [SYS],0 — got %v,%d", sys, boundary)
+	if len(sys) != 1 || sys[0] != "SYS" || boundary != 1 {
+		t.Fatalf("expected [SYS],1 — got %v,%d", sys, boundary)
+	}
+
+	// Empty prompt with no guidance or deferred tools → boundary 0.
+	emptySys, emptyBoundary := deferredSystem("", DeferredInfo{})
+	if len(emptySys) != 1 || emptySys[0] != "" || emptyBoundary != 0 {
+		t.Fatalf("expected [\"\"],0 — got %v,%d", emptySys, emptyBoundary)
 	}
 }
 

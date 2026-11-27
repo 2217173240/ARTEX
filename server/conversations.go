@@ -656,7 +656,10 @@ func (s *Server) readTriggerBehavior(agentKey string) triggerBehavior {
 // merging by task / all / none); parallel → run each fire in its own concurrent
 // conversation up to trigger_max_parallel. Distinct agents always run concurrently.
 func (s *Server) StartTriggeredRun(agentKey, title, message string, taskID int64, mergeable bool, taskDesc, taskGoal string) {
-	if s.m.pg == nil || s.chatAgentRef() == nil {
+	if s == nil || s.m == nil || s.m.pg == nil {
+		return
+	}
+	if s.chatAgentRef() == nil && s.resolveChatAgent(&db.Conversation{AgentKey: agentKey}) == nil {
 		return
 	}
 	cfg := s.readTriggerBehavior(agentKey) // DB read BEFORE the lock (never under queueMu)
@@ -855,6 +858,9 @@ func mergeAllRuns(items []triggeredRun) triggeredRun {
 // turn, and runs it synchronously (blocks until the run ends). recover keeps a
 // panic from killing the drain loop and wedging the agent's queue.
 func (s *Server) runTriggeredRun(item triggeredRun) {
+	if s == nil || s.m == nil || s.m.pg == nil {
+		return
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			if item.conversationID > 0 {
@@ -863,6 +869,10 @@ func (s *Server) runTriggeredRun(item triggeredRun) {
 			log.Printf("[trigger] run for %s panicked: %v", item.agentKey, r)
 		}
 	}()
+	if item.conversationID == 0 && s.resolveChatAgent(&db.Conversation{AgentKey: item.agentKey}) == nil {
+		log.Printf("[trigger] skip run for %s: no chat agent available", item.agentKey)
+		return
+	}
 	pg := s.m.pg
 	var c *db.Conversation
 	var err error

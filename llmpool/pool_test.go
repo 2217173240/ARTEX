@@ -621,3 +621,47 @@ func TestExportedFailureClassifiers(t *testing.T) {
 		t.Errorf("TrimErr long error = %d bytes, want %d", len(got), len(want))
 	}
 }
+
+// A non-failover error (400 / context canceled) in Complete must neither trip
+// the breaker nor wipe out prior transient failures accumulated on that member.
+func TestCompleteNonFailoverPreservesPriorFails(t *testing.T) {
+	for _, nonFailoverErr := range []error{
+		errors.New("anthropic: status 400: bad request"),
+		context.Canceled,
+	} {
+		t.Run(nonFailoverErr.Error(), func(t *testing.T) {
+			a := &fakeProv{
+				name: "a",
+				errs: []error{
+					errors.New("anthropic: status 500: transient"),
+					nonFailoverErr,
+				},
+			}
+			b := okProv("b", "backup")
+			reg := NewRegistry(nil, nil)
+			p := New([]*Member{member(1, "a", 10, a), member(2, "b", 5, b)}, reg)
+
+			// First call hits 500 and fails over to b, recording Fails=1 on member 1.
+			msg, _, _, err := p.Complete(context.Background(), llm.CompletionRequest{})
+			if err != nil || msg.Text() != "backup" {
+				t.Fatalf("first call: msg=%q err=%v, want backup / nil", msg.Text(), err)
+			}
+			if got := reg.Get(1).Fails; got != 1 {
+				t.Fatalf("fails after transient 500 = %d, want 1", got)
+			}
+
+			// Second call hits a non-failover error on member 1: must surface err without
+			// calling backup and must preserve Fails=1 (neither reset to 0 nor incremented).
+			_, _, _, err = p.Complete(context.Background(), llm.CompletionRequest{})
+			if !errors.Is(err, nonFailoverErr) {
+				t.Fatalf("second call err = %v, want %v", err, nonFailoverErr)
+			}
+			if b.calls != 1 {
+				t.Fatalf("backup calls = %d, want 1 (no failover on non-failover error)", b.calls)
+			}
+			if got := reg.Get(1).Fails; got != 1 {
+				t.Fatalf("fails after non-failover error = %d, want 1 (prior failure count must not be cleared)", got)
+			}
+		})
+	}
+}

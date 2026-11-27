@@ -120,6 +120,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { api } from "@/lib/api";
+import { isArchiveRestoreMissingError } from "@/lib/archive-restore";
 import { useI18n } from "@/lib/i18n";
 import { getLocalStorageValue, setLocalStorageValue } from "@/lib/local-storage.client";
 import { type SortDirection, useStoredSortPreference } from "@/lib/sort-preference";
@@ -1852,8 +1853,7 @@ function TaskArchivesPanel({ onChanged }: { onChanged: () => void }) {
         const states = await Promise.allSettled(pending.map((id) => api.taskArchive(id)));
         let restored = false;
         states.forEach((state, index) => {
-          if (state.status !== "rejected" || !(state.reason instanceof Error)) return;
-          if (!state.reason.message.includes(t("归档不存在"))) return;
+          if (state.status !== "rejected" || !isArchiveRestoreMissingError(state.reason)) return;
           pendingRestoreIDs.current.delete(pending[index]);
           restored = true;
         });
