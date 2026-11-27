@@ -42,6 +42,12 @@ type Config struct {
 	// KeepRecent is the number of recent messages AutoCompact always preserves as
 	// the un-summarized tail (default 8). MicroCompact uses its own microKeepRecent.
 	KeepRecent int
+	// ExtraCompactableTools names additional host-specific tools whose stale
+	// results MicroCompact may clear alongside compactableTools.
+	ExtraCompactableTools []string
+	// CompactablePrefixes names tool-name prefixes (e.g. "mcp__") whose stale
+	// results MicroCompact may clear.
+	CompactablePrefixes []string
 }
 
 func (c *Config) defaults() {
@@ -243,6 +249,23 @@ func lastNNonMarkerStart(msgs []llm.Message, keep int) int {
 
 // --- MicroCompact: keep the most recent N compactable results, clear the rest ---
 
+func (c *Compactor) isCompactableTool(name string) bool {
+	if compactableTools[name] {
+		return true
+	}
+	for _, extra := range c.cfg.ExtraCompactableTools {
+		if name == extra {
+			return true
+		}
+	}
+	for _, prefix := range c.cfg.CompactablePrefixes {
+		if prefix != "" && strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // microCompact clears the bodies of all COMPACTABLE tool results except the most
 // recent microKeepRecent, returning the (possibly new) message slice and whether
 // anything changed. It is non-destructive: a cleared result can be re-read.
@@ -251,7 +274,7 @@ func (c *Compactor) microCompact(msgs []llm.Message) ([]llm.Message, bool) {
 	var ids []string
 	for _, m := range msgs {
 		for _, b := range m.Content {
-			if b.Type == llm.BlockToolUse && compactableTools[b.Name] {
+			if b.Type == llm.BlockToolUse && c.isCompactableTool(b.Name) {
 				ids = append(ids, b.ID)
 			}
 		}

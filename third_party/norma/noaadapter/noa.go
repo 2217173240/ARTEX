@@ -42,10 +42,24 @@ func Enable(opts *agentcore.Options, o Options) error {
 
 	opts.Compactor = &Compactor{sess: sess}
 	opts.Tools = append(opts.Tools, newCompressTool(sess))
-	opts.AppendSystemPrompt = append(opts.AppendSystemPrompt, noa.BuildSystemPrompt(noa.Sections{}))
-	// The prompt section is fully static, so it belongs in the cacheable prefix.
-	// Left past the boundary it would be re-billed every single request.
-	opts.DynamicBoundary = len(opts.SystemPrompt) + len(opts.AppendSystemPrompt)
+	noaPrompt := noa.BuildSystemPrompt(noa.Sections{})
+	if opts.DynamicBoundary > 0 && opts.DynamicBoundary < len(opts.SystemPrompt) {
+		// SystemPrompt already splits static prefix [:b] from dynamic tail [b:].
+		// Insert noa's static section at the boundary so it joins the cached
+		// prefix without pulling dynamic segments inside DynamicBoundary.
+		b := opts.DynamicBoundary
+		var sys []string
+		sys = append(sys, opts.SystemPrompt[:b]...)
+		sys = append(sys, noaPrompt)
+		sys = append(sys, opts.SystemPrompt[b:]...)
+		opts.SystemPrompt = sys
+		opts.DynamicBoundary = b + 1
+	} else {
+		opts.AppendSystemPrompt = append(opts.AppendSystemPrompt, noaPrompt)
+		// The prompt section is fully static, so it belongs in the cacheable prefix.
+		// Left past the boundary it would be re-billed every single request.
+		opts.DynamicBoundary = len(opts.SystemPrompt) + len(opts.AppendSystemPrompt)
+	}
 	return nil
 }
 

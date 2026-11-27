@@ -876,11 +876,12 @@ func (s *Server) pgSaveMCP(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	_, err := pg.SaveMCPContext(r.Context(), &m)
+	id, err := pg.SaveMCPContext(r.Context(), &m)
 	if err != nil {
 		writeMCPError(w, err)
 		return
 	}
+	defaultMCPPool.evict(pg, id)
 	writeJSON(w, 200, mcpState(&m))
 }
 
@@ -894,6 +895,7 @@ func (s *Server) pgDeleteMCP(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
+	defaultMCPPool.evict(pg, id)
 	writeJSON(w, 200, map[string]any{"deleted": id})
 }
 
@@ -2340,6 +2342,7 @@ func (s *Server) pgMCPApproval(w http.ResponseWriter, r *http.Request, approve b
 		writeMCPError(w, err)
 		return
 	}
+	defaultMCPPool.evict(pg, id)
 	writeJSON(w, 200, mcpState(m))
 }
 

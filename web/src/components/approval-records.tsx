@@ -29,6 +29,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { api } from "@/lib/api";
 import { approvalDecisionSource, approvalFilterError } from "@/lib/approval-history";
+import {
+  type ApprovalTimeoutSource,
+  addDecidingId,
+  approvalRemainingSeconds,
+  isRowDeciding,
+  removeDecidingId,
+} from "@/lib/approval-queue";
 import { useI18n } from "@/lib/i18n";
 import type {
   InterceptApprovalFilter,
@@ -605,6 +612,8 @@ export function ApprovalDetail({
   );
 }
 
+type ApprovalQueueRow = InterceptApprovalRow & ApprovalTimeoutSource;
+
 // Hidden cells do not occupy table columns. Keep the detail span in sync so
 // expansion cannot create empty columns and leave a gap in the selected row.
 const approvalBreakpoints = ["(min-width: 40rem)", "(min-width: 48rem)", "(min-width: 64rem)", "(min-width: 80rem)"];
@@ -615,30 +624,46 @@ function subscribeColumns(onChange: () => void) {
     for (const query of queries) query.removeEventListener("change", onChange);
   };
 }
-function visibleColumnCount() {
+function visibleColumnsDefault() {
   const matches = approvalBreakpoints.map((query) => window.matchMedia(query).matches);
   return 3 + Number(matches[0]) + Number(matches[1]) + 2 * Number(matches[2]) + 2 * Number(matches[3]);
 }
-function serverColumnCount() {
+function visibleColumnsWithActions() {
+  return visibleColumnsDefault() + 1;
+}
+function serverColumnsDefault() {
   return 9;
+}
+function serverColumnsWithActions() {
+  return 10;
 }
 
 function ApprovalTable({
   rows,
-  busy,
+  decidingIds,
   decide,
   revision,
   label,
+  showQuickActions = false,
+  nowMs,
+  readOnly = false,
 }: {
-  rows: InterceptApprovalRow[];
-  busy: boolean;
+  rows: ApprovalQueueRow[];
+  decidingIds: ReadonlySet<number>;
   decide: Decide;
   revision: number;
   label: string;
+  showQuickActions?: boolean;
+  nowMs?: number;
+  readOnly?: boolean;
 }) {
   const { t: uiText } = useI18n();
   const [expanded, setExpanded] = React.useState<Set<number>>(() => new Set());
-  const columns = React.useSyncExternalStore(subscribeColumns, visibleColumnCount, serverColumnCount);
+  const columns = React.useSyncExternalStore(
+    subscribeColumns,
+    showQuickActions ? visibleColumnsWithActions : visibleColumnsDefault,
+    showQuickActions ? serverColumnsWithActions : serverColumnsDefault,
+  );
   const prefix = React.useId();
   function toggle(id: number) {
     setExpanded((prev) => {
@@ -660,15 +685,19 @@ function ApprovalTable({
           <TableHead className="hidden md:table-cell">{uiText("来源")}</TableHead>
           <TableHead className="hidden lg:table-cell">{uiText("匹配规则")}</TableHead>
           <TableHead className="hidden xl:table-cell">{uiText("参数")}</TableHead>
-          <TableHead className="w-24">{uiText("状态")}</TableHead>
+          <TableHead className={showQuickActions ? "w-28" : "w-24"}>{uiText("状态")}</TableHead>
           <TableHead className="hidden w-36 lg:table-cell">{uiText("申请时间")}</TableHead>
           <TableHead className="hidden w-36 xl:table-cell">{uiText("决定时间")}</TableHead>
+          {showQuickActions ? <TableHead className="w-36">{uiText("操作")}</TableHead> : null}
         </TableRow>
       </TableHeader>
       <TableBody>
         {rows.map((row) => {
           const open = expanded.has(row.id);
           const panelID = `${prefix}-${row.id}`;
+          const rowBusy = isRowDeciding(decidingIds, row.id);
+          const remainingSeconds =
+            row.status === "pending" && nowMs !== undefined ? approvalRemainingSeconds(row, nowMs) : null;
           return (
             <React.Fragment key={row.id}>
               <TableRow
@@ -712,7 +741,18 @@ function ApprovalTable({
                   <code className="block truncate text-muted-foreground text-xs">{JSON.stringify(row.tool_input)}</code>
                 </TableCell>
                 <TableCell>
-                  <StatusBadge status={row.status} />
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <StatusBadge status={row.status} />
+                    {remainingSeconds !== null ? (
+                      <Badge
+                        variant={remainingSeconds <= 10 ? "destructive" : "outline"}
+                        className="font-mono text-xs tabular-nums"
+                        aria-label={uiText("剩余 {v0} 秒", { v0: remainingSeconds })}
+                      >
+                        {remainingSeconds}s
+                      </Badge>
+                    ) : null}
+                  </div>
                 </TableCell>
                 <TableCell className="hidden text-muted-foreground text-xs lg:table-cell">
                   {fmtTime(row.created_at)}
@@ -720,12 +760,51 @@ function ApprovalTable({
                 <TableCell className="hidden text-muted-foreground text-xs xl:table-cell">
                   {fmtTime(row.decided_at)}
                 </TableCell>
+                {showQuickActions ? (
+                  <TableCell>
+                    {row.status === "pending" ? (
+                      <div className="flex items-center gap-1.5">
+                        <Button
+                          size="xs"
+                          disabled={rowBusy || readOnly}
+                          aria-label={uiText("允许审批 #{v0}", { v0: row.id })}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void decide(row.id, "allowed");
+                          }}
+                        >
+                          <CheckIcon data-icon="inline-start" />
+                          {uiText("允许")}
+                        </Button>
+                        <Button
+                          size="xs"
+                          variant="destructive"
+                          disabled={rowBusy || readOnly}
+                          aria-label={uiText("拒绝审批 #{v0}", { v0: row.id })}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void decide(row.id, "denied");
+                          }}
+                        >
+                          <XIcon data-icon="inline-start" />
+                          {uiText("拒绝")}
+                        </Button>
+                      </div>
+                    ) : null}
+                  </TableCell>
+                ) : null}
               </TableRow>
               {open ? (
                 <TableRow className="hover:bg-transparent has-aria-expanded:bg-transparent">
                   <TableCell colSpan={columns} className="whitespace-normal p-0">
                     <section id={panelID} aria-label={uiText("审批详情 #{v0}", { v0: row.id })}>
-                      <ApprovalDetail row={row} busy={busy} decide={decide} revision={revision} />
+                      <ApprovalDetail
+                        row={row}
+                        busy={rowBusy}
+                        decide={decide}
+                        revision={revision}
+                        readOnly={readOnly}
+                      />
                     </section>
                   </TableCell>
                 </TableRow>
@@ -738,7 +817,7 @@ function ApprovalTable({
   );
 }
 
-export function ApprovalRecords({ taskId }: { taskId?: string }) {
+export function ApprovalRecords({ taskId, readOnly = false }: { taskId?: string; readOnly?: boolean }) {
   const { t: uiText } = useI18n();
   const [rows, setRows] = React.useState<InterceptApprovalRow[]>([]);
   const [pendingRows, setPendingRows] = React.useState<InterceptPending[]>([]);
@@ -751,10 +830,12 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
   const [refreshing, setRefreshing] = React.useState(false);
   const [error, setError] = React.useState("");
   const [pendingError, setPendingError] = React.useState("");
-  const [deciding, setDeciding] = React.useState(false);
+  const [decidingIds, setDecidingIds] = React.useState<Set<number>>(new Set());
+  const [nowMs, setNowMs] = React.useState(Date.now());
   const [revision, setRevision] = React.useState(0);
   const request = React.useRef(0);
-  const decisionLock = React.useRef(false);
+  const decidingIdsRef = React.useRef<Set<number>>(new Set());
+  const decisionRefreshTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const filterID = React.useId();
   const filtered = Boolean(
     filter.status || filter.decision_source || searchText.trim() || filter.created_from || filter.created_to,
@@ -825,10 +906,24 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
 
   React.useEffect(() => {
     void load();
-    const timer = setInterval(() => void load(), 5000);
+    const timer = setInterval(() => {
+      if (typeof document !== "undefined" && document.hidden) return;
+      void load();
+    }, 5000);
+    const onVisibilityChange = () => {
+      if (typeof document !== "undefined" && !document.hidden) {
+        void load();
+      }
+    };
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", onVisibilityChange);
+    }
     return () => {
       request.current++;
       clearInterval(timer);
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", onVisibilityChange);
+      }
     };
   }, [load]);
 
@@ -878,16 +973,35 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
     return () => clearTimeout(timer);
   }, [searchText, searchPending]);
 
+  React.useEffect(() => {
+    return () => {
+      if (decisionRefreshTimer.current !== null) {
+        clearTimeout(decisionRefreshTimer.current);
+        decisionRefreshTimer.current = null;
+      }
+    };
+  }, []);
+
+  const scheduleDecisionRefresh = React.useCallback(() => {
+    if (decisionRefreshTimer.current !== null) {
+      clearTimeout(decisionRefreshTimer.current);
+    }
+    decisionRefreshTimer.current = setTimeout(() => {
+      decisionRefreshTimer.current = null;
+      void latestLoad.current(true);
+    }, 150);
+  }, []);
+
   const decide: Decide = async (id, decision) => {
-    if (decisionLock.current) return;
-    decisionLock.current = true;
-    setDeciding(true);
+    if (decidingIdsRef.current.has(id)) return;
+    decidingIdsRef.current = addDecidingId(decidingIdsRef.current, id);
+    setDecidingIds((prev) => addDecidingId(prev, id));
     try {
       await api.interceptDecide(id, decision);
       // Invalidate a list request started before this decision.
       request.current++;
       // Optimistically drop the decided item from the independent pending queue
-      // for instant feedback; the re-fetch below reconciles with server truth.
+      // for instant feedback; the coalesced re-fetch below reconciles with server truth.
       setRows((prev) =>
         prev.map((row) =>
           row.id === id
@@ -898,19 +1012,19 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
       setPendingRows((prev) => prev.filter((row) => row.id !== id));
       setRevision((v) => v + 1);
       toast.success(decision === "allowed" ? uiText("已允许执行") : uiText("已拒绝执行"));
-      // Re-fetch counts and rows: a decided item may no longer match the filter.
-      await latestLoad.current(true);
+      // Coalesce rapid decisions into one background reconciliation fetch.
+      scheduleDecisionRefresh();
     } catch (e) {
       toast.error((e as Error).message);
-      await latestLoad.current(true);
+      scheduleDecisionRefresh();
     } finally {
-      decisionLock.current = false;
-      setDeciding(false);
+      decidingIdsRef.current = removeDecidingId(decidingIdsRef.current, id);
+      setDecidingIds((prev) => removeDecidingId(prev, id));
     }
   };
 
   const historyById = new Map(rows.map((row) => [row.id, row]));
-  const pending: InterceptApprovalRow[] = pendingRows
+  const pending: ApprovalQueueRow[] = pendingRows
     .filter((row) => !taskId || row.task_id === taskId)
     .map((row) => ({
       conv_title: "",
@@ -919,6 +1033,16 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
       ...historyById.get(row.id),
       ...row,
     }));
+  const hasPending = pending.length > 0;
+  React.useEffect(() => {
+    if (!hasPending) return;
+    setNowMs(Date.now());
+    const timer = setInterval(() => {
+      if (typeof document !== "undefined" && document.hidden) return;
+      setNowMs(Date.now());
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [hasPending]);
   const title = taskId ? uiText("拦截审批") : uiText("审批记录");
   return (
     <div className="flex min-w-0 flex-col gap-5">
@@ -1082,14 +1206,18 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
           <div className="flex items-center gap-2 border-b bg-muted/40 px-4 py-3 font-medium text-sm">
             <ShieldAlertIcon className="size-4" />
             {uiText("待处理（")}
-            {pending.length}）<span className="text-muted-foreground text-xs">{uiText("展开后允许或拒绝")}</span>
+            {pending.length}）
+            <span className="text-muted-foreground text-xs">{uiText("可直接允许/拒绝，或展开查看详情")}</span>
           </div>
           <ApprovalTable
             rows={pending}
-            busy={deciding}
+            decidingIds={decidingIds}
             decide={decide}
             revision={revision}
             label={uiText("待处理审批")}
+            showQuickActions
+            nowMs={nowMs}
+            readOnly={readOnly}
           />
         </section>
       ) : null}
@@ -1122,10 +1250,11 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
         {rows.length ? (
           <ApprovalTable
             rows={rows}
-            busy={deciding}
+            decidingIds={decidingIds}
             decide={decide}
             revision={revision}
             label={uiText("审批记录列表")}
+            readOnly={readOnly}
           />
         ) : null}
         {!loading && !error && historyReady ? (

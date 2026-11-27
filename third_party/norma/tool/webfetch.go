@@ -53,6 +53,7 @@ func NewWebFetch(cfg WebFetchConfig) CoreTool {
 			},
 			"required": []any{"url"},
 		},
+		Concurrent: func(json.RawMessage) bool { return true },
 		// Network access is open-world: require approval rather than auto-allow.
 		Permissions: func(_ context.Context, input json.RawMessage, _ permission.Context) permission.Decision {
 			var in struct {

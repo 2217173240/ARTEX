@@ -1035,3 +1035,21 @@ func TestTaskLLMStreamHooksWiredToBreakerRegistry(t *testing.T) {
 	noHealth.recordPass(11)
 	noHealth.recordFailure(context.Background(), 11, errors.New("dial tcp: reset"))
 }
+
+func TestIsRetryableStreamErrorCallTimeout(t *testing.T) {
+	t.Parallel()
+	callTimeout := &agent.CallTimeoutError{
+		Provider: "openai",
+		Model:    "gpt-5",
+		Timeout:  600 * time.Second,
+	}
+	if isRetryableStreamError(callTimeout) {
+		t.Fatal("CallTimeoutError must not be retried on the same provider")
+	}
+	if isRetryableStreamError(fmt.Errorf("wrapped: %w", callTimeout)) {
+		t.Fatal("wrapped CallTimeoutError must not be retried on the same provider")
+	}
+	if !isRetryableStreamError(errors.New("status 503: upstream overloaded")) {
+		t.Fatal("transient 503 must remain retryable")
+	}
+}

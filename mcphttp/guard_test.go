@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -101,7 +102,7 @@ func TestHTTPGuardIsolationBusinessErrorsAndRedaction(t *testing.T) {
 		t.Fatal("business error opened circuit")
 	}
 	fail.Store(true)
-	if _, err := a.call(context.Background(), "tools/call", nil); err == nil || err.Error() != "mcp: transport request failed" {
+	if _, err := a.call(context.Background(), "tools/call", nil); err == nil || err.Error() != "mcp: upstream HTTP 500" || strings.Contains(err.Error(), "SECRET_BODY") {
 		t.Fatal(err)
 	}
 	before := requests.Load()
@@ -259,4 +260,90 @@ func TestHTTPBoundedConcurrencyAndQueuedCancellation(t *testing.T) {
 	if c.guard.failures != 0 {
 		t.Fatal("cancellation affected health")
 	}
+}
+
+func TestTransportSanitizedErrorClasses(t *testing.T) {
+	t.Run("http status redacts body", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte("UPSTREAM_SECRET_TOKEN"))
+		}))
+		defer srv.Close()
+		c := &Client{url: srv.URL, http: srv.Client(), headers: map[string]string{"Authorization": "Bearer secret-hdr"}}
+		defer c.Close()
+
+		_, err := c.call(context.Background(), "tools/call", nil)
+		if err == nil || err.Error() != "mcp: upstream HTTP 502" {
+			t.Fatalf("got err=%v, want mcp: upstream HTTP 502", err)
+		}
+		if strings.Contains(err.Error(), "UPSTREAM_SECRET_TOKEN") || strings.Contains(err.Error(), "secret-hdr") {
+			t.Fatalf("error leaked secret: %v", err)
+		}
+	})
+
+	t.Run("invalid rpc response", func(t *testing.T) {
+		cases := []struct {
+			name string
+			body string
+		}{
+			{"wrong jsonrpc version", `{"jsonrpc":"1.0","id":1,"result":{}}`},
+			{"mismatched id", `{"jsonrpc":"2.0","id":999,"result":{}}`},
+			{"empty result and nil error", `{"jsonrpc":"2.0","id":1}`},
+			{"malformed json", `<html>upstream error</html>`},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(tc.body))
+				}))
+				defer srv.Close()
+				c := &Client{url: srv.URL, http: srv.Client()}
+				defer c.Close()
+
+				_, err := c.call(context.Background(), "tools/call", nil)
+				if err == nil || err.Error() != "mcp: invalid RPC response" {
+					t.Fatalf("got err=%v, want mcp: invalid RPC response", err)
+				}
+			})
+		}
+	})
+
+	t.Run("transport timeout", func(t *testing.T) {
+		unblock := make(chan struct{})
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			select {
+			case <-unblock:
+			case <-r.Context().Done():
+			}
+		}))
+		defer srv.Close()
+		defer close(unblock)
+		hc := srv.Client()
+		hc.Timeout = 20 * time.Millisecond
+		c := &Client{url: srv.URL, http: hc}
+		defer c.Close()
+
+		_, err := c.call(context.Background(), "tools/call", nil)
+		if err == nil || err.Error() != "mcp: transport request timed out" {
+			t.Fatalf("got err=%v, want mcp: transport request timed out", err)
+		}
+	})
+
+	t.Run("other transport failure redacts url and headers", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+		closedURL := srv.URL + "/secret-path?token=secret-query"
+		hc := srv.Client()
+		srv.Close()
+		c := &Client{url: closedURL, http: hc, headers: map[string]string{"Authorization": "Bearer secret-hdr"}}
+		defer c.Close()
+
+		_, err := c.call(context.Background(), "tools/call", nil)
+		if err == nil || err.Error() != "mcp: transport request failed" {
+			t.Fatalf("got err=%v, want mcp: transport request failed", err)
+		}
+		if strings.Contains(err.Error(), "secret") {
+			t.Fatalf("error leaked secret: %v", err)
+		}
+	})
 }

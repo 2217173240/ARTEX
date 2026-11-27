@@ -120,7 +120,8 @@ func NewSearchExtraTools(reg *Registry, deferred []string) CoreTool {
 			},
 			"required": []any{"query"},
 		},
-		ReadOnly: func(json.RawMessage) bool { return true },
+		ReadOnly:   func(json.RawMessage) bool { return true },
+		Concurrent: func(json.RawMessage) bool { return true },
 		Permissions: func(context.Context, json.RawMessage, permission.Context) permission.Decision {
 			return permission.Allowed()
 		},

@@ -511,11 +511,22 @@ func (c *Client) notify(ctx context.Context, method string, params any) error {
 	return err
 }
 
+var errInvalidRPCResponse = errors.New("mcp: invalid RPC response")
+
+type httpStatusError struct {
+	code int
+}
+
+func (e httpStatusError) Error() string {
+	return fmt.Sprintf("mcp: upstream HTTP %d", e.code)
+}
+
 // roundTrip POSTs one JSON-RPC frame. When expectResp is false (a notification) the
 // server replies 202 Accepted with no body. Otherwise the reply is parsed from JSON
 // or from an SSE stream, whichever the server chose.
 func (c *Client) roundTrip(ctx context.Context, body rpcRequest, expectResp bool) (*rpcResponse, error) {
-	if _, err := json.Marshal(body); err != nil {
+	data, err := json.Marshal(body)
+	if err != nil {
 		return nil, errors.New("mcp: invalid request parameters")
 	}
 	g := c.circuit()
@@ -526,9 +537,9 @@ func (c *Client) roundTrip(ctx context.Context, body rpcRequest, expectResp bool
 	callCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	stop := context.AfterFunc(g.ctx, cancel)
 	defer func() { stop(); cancel() }()
-	response, err := c.transportRoundTrip(callCtx, body, expectResp)
+	response, err := c.transportRoundTrip(callCtx, body.ID, data, expectResp)
 	if err == nil && expectResp && (response == nil || response.JSONRPC != "2.0" || response.ID != body.ID || (response.Error == nil && len(response.Result) == 0)) {
-		err = errors.New("mcp: invalid RPC response")
+		err = errInvalidRPCResponse
 	}
 	canceled := ctx.Err() != nil || g.ctx.Err() != nil
 	g.finish(a, err, canceled)
@@ -539,18 +550,24 @@ func (c *Client) roundTrip(ctx context.Context, body rpcRequest, expectResp bool
 		return nil, ErrClosed
 	}
 	if err != nil {
-		return nil, errors.New("mcp: transport request failed")
+		var statusErr httpStatusError
+		switch {
+		case errors.Is(err, context.DeadlineExceeded):
+			return nil, errors.New("mcp: transport request timed out")
+		case errors.Is(err, errInvalidRPCResponse):
+			return nil, errors.New("mcp: invalid RPC response")
+		case errors.As(err, &statusErr):
+			return nil, fmt.Errorf("mcp: upstream HTTP %d", statusErr.code)
+		default:
+			return nil, errors.New("mcp: transport request failed")
+		}
 	}
 	return response, nil
 }
 
-func (c *Client) transportRoundTrip(ctx context.Context, body rpcRequest, expectResp bool) (*rpcResponse, error) {
+func (c *Client) transportRoundTrip(ctx context.Context, reqID int, data []byte, expectResp bool) (*rpcResponse, error) {
 	if c.legacySSE {
-		return c.legacyRoundTrip(ctx, body, expectResp)
-	}
-	data, err := json.Marshal(body)
-	if err != nil {
-		return nil, err
+		return c.legacyRoundTrip(ctx, reqID, data, expectResp)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(data))
 	if err != nil {
@@ -585,16 +602,21 @@ func (c *Client) transportRoundTrip(ctx context.Context, body rpcRequest, expect
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("mcp http %d", resp.StatusCode)
+		return nil, httpStatusError{code: resp.StatusCode}
 	}
 	if !expectResp {
 		return nil, nil // notification — no JSON-RPC body to parse
 	}
 	if strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
-		return parseSSE(resp.Body, body.ID)
+		return parseSSE(resp.Body, reqID)
 	}
 	var out rpcResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		var syntaxErr *json.SyntaxError
+		var typeErr *json.UnmarshalTypeError
+		if errors.As(err, &syntaxErr) || errors.As(err, &typeErr) || errors.Is(err, io.EOF) {
+			return nil, errInvalidRPCResponse
+		}
 		return nil, fmt.Errorf("mcp: decode json response: %w", err)
 	}
 	return &out, nil
@@ -602,21 +624,16 @@ func (c *Client) transportRoundTrip(ctx context.Context, body rpcRequest, expect
 
 // legacyRoundTrip posts to the endpoint announced by GET /sse. The HTTP POST
 // only acknowledges receipt; the JSON-RPC response arrives on the SSE stream.
-func (c *Client) legacyRoundTrip(ctx context.Context, body rpcRequest, expectResp bool) (*rpcResponse, error) {
-
-	data, err := json.Marshal(body)
-	if err != nil {
-		return nil, err
-	}
+func (c *Client) legacyRoundTrip(ctx context.Context, reqID int, data []byte, expectResp bool) (*rpcResponse, error) {
 	var responseCh chan *rpcResponse
 	if expectResp {
 		responseCh = make(chan *rpcResponse, 1)
 		c.pendingMu.Lock()
-		c.pending[body.ID] = responseCh
+		c.pending[reqID] = responseCh
 		c.pendingMu.Unlock()
 		defer func() {
 			c.pendingMu.Lock()
-			delete(c.pending, body.ID)
+			delete(c.pending, reqID)
 			c.pendingMu.Unlock()
 		}()
 	}
@@ -635,7 +652,7 @@ func (c *Client) legacyRoundTrip(ctx context.Context, body rpcRequest, expectRes
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("mcp sse http %d", resp.StatusCode)
+		return nil, httpStatusError{code: resp.StatusCode}
 	}
 	if !expectResp {
 		return nil, nil
