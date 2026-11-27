@@ -5,9 +5,11 @@ import (
 	"context"
 
 	"net"
+	"net/mail"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // 本文件补齐邮件渠道的协议级测试。在此之前 email.Send 的覆盖率是 0——
@@ -179,6 +181,51 @@ func TestEmailSendDeliversFullMessage(t *testing.T) {
 	// 多个收件人都要出现在 To 头里。
 	if !strings.Contains(body, "a@example.com, b@example.com") {
 		t.Errorf("To 头未包含全部收件人:\n%s", body)
+	}
+}
+
+// RFC 5322 section 3.6 要求邮件带 Date 头，且每封邮件应带唯一 Message-ID。
+// 部分提交服务器不会自动补全，垃圾邮件过滤器会对缺失这些头的邮件扣分。
+func TestEmailMessageHasDateAndMessageID(t *testing.T) {
+	ids := map[string]bool{}
+	for range 2 {
+		raw, err := buildEmailMessage("artex@example.com", []string{"a@example.com"}, singleMsg())
+		if err != nil {
+			t.Fatal(err)
+		}
+		msg, err := mail.ReadMessage(strings.NewReader(raw))
+		if err != nil {
+			t.Fatalf("邮件解析失败: %v\n%s", err, raw)
+		}
+		date, err := msg.Header.Date()
+		if err != nil {
+			t.Fatalf("缺少或无效 Date 头: %v\n%s", err, raw)
+		}
+		if d := time.Since(date); d < -time.Minute || d > time.Minute {
+			t.Errorf("Date %v 与发送时间偏差过大", date)
+		}
+		id := msg.Header.Get("Message-ID")
+		if !strings.HasPrefix(id, "<") || !strings.HasSuffix(id, "@example.com>") {
+			t.Errorf("Message-ID %q, 期望 <...@example.com>", id)
+		}
+		ids[id] = true
+	}
+	if len(ids) != 2 {
+		t.Errorf("两封邮件共用了同一个 Message-ID: %v", ids)
+	}
+}
+
+func TestEmailSendUsesBareEnvelopeSender(t *testing.T) {
+	f := newFakeSMTP(t)
+	cfg := emailCfg(t, f, map[string]any{"from": "Artex Alerts <artex@example.com>"})
+	if _, err := (emailChannel{}).Send(context.Background(), cfg, singleMsg()); err != nil {
+		t.Fatalf("投递失败: %v", err)
+	}
+	if !f.sawCommand("MAIL FROM:<artex@example.com>") {
+		t.Errorf("SMTP MAIL FROM 未使用裸地址: %v", f.commands)
+	}
+	if !strings.Contains(f.body(), "From: Artex Alerts <artex@example.com>\r\n") {
+		t.Errorf("邮件正文未保留显示名 From 头:\n%s", f.body())
 	}
 }
 

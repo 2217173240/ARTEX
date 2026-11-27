@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"log"
 	"net/http"
 	"net/url"
@@ -28,6 +29,7 @@ import (
 	"github.com/Autumn-27/norma/compaction"
 	"github.com/Autumn-27/norma/llm"
 	acperm "github.com/Autumn-27/norma/permission"
+	actool "github.com/Autumn-27/norma/tool"
 	"github.com/Autumn-27/norma/transcript"
 )
 
@@ -310,8 +312,9 @@ func (c Config) newProvider(client *http.Client, limiter *RequestLimiter) (llm.P
 }
 
 // IsQuotaExhaustedMessage deliberately recognizes only explicit balance,
-// billing, credit, or quota-exhaustion signals. Generic 429/rate-limit text,
-// authentication failures, network errors, and server failures are excluded.
+// billing, credit, quota, or account/plan usage-limit exhaustion signals.
+// Generic 429/rate-limit text, authentication failures, network errors, and
+// server failures are excluded.
 var nonFailoverHTTPStatus = regexp.MustCompile(`(?:status(?:\s+code)?|http(?:\s+status)?)\s*[=:]?\s*(?:401|403|5\d\d)\b`)
 var transientQuotaLimit = regexp.MustCompile(`(?i)(?:\b(?:rpm|tpm|rpd|qps)\b|quota[_\s-]*metric|rate[_\s-]*limit|too many requests|(?:requests?|tokens?)\s+(?:per|/)\s*(?:second|minute)|(?:per|/)\s*(?:second|minute)\s+(?:requests?|tokens?)|generate[_\s-]*requests[_\s-]*per[_\s-]*(?:minute|second)|tokens?[_\s-]*per[_\s-]*(?:minute|second))`)
 
@@ -333,6 +336,8 @@ func IsQuotaExhaustedMessage(message string) bool {
 		"exceeded your current quota", "billing_hard_limit_reached",
 		"billing hard limit", "billing_not_active", "credit balance", "insufficient credit",
 		"insufficient balance", "balance is too low", "payment required", "status 402",
+		"gousagelimiterror", "usage limit reached", "usage_limit_reached",
+		"usage limit exceeded", "exceeded your usage limit", "reached your usage limit",
 		"余额不足", "额度不足", "额度已用尽", "欠费",
 	}
 	for _, marker := range markers {
@@ -514,17 +519,30 @@ func TestConnection(ctx context.Context, c Config) (time.Duration, string, error
 	// 就撞到输出上限(finish=length)、被截断,连接测试虽仍算通(err=nil)但显示成
 	// "已中断/length/resume" 一团糟。给足预算让它把 OK 干净吐完(finish=stop)。
 	// EscalateMaxTokens 保持 false:不因截断而抬额重试,避免 resume 循环空烧。
+	//
+	// 连接测试不该带任何工具:测试跑在 ModeBypass 下,Tools 为 nil 时 SDK 会装入
+	// 不受限的内置文件/shell 工具,模型完全可能去调它们。显式传空切片,并关掉 SDK
+	// 自动追加的后台任务工具(TaskOutput/TaskStop/TaskList/Monitor)——有的模型
+	// 会用调用其中一个来回答测试,而不是输出 OK(与 goals 的目标分解同一处理)。
+	probe := &connTestProvider{inner: prov}
 	reply, err := agentcore.Run(ctx, agentcore.Options{
-		Provider:       prov,
-		SystemPrompt:   []string{"你是连接测试。直接输出两个字符 OK 即可，不要思考、不要解释、不要别的。"},
-		PermissionMode: acperm.ModeBypass,
-		MaxTurns:       1,
-		MaxTokens:      8192,
-		NonStreaming:   !c.Stream, // 用该 profile 的真实收发模式做连接测试
+		Provider:               probe,
+		SystemPrompt:           []string{"你是连接测试。直接输出两个字符 OK 即可，不要思考、不要解释、不要别的。"},
+		Tools:                  []actool.CoreTool{}, // 不能传 nil：nil 会让 SDK 装入不受限的内置文件/shell 工具
+		PermissionMode:         acperm.ModeBypass,
+		MaxTurns:               1,
+		MaxTokens:              8192,
+		NonStreaming:           !c.Stream, // 用该 profile 的真实收发模式做连接测试
+		DisableBackgroundTasks: true,
 	}, "ping")
 	lat := time.Since(start)
 	if err != nil {
 		return lat, "", err
+	}
+	// 模型回了工具调用同样不算通过:测试只要纯文本,回了 tool call 或以
+	// tool_calls/tool_use 结束(哪怕同时带了文字)的配置在会话里不会好好回答。
+	if probe.sawToolCall || isToolCallStopReason(probe.stopReason) {
+		return lat, "", fmt.Errorf("模型返回的是工具调用而不是文本回复（finish_reason=%q）", probe.stopReason)
 	}
 	// err==nil 还不够：请求通了但模型一个字都不吐的情况真实存在(思考把预算烧光、
 	// 正文被安全策略吞掉、兼容层把 content 丢了)。这种配置在会话里就是"不回话",
@@ -534,4 +552,53 @@ func TestConnection(ctx context.Context, c Config) (time.Duration, string, error
 		return lat, "", fmt.Errorf("模型无回复内容（请求已通，但未返回任何文本）")
 	}
 	return lat, reply, nil
+}
+
+// connTestProvider 在连接测试期间观察 provider 的原始响应,用来识别工具调用
+// 回复与 tool_calls/tool_use 停止原因:agentcore.Run 只回最终文本,看不出模型
+// 到底回了什么。它只读不改,事件与错误原样向下传。
+type connTestProvider struct {
+	inner       llm.Provider
+	sawToolCall bool
+	stopReason  string
+}
+
+func (p *connTestProvider) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
+	return func(yield func(llm.StreamEvent, error) bool) {
+		for ev, err := range p.inner.Stream(ctx, req) {
+			p.observe(ev.Type == llm.SEToolUseStart, ev.StopReason, err)
+			if !yield(ev, err) {
+				return
+			}
+		}
+	}
+}
+
+func (p *connTestProvider) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
+	msg, stopReason, usage, err := p.inner.Complete(ctx, req)
+	p.observe(len(msg.ToolUses()) > 0, stopReason, err)
+	return msg, stopReason, usage, err
+}
+
+// observe 记录一次成功响应里的工具调用与停止原因;出错的事件不作为依据。
+func (p *connTestProvider) observe(toolCall bool, stopReason string, err error) {
+	if err != nil {
+		return
+	}
+	if toolCall {
+		p.sawToolCall = true
+	}
+	if stopReason != "" {
+		p.stopReason = stopReason
+	}
+}
+
+// isToolCallStopReason 判断停止原因是否表明模型停在工具调用上。
+func isToolCallStopReason(stopReason string) bool {
+	switch strings.ToLower(strings.TrimSpace(stopReason)) {
+	case "tool_use", "tool_calls":
+		return true
+	default:
+		return false
+	}
 }

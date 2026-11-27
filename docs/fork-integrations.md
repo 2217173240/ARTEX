@@ -1,5 +1,28 @@
 # 同源功能集成
 
+2026-11-27 核查并适配了以下 16 项安全防护、可靠性与检索修复（15 项来自 `BaaRai/ARTEX`，1 项来自 `RuoJi6/ARTEX`）。
+
+| 来源 | 本仓库的实现与适配边界 |
+|---|---|
+| Phantom-IN [连接测试禁工具 #538](https://github.com/BaaRai/ARTEX/pull/538)（`b66ddd17719614e0dd53d4c77703f4f87fab6672`）与 BaaRai [连接测试拒工具调用 #588](https://github.com/BaaRai/ARTEX/pull/588)（`1f558d8681be3f55cfcd2e296e21af2fcfbe570a`） | `agent.TestConnection` 显式传入空工具切片并设置 `DisableBackgroundTasks: true`，通过只读观察包装器识别流式/非流式工具调用或 `tool_calls`/`tool_use` 停止原因并判测试失败。 |
+| RuoJi6 [OpenCode Go 用量耗尽识别 #201](https://github.com/RuoJi6/ARTEX/pull/201)（`48ae0ef22ece2e8b3308cc19806c0c0e53246619`） | `agent.IsQuotaExhaustedMessage` 补充 OpenCode Go 及账号/套餐用量窗口耗尽特征，触发任务级配置链自动轮换；保留普通 429/RPM/TPM 限流与 401/403/5xx 排除规则。 |
+| gabrimarch3 [连接测试透传 max_tokens_field #573](https://github.com/BaaRai/ARTEX/pull/573)（`3df678cbfcf6c41fe44ca2ef7a90c61df8ff982d`） | `POST /api/llm/test` 读取并归一化 `max_tokens_field`（表单省略时回落已存 profile，仅 `openai` + `max_completion_tokens` 保留），同步更新前端模型配置页测试请求。 |
+| Coff0xc [Agent 列表分页上限 #557](https://github.com/BaaRai/ARTEX/pull/557)（`17e368729efa71ebc0645ee54fc2bf1b5bb741ad`） | `list_worker_traces`、`list_assets` 与 `list_untested_assets` 统一将单页大小钳制在 100 以内，并限制页码与偏移量，避免模型入参直接作为切片容量或无界 SQL 分页。 |
+| BaaRai [压缩思考参数与过期提示降级 #587](https://github.com/BaaRai/ARTEX/pull/587)（`478bdcae820daf1dbc44e39348b024385aac4cd0`） | `Compactor.compress` 不再硬编码 `Thinking: "disabled"`，收到 `between_tools` 400 错误时自动改用 `between_tools` 重试一次，保留既有截断/空正文校验；`report_finding` 将 `evidence_hint_id: 0` 视为缺省，过期或非本任务提示 ID 优雅降级并附说明，不再丢弃漏洞。 |
+| Coff0xc [遗留 MCP SSE 行长上限 #559](https://github.com/BaaRai/ARTEX/pull/559)（`7c7dcc5d93b191560a2eeb33f7a6c09c6a233787`） | `mcphttp` 统一采用 8 MiB RPC 上限，`readSSEEndpoint` 与 `readLegacySSE` 改为有界按行读取，防止对端不发换行导致内存无界增长。 |
+| Coff0xc [自定义工具模板单次替换 #562](https://github.com/BaaRai/ARTEX/pull/562)（`aadd77ff2d0e2f40739a8b0bd70c8e19a3496fd2`） | `server.renderTemplate` 改为单次前向扫描替换，参数值内的 `{other}` 不再被二次展开，未知占位符保持原样；未引入上游无关的流量异步索引改动。 |
+| Coff0xc [批量资产入库请求体上限 #558](https://github.com/BaaRai/ARTEX/pull/558)（`702859525242f8b02917103b9db02764db1e6a00`） | `POST /api/assets` 在访问数据库前施加 32 MiB `MaxBytesReader` 上限，超限返回 HTTP 413。 |
+| chaitanya0305 [Telegram 汇总转义预算 #561](https://github.com/BaaRai/ARTEX/pull/561)（`9448419c6d840456b8acebc0f1d80e91afe56ba`） | `notify.telegramHTML` 按 HTML 转义并带换行的实际输出文本计量打包预算，防止含 `<`/`&` 的漏洞被截断却记为已送达；保留既有隐私简报模式。 |
+| thejesh23 [SMTP 邮件头与注入防护 #508](https://github.com/BaaRai/ARTEX/pull/508)（`2d39964bac5a7741fae5897cc506b26ac842dbfc`） | `notify/email.go` 拒绝 `from`/`to` 中的 CR/LF 换行符，用 `net/mail` 校验并提取裸信封发件人地址，补齐 RFC 5322 `Date` 与唯一 `Message-ID` 头。 |
+| chaitanya0305 [报告按任务统计资产 #572](https://github.com/BaaRai/ARTEX/pull/572)（`1fceeb3479d82db2a01b05024f67fda2f6419fa0`） | `GET /api/report` 改用 `CountsByTypeForTask(taskID)`，只统计当前任务资产而非全库总数。 |
+| thejesh23 [乱序任务超时触发 #507](https://github.com/BaaRai/ARTEX/pull/507)（`6ec01e007e0e4e896b3fa51f3f53c169bcc0e58d`） | `db.TimedOutTasks` 与 `server.Scheduler` 将 `on_task_timeout` 由单调任务 ID 水位改为持久化已触发集合 `fired_timeouts`，避免后创建任务先超时后漏触旧任务。 |
+| zombrax1 [数据库查询 `rows.Err()` 检查 #539](https://github.com/BaaRai/ARTEX/pull/539)（`6d7b83a93e5dec89ea0542451b7b99f49bbb673b`） | 在 `db/logs.go`（2 处）和 `db/task_archives.go`（3 处，含本地检出的 `archiveAssetMetadata`）补全 `rows.Err()` 检查，防止流中断错误被静默吞掉。 |
+| chaitanya0305 [资产 DSL `!=` 空值语义 #568](https://github.com/BaaRai/ARTEX/pull/568)（`c9116e393855b5d0b8724438a7951e2b6d767d16`） | `db/asset_dsl.go` 修复 `task_id!=N`/`company_id!=N`（并拒绝不支持的比较符），数值与字符串 `!=` 分别改用 `IS DISTINCT FROM` 和 `(col IS NULL OR col NOT ILIKE ...)` 以保留缺省字段资产。 |
+| Coff0xc [流量保留目录删除保护 #556](https://github.com/BaaRai/ARTEX/pull/556)（`e47776f1afc51aa8757c45cdcda069415604064f`） | `traffic.Traffic.hostTreePath` 拒绝 `_index`、`_blobs`、`_ca`、`_delete_staging` 及越界路径，仅删除索引行而不触碰存储内部目录。 |
+| chaitanya0305 [默认端口检索 #564](https://github.com/BaaRai/ARTEX/pull/564)（`d3b2dc7eb057fa74dc19e2cb266d136ab3bc4a1c`）与 [压缩正文解码索引 #566](https://github.com/BaaRai/ARTEX/pull/566)（`c1a8025aaf7444ad2f3dee1d7a5e008a0595e149`） | `traffic.query` 为 `:80`/`:443` 同步匹配省略默认端口的 `http`/`ws`/`https`/`wss` URL；`traffic/encoding.go` 在写锁前对单层 `gzip`/`deflate`/`br` 非二进制正文有界解码并写入全文索引，保留原始线上传输字节不变（直接引用已有 `github.com/andybalholm/brotli`）。 |
+
+15 项 `BaaRai/ARTEX` 来源与本仓库共同祖先为 `ad9f14f140eb240d635c896aceb39ef40af4b2dd`，根 `LICENSE` 对象为 `be3f7b28e564e7dd05eaf59d64adba1a4065ac0e`（AGPL-3.0）；`RuoJi6/ARTEX` 为独立根仓库（沿用同一模块路径，根 `LICENSE` 对象同为 `be3f7b28e564e7dd05eaf59d64adba1a4065ac0e`），按当前架构独立适配。同轮核查的 `BaaRai/ARTEX` `#582`（DSN 脱敏）、`#481`（目标 URL 尾部标点）、`#303`（覆盖度开关读失败降级）、`RuoJi6/ARTEX` `#200`（归档跳过 Unix socket）与 `jiwoochris/artex-global` `#78`（子进程凭据隔离）均已在现有实现中覆盖；`BaaRai/ARTEX` `#570`（公司范围扩展标记）与 `#599`（`agent/fact_input.go`）对应子系统本仓库未引入，因此未采用。
+
 2026-11-25 采用了三项面向操作员的功能。
 
 | 来源 | 本仓库的实现 |

@@ -29,8 +29,12 @@ import (
 	actool "github.com/Autumn-27/norma/tool"
 )
 
-const protocolVersion = "2025-06-18"
-const legacySSEProtocolVersion = "2024-11-05"
+const (
+	protocolVersion          = "2025-06-18"
+	legacySSEProtocolVersion = "2024-11-05"
+	// mcpMaxRPCBytes caps a single SSE line or JSON-RPC event payload from an MCP server.
+	mcpMaxRPCBytes = 8 * 1024 * 1024
+)
 
 // ToolName mirrors mcp.ToolName so remote tools share the mcp__server__tool scheme.
 func ToolName(server, name string) string { return "mcp__" + server + "__" + name }
@@ -215,9 +219,29 @@ func NewSSEWithOptions(ctx context.Context, server, sseURL string, headers map[s
 	return c, nil
 }
 
+// readLimitedLine reads one line, delimiter included, and refuses a line
+// longer than max. ReadString would buffer the whole line, and a legacy SSE
+// peer can withhold the newline.
+func readLimitedLine(r *bufio.Reader, max int) (string, error) {
+	if max < 0 {
+		max = 0
+	}
+	var b strings.Builder
+	for {
+		frag, err := r.ReadSlice('\n')
+		if len(frag) > max || b.Len() > max-len(frag) {
+			return "", fmt.Errorf("mcp sse line exceeds %d bytes", max)
+		}
+		b.Write(frag)
+		if err == nil || !errors.Is(err, bufio.ErrBufferFull) || len(frag) == 0 {
+			return b.String(), err
+		}
+	}
+}
+
 func readSSEEndpoint(r *bufio.Reader, base string) (string, error) {
 	for {
-		line, err := r.ReadString('\n')
+		line, err := readLimitedLine(r, mcpMaxRPCBytes)
 		if err != nil {
 			return "", fmt.Errorf("mcp sse endpoint: %w", err)
 		}
@@ -249,7 +273,7 @@ func readSSEEndpoint(r *bufio.Reader, base string) (string, error) {
 func (c *Client) readLegacySSE(r *bufio.Reader) {
 	defer close(c.streamDone)
 	for {
-		line, err := r.ReadString('\n')
+		line, err := readLimitedLine(r, mcpMaxRPCBytes)
 		if err != nil {
 			return
 		}
@@ -630,7 +654,7 @@ func (c *Client) legacyRoundTrip(ctx context.Context, body rpcRequest, expectRes
 // response matching wantID (server-to-client requests/notifications are skipped).
 func parseSSE(r io.Reader, wantID int) (*rpcResponse, error) {
 	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	sc.Buffer(make([]byte, 0, 64*1024), mcpMaxRPCBytes)
 	var dataBuf strings.Builder
 	flush := func() (*rpcResponse, bool) {
 		if dataBuf.Len() == 0 {

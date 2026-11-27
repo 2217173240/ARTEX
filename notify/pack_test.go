@@ -89,6 +89,34 @@ func TestTelegramPackingUsesRuneBudget(t *testing.T) {
 	}
 }
 
+// TestTelegramPackingCountsEscapedText 覆盖含 HTML 元字符（如 XSS 标题、带 & 的查询参数）的
+// 汇总行：转义后文本会变长，打包必须按转义后文本计预算，确保每个计入 kept 的条目都完整出现，
+// 且页脚不被截断。
+func TestTelegramPackingCountsEscapedText(t *testing.T) {
+	m := batchMsg(200)
+	m.WindowMinutes = 60
+	m.HomeURL = "https://artex.example.com/"
+	for i := range m.Items {
+		m.Items[i].Name = "Reflected XSS <script> in q param of /search, vuln" + itoa(i+1) + " end"
+		m.Items[i].Assets = []string{"https://shop.example.com/search?q=1&lang=en"}
+	}
+	text, kept := telegramHTML(m)
+	if n := utf8.RuneCountInString(text); n > telegramTextLimit {
+		t.Fatalf("正文 %d 字符超上限 %d", n, telegramTextLimit)
+	}
+	if kept <= 0 || kept >= len(m.Items) {
+		t.Fatalf("应只装下一部分，得到 %d", kept)
+	}
+	for i := 0; i < kept; i++ {
+		if !strings.Contains(text, "vuln"+itoa(i+1)+" end") {
+			t.Fatalf("计入 kept 的第 %d/%d 条未完整出现在消息中:\n...%s", i+1, kept, text[max(0, len(text)-300):])
+		}
+	}
+	if !strings.Contains(text, "在平台中查看全部</a>") {
+		t.Fatalf("页脚被截断:\n...%s", text[max(0, len(text)-300):])
+	}
+}
+
 func TestFeishuPackingReportsKept(t *testing.T) {
 	m := batchMsg(2000)
 	_, kept, err := feishuPayload(m, "", "")

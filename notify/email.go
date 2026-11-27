@@ -2,12 +2,14 @@ package notify
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"mime"
 	"net"
+	"net/mail"
 	"net/smtp"
 	"strconv"
 	"strings"
@@ -52,6 +54,14 @@ func (emailChannel) Validate(cfg map[string]any) error {
 	if len(cfgStrings(cfg, "to")) == 0 {
 		return errors.New("至少需要一个收件人地址")
 	}
+	for _, rcpt := range cfgStrings(cfg, "to") {
+		if hasLineBreak(rcpt) {
+			return errors.New("收件人地址不能包含换行符")
+		}
+	}
+	if _, err := senderAddress(cfgString(cfg, "from")); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -67,6 +77,10 @@ func (c emailChannel) Send(ctx context.Context, cfg map[string]any, m Message) (
 	password := cfgString(cfg, "password")
 	implicitTLS := cfgBool(cfg, "tls")
 
+	sender, err := senderAddress(from)
+	if err != nil {
+		return 0, Permanent(err)
+	}
 	msg, err := buildEmailMessage(from, to, m)
 	if err != nil {
 		return 0, Permanent(err)
@@ -98,8 +112,9 @@ func (c emailChannel) Send(ctx context.Context, cfg map[string]any, m Message) (
 			return 0, Permanent(fmt.Errorf("SMTP 认证失败: %w", err))
 		}
 	}
-	if err := client.Mail(from); err != nil {
-		return 0, smtpStageError(fmt.Sprintf("发件人 %s 被拒", from), err)
+	// 信封发件人只用裸地址；显示名保留在邮件 From 头里。
+	if err := client.Mail(sender.Address); err != nil {
+		return 0, smtpStageError(fmt.Sprintf("发件人 %s 被拒", sender.Address), err)
 	}
 	for _, rcpt := range to {
 		if err := client.Rcpt(rcpt); err != nil {
@@ -194,9 +209,21 @@ func smtpReplyCode(text string) int {
 // 正文（尤其汇总邮件）很容易出现超长行；二是 base64 天然不会出现以 "." 开头
 // 的行，省去 SMTP 点号转义的麻烦。
 func buildEmailMessage(from string, to []string, m Message) (string, error) {
+	// From 和 To 会直接写入邮件头：任何 CR 或 LF 都会开启新头，必须拦截。
+	if hasLineBreak(from) {
+		return "", errors.New("发件人地址不能包含换行符")
+	}
+	for _, rcpt := range to {
+		if hasLineBreak(rcpt) {
+			return "", errors.New("收件人地址不能包含换行符")
+		}
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "From: %s\r\n", from)
 	fmt.Fprintf(&b, "To: %s\r\n", strings.Join(to, ", "))
+	// RFC 5322 要求 Date 并推荐 Message-ID；并非所有提交服务器都会自动补全，缺失会被垃圾邮件过滤器扣分。
+	fmt.Fprintf(&b, "Date: %s\r\n", time.Now().Format(time.RFC1123Z))
+	fmt.Fprintf(&b, "Message-ID: <%s@%s>\r\n", rand.Text(), messageIDDomain(from))
 	// 中文主题必须做 RFC 2047 编码，否则会被客户端显示成乱码。
 	fmt.Fprintf(&b, "Subject: %s\r\n", mime.QEncoding.Encode("utf-8", htmlTitle(m)))
 	b.WriteString("MIME-Version: 1.0\r\n")
@@ -212,4 +239,34 @@ func buildEmailMessage(from string, to []string, m Message) (string, error) {
 	}
 	b.WriteString(encoded + "\r\n")
 	return b.String(), nil
+}
+
+// senderAddress 用 net/mail 解析发件人配置，支持带显示名与注释的格式并提取裸地址。
+// 由于该值会写入邮件头，解析前先拒绝任何换行符。
+func senderAddress(from string) (*mail.Address, error) {
+	if hasLineBreak(from) {
+		return nil, errors.New("发件人地址不能包含换行符")
+	}
+	addr, err := mail.ParseAddress(from)
+	if err != nil {
+		return nil, fmt.Errorf("发件人地址无效: %w", err)
+	}
+	return addr, nil
+}
+
+// hasLineBreak 报告 s 是否包含 CR 或 LF。
+func hasLineBreak(s string) bool {
+	return strings.ContainsAny(s, "\r\n")
+}
+
+// messageIDDomain 提取 Message-ID 右侧域名；若无法解析或缺少域名则回退为 "localhost"。
+func messageIDDomain(from string) string {
+	addr, err := senderAddress(from)
+	if err != nil {
+		return "localhost"
+	}
+	if i := strings.LastIndex(addr.Address, "@"); i >= 0 && i+1 < len(addr.Address) {
+		return addr.Address[i+1:]
+	}
+	return "localhost"
 }

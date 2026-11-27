@@ -425,6 +425,8 @@ function ProfileSheet({
         profileId,
         streaming,
         sessionHeaderKey.trim(),
+        // 用配置实际会发送的上限字段名来测（OpenAI 推理模型会拒绝 max_tokens）。
+        format === "openai" ? toStore(maxTokensField) : "",
       );
       // 回复内容一并展示：看得见模型确实说了话，才算和会话里跑通是一回事。
       if (r.ok)
