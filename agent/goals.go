@@ -121,22 +121,45 @@ func DecomposeGoalsWithProvider(ctx context.Context, prov llm.Provider, dataDir,
 		ctx = transcript.WithSessionID(ctx, fmt.Sprintf("exp%d-goals", ts.ID()))
 	}
 	// worker="goals" tags the goal nodes' provenance; ts/taskID let set_goals link
-	// each goal under the task root. This is the catalog's real set_goals tool, so a
-	// web-edited description/schema on it applies here too.
+	// each goal under the task root. Route the DB-seeded goals tools
+	// (set_goals, set_constraints) through ToolResolve("goals") so catalog
+	// overrides, bindings, and fail-closed catalog errors apply consistently.
 	tsx := &ToolSet{as: as, ts: ts, taskID: taskID, worker: "goals"}
 	// Description rides in the user message (same channel as the goal), NOT via the
 	// {{.EngagementDescription}} template var — else a prompt that references the var
 	// would inject the description twice. System prompt stays pure static instructions.
 	sys := renderSystem("goals", goalsDefaultTmpl, GoalsVars{DataDir: dataDir, Now: nowStr()})
-	// set_constraints 始终可用(不依赖 asset store):正文已含「先抽操作约束再拆目标」这步
-	// (可在 agent 编辑页改措辞),这里只需接上工具。
 	tools := []actool.CoreTool{tsx.setGoals(), tsx.setConstraints()}
+	if ToolResolve != nil {
+		var err error
+		tools, err = ToolResolve(ctx, "goals", tools)
+		if err != nil {
+			return nil
+		}
+	}
 	// Wire add_task_scope only when we have a real asset store + task to write to.
+	// Note: add_task_scope is seeded under mainagent/planner in BuiltinToolSeeds, so
+	// keep it wired here unless ToolResolve("goals") already injected/bound it.
 	// The scope-extraction tail is appended in lockstep so the prompt never asks for
 	// a tool that isn't present.
 	if as != nil && taskID > 0 {
-		tools = append(tools, tsx.addTaskScope())
+		hasScopeTool := false
+		for _, t := range tools {
+			if t.Name() == "add_task_scope" {
+				hasScopeTool = true
+				break
+			}
+		}
+		if !hasScopeTool {
+			tools = append(tools, tsx.addTaskScope())
+		}
 		sys += goalsScopeTail
+	}
+	for i, t := range tools {
+		tools[i] = guardPanic(t)
+	}
+	if tools == nil {
+		tools = []actool.CoreTool{}
 	}
 	userMsg := "任务目标：\n" + goalText
 	if d := strings.TrimSpace(desc); d != "" {

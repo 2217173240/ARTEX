@@ -100,10 +100,10 @@ var notifyTransport = func() *http.Transport {
 // 目标流量用的，常是不稳定的隧道，而通知的可用性不该被目标网络的抖动绑架。
 // IM 推送直连即可。超时设为 15 秒——比这更慢的对端实际上已经是故障状态。
 //
-// 拒绝跨主机重定向：本功能的投递地址都是「一个固定 endpoint」形态，正常不会
-// 重定向到别的主机；而这几家的凭据（钉钉的 access_token、企微的 key、Telegram 的
-// bot token）**就在 URL 里**，跟随跨主机跳转等于把凭据交给重定向目标。同主机
-// 的跳转（如末尾补斜杠）仍允许。
+// 拒绝跨源重定向：本功能的投递地址都是「一个固定 endpoint」形态，正常不会
+// 重定向到别的主机或协议；而这几家的凭据（钉钉的 access_token、企微的 key、
+// Telegram 的 bot token）**就在 URL 里**，跟随跨主机或协议降级（如 https → http）
+// 跳转等于把凭据交给重定向目标或明文暴露。同协议同主机的跳转（如末尾补斜杠）仍允许。
 var httpClient = &http.Client{
 	Timeout:   15 * time.Second,
 	Transport: notifyTransport,
@@ -111,8 +111,9 @@ var httpClient = &http.Client{
 		if len(via) >= 5 {
 			return errors.New("重定向次数过多")
 		}
-		if len(via) > 0 && req.URL.Host != via[0].URL.Host {
-			return fmt.Errorf("拒绝跨主机重定向（%s → %s）", via[0].URL.Host, req.URL.Host)
+		if len(via) > 0 && (req.URL.Scheme != via[0].URL.Scheme || req.URL.Host != via[0].URL.Host) {
+			return fmt.Errorf("拒绝跨源重定向（%s://%s → %s://%s）",
+				via[0].URL.Scheme, via[0].URL.Host, req.URL.Scheme, req.URL.Host)
 		}
 		return nil
 	},

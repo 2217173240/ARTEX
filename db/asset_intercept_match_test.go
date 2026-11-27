@@ -127,3 +127,47 @@ func TestAssetInterceptCandidates(t *testing.T) {
 		t.Fatalf("URL 中的 IP 应被 CIDR 命中, ips=%v rule=%+v", ips, r)
 	}
 }
+
+func TestMatchAssetInterceptRulesFuzzyDomainLabelBoundary(t *testing.T) {
+	cases := []struct {
+		name    string
+		pattern string
+		domain  string
+		want    bool
+	}{
+		// True positives for dot-prefixed rules
+		{"dot-gov matches .gov", ".gov", "whitehouse.gov", true},
+		{"dot-gov matches .gov.uk", ".gov", "www.gov.uk", true},
+		{"dot-gov matches .gov.cn", ".gov", "www.beijing.gov.cn", true},
+		{"dot-gov matches trailing dot FQDN", ".gov", "WHITEHOUSE.GOV.", true},
+		{"dot-gov-cn matches .gov.cn", ".gov.cn", "www.beijing.gov.cn", true},
+		{"dot-gov-cn matches trailing dot", ".gov.cn", "sub.gov.cn.", true},
+		{"dot-edu matches .edu", ".edu", "mit.edu", true},
+		{"dot-edu matches .edu.cn", ".edu", "tsinghua.edu.cn", true},
+		{"dot-edu matches trailing dot", ".edu", "mit.edu.", true},
+		{"dot-edu-cn matches .edu.cn", ".edu.cn", "tsinghua.edu.cn", true},
+
+		// False-positive regressions for dot-prefixed rules
+		{"dot-gov rejects governance.acme.com", ".gov", "governance.acme.com", false},
+		{"dot-gov rejects mygov.com", ".gov", "mygov.com", false},
+		{"dot-gov rejects mygov.example.com", ".gov", "mygov.example.com", false},
+		{"dot-gov-cn rejects mygov.cn", ".gov.cn", "mygov.cn", false},
+		{"dot-edu rejects education.io", ".edu", "education.io", false},
+		{"dot-edu rejects education.acme.com", ".edu", "education.acme.com", false},
+		{"dot-edu-cn rejects myedu.cn", ".edu.cn", "myedu.cn", false},
+
+		// Non-dot substring rules keep backward-compatible substring matching
+		{"non-dot substring matches subdomain", "example.com", "api.example.com", true},
+		{"non-dot substring matches infix", "example.com", "myexample.com", true},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			rules := []AssetInterceptRule{rule("fuzzy_domain", c.pattern, true)}
+			_, val, ok := MatchAssetInterceptRules(rules, []string{c.domain}, nil, nil)
+			if ok != c.want {
+				t.Fatalf("MatchAssetInterceptRules(%q, %q) = (%v, %q), want %v", c.pattern, c.domain, ok, val, c.want)
+			}
+		})
+	}
+}

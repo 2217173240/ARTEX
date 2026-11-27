@@ -67,9 +67,18 @@ func matchOne(r AssetInterceptRule, domains, ips, urls []string) (string, bool) 
 			}
 		}
 	case "fuzzy_domain":
-		lp := strings.ToLower(p)
+		lp := strings.ToLower(strings.TrimSpace(p))
+		isDotRule := strings.HasPrefix(lp, ".")
 		for _, d := range domains {
-			if d != "" && strings.Contains(strings.ToLower(d), lp) {
+			ld := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(d), "."))
+			if ld == "" {
+				continue
+			}
+			if isDotRule {
+				if strings.HasSuffix(ld, lp) || strings.Contains(ld, lp+".") {
+					return d, true
+				}
+			} else if strings.Contains(ld, lp) {
 				return d, true
 			}
 		}

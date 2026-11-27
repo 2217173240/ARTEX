@@ -3,8 +3,10 @@ package agent
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/guard"
 	"github.com/Autumn-27/artex/intercept"
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/llm"
@@ -33,6 +35,7 @@ type MainAgent struct {
 	nonStreamingFn  func() bool                            // resolver: use non-streaming (Complete) path? (nil = streaming)
 	noaEnabledFn    func() bool                            // resolver: use experimental noa compaction? (nil = off)
 	maxTokensFn     func() int                             // resolver: per-reply output cap (nil/0 = send no cap)
+	guard           *guard.Guard                           // optional; nil disables intercept hooks for main agent
 }
 
 // SetNoaEnabled wires a resolver deciding whether runs use the experimental noa
@@ -80,6 +83,10 @@ func (m *MainAgent) SetWebSearch(o WebSearchOpts) { m.webSearch = o }
 // SetSteerWork wires the engine callback that lets the main agent's steer_work
 // tool inject a mid-run course-correction into a running work (nil = tool off).
 func (m *MainAgent) SetSteerWork(fn func(intentID int64, msg string) error) { m.steerWork = fn }
+
+// SetGuard attaches a guard (with user-configured intercept rules) to this main
+// agent. Must be called before Chat; safe to call multiple times.
+func (m *MainAgent) SetGuard(g *guard.Guard) { m.guard = g }
 
 // mainAgentDefaultTmpl is the built-in EDITABLE body (段 [A]) of the main agent
 // prompt, seeded into agent_prompts. Goal is a {{.Goal}} template var; the 中间
@@ -133,8 +140,17 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 	}
 	// 本任务的工作目录 <workDir>/tasks/<taskID>，先建好。
 	mainDir := ensureRunDir(m.workDir, taskID, 0)
+	if taskID > 0 && intercept.TaskIDFromContext(ctx) == "" {
+		ctx = intercept.WithTaskContext(ctx, strconv.FormatInt(taskID, 10), "mainagent", func(a db.Activity) {
+			if emit != nil {
+				a.Worker = "mainagent"
+				emit(a)
+			}
+		})
+	}
 	ctx = intercept.WithReviewWorkingDirectory(ctx, mainDir)
-	system, boundary := deferredSystem(mainAgentSystem(goal, m.workDir, mainDir), def)
+	sysBody := mainAgentSystem(goal, m.workDir, mainDir) + constraintBlock(ts) + assetGateBlock(as, taskID)
+	system, boundary := deferredSystem(sysBody, def)
 	opts := agentcore.Options{
 		Provider:        m.prov,
 		SystemPrompt:    system,
@@ -166,6 +182,9 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 		Settlement:   wrapupSettlement("mainagent", nil),
 		NonStreaming: m.nonStreaming(), // 该 profile 选非流式时走 Provider.Complete
 		MaxTokens:    m.maxTokens(),    // 0 = 不发上限,由服务端默认值决定
+	}
+	if m.guard != nil {
+		opts.Hooks = m.guard.Hooks()
 	}
 	if m.tx != nil { // persist raw human↔AI conversation; one accumulating file per segment
 		opts.Transcript = m.tx

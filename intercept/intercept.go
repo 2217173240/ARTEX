@@ -151,6 +151,7 @@ func (i *Interceptor) SetReviewer(r Reviewer) {
 var defaultEnabledTools = []string{
 	"Bash", "WebFetch", "web_search",
 	"shell_open", "shell_send",
+	"Monitor",
 	"Write", "Edit", "MultiEdit",
 }
 
@@ -595,7 +596,21 @@ func (i *Interceptor) Match(toolName string, input []byte) (Decision, bool, erro
 	return Decision{}, false, nil
 }
 
+func isWorkspaceFileEditTool(toolName string) bool {
+	switch toolName {
+	case "Write", "Edit", "MultiEdit":
+		return true
+	}
+	return false
+}
+
 func ruleMatches(r compiledRule, toolName string, input []byte) bool {
+	// Built-in [内置] tool_input patterns target destructive shell/DB/HTTP
+	// actions and would falsely block reports or PoCs written with file-editing
+	// tools; custom user rules and the LLM judge still apply to file edits.
+	if strings.HasPrefix(r.Name, "[内置]") && r.MatchTarget == "tool_input" && isWorkspaceFileEditTool(toolName) {
+		return false
+	}
 	var subject string
 	switch r.MatchTarget {
 	case "tool_name":

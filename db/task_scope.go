@@ -201,8 +201,16 @@ func (s *AssetStore) AddAgentScope(taskID int64, kind, value, reason, source str
 		if v == "" {
 			return ts, fmt.Errorf("无效 ip/cidr: %s", value)
 		}
-		if _, _, err := net.ParseCIDR(v); err != nil {
+		_, ipnet, err := net.ParseCIDR(v)
+		if err != nil {
 			return ts, fmt.Errorf("无效 ip/cidr: %s", value)
+		}
+		ones, bits := ipnet.Mask.Size()
+		if bits == 32 && ones < 8 {
+			return ts, fmt.Errorf("网段过宽(IPv4 需 >= /8): %s", value)
+		}
+		if bits == 128 && ones < 32 {
+			return ts, fmt.Errorf("网段过宽(IPv6 需 >= /32): %s", value)
 		}
 		ts.Net = v
 	case "icp", "keyword":
@@ -309,7 +317,7 @@ target AS (
        (ts.kind='company'     AND a.company_id = ts.company_id)
     OR (ts.kind='root_domain' AND a.root_domain = ts.domain)
     OR (ts.kind='subdomain'   AND a.domain = ts.domain)
-    OR (ts.kind IN ('ip','cidr') AND ts.net >>= try_inet(a.ip))
+    OR (ts.kind IN ('ip','cidr') AND (ts.net >>= try_inet(a.ip) OR ts.net >>= try_inet(a.domain)))
     OR (ts.kind='icp' AND (
          lower(regexp_replace(COALESCE(a.icp,''), '[[:space:]]+', '', 'g')) = ts.value
          OR lower(regexp_replace(COALESCE(a.app_icp,''), '[[:space:]]+', '', 'g')) = ts.value
