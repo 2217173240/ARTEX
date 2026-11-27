@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os/exec"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -206,7 +207,10 @@ func TestHttpProxyTransportNormalizesSchemeAndRoutesThroughRecordingProxy(t *tes
 
 	// 1. Scheme-prefixed ProxyAddr() must not produce "http://http://...".
 	sWithScheme := &Server{m: &Manager{globalProxy: "http://127.0.0.1:18080"}}
-	tr := sWithScheme.httpProxyTransport(httpExec{UseRecordingProxy: true})
+	tr, err := sWithScheme.httpProxyTransport(httpExec{UseRecordingProxy: true})
+	if err != nil {
+		t.Fatalf("httpProxyTransport error: %v", err)
+	}
 	if tr == nil || tr.Proxy == nil {
 		t.Fatal("expected non-nil proxy transport")
 	}
@@ -221,7 +225,10 @@ func TestHttpProxyTransportNormalizesSchemeAndRoutesThroughRecordingProxy(t *tes
 
 	// 2. Bare host:port ProxyAddr() still gets "http://" prepended.
 	sBare := &Server{m: &Manager{globalProxy: "127.0.0.1:18081"}}
-	trBare := sBare.httpProxyTransport(httpExec{UseRecordingProxy: true})
+	trBare, err := sBare.httpProxyTransport(httpExec{UseRecordingProxy: true})
+	if err != nil {
+		t.Fatalf("httpProxyTransport(bare) error: %v", err)
+	}
 	if trBare == nil || trBare.Proxy == nil {
 		t.Fatal("expected non-nil proxy transport for bare addr")
 	}
@@ -285,5 +292,105 @@ func TestHttpProxyTransportNormalizesSchemeAndRoutesThroughRecordingProxy(t *tes
 	}
 	if !strings.Contains(res.Flatten(), "via-target") {
 		t.Fatalf("expected proxied response body, got: %s", res.Flatten())
+	}
+}
+
+func TestHttpProxyTransportInvalidProxyFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	var targetHits atomic.Int32
+	targetSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer targetSrv.Close()
+
+	badProxies := []string{
+		"ftp://alice:supersecret@127.0.0.1:21",
+		"http://alice:supersecret@127.0.0.1:%zz",
+		"http://alice:supersecret@",
+		"://alice:supersecret@127.0.0.1:8080",
+	}
+	for _, proxy := range badProxies {
+		t.Run(proxy, func(t *testing.T) {
+			tr, err := (&Server{}).httpProxyTransport(httpExec{Proxy: proxy})
+			if err == nil || tr != nil {
+				t.Fatalf("httpProxyTransport(%q) = (%v, %v), want (nil, error)", proxy, tr, err)
+			}
+			for _, secret := range []string{"alice:supersecret", "alice", "supersecret"} {
+				if strings.Contains(err.Error(), secret) {
+					t.Errorf("httpProxyTransport error %q leaked %q", err.Error(), secret)
+				}
+			}
+
+			before := targetHits.Load()
+			execRaw, _ := json.Marshal(map[string]any{
+				"method": "GET",
+				"url":    targetSrv.URL + "/probe",
+				"proxy":  proxy,
+			})
+			res, rerr := (&Server{}).runHTTPTool(context.Background(), execRaw, map[string]any{}, nil)
+			if rerr != nil {
+				t.Fatalf("runHTTPTool returned Go error: %v", rerr)
+			}
+			if !res.IsError {
+				t.Fatalf("runHTTPTool(%q) should fail closed, got: %s", proxy, res.Flatten())
+			}
+			if targetHits.Load() != before {
+				t.Fatalf("runHTTPTool(%q) dialed target directly despite invalid proxy", proxy)
+			}
+			out := res.Flatten()
+			for _, secret := range []string{"alice:supersecret", "alice", "supersecret"} {
+				if strings.Contains(out, secret) {
+					t.Errorf("runHTTPTool error %q leaked %q", out, secret)
+				}
+			}
+		})
+	}
+}
+
+func TestListModelsInvalidProxyFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	var targetHits atomic.Int32
+	targetSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":[{"id":"m1"}]}`))
+	}))
+	defer targetSrv.Close()
+
+	badProxies := []string{
+		"ftp://alice:supersecret@127.0.0.1:21",
+		"http://alice:supersecret@127.0.0.1:%zz",
+		"http://alice:supersecret@",
+		"://alice:supersecret@127.0.0.1:8080",
+	}
+	for _, proxy := range badProxies {
+		t.Run(proxy, func(t *testing.T) {
+			before := targetHits.Load()
+			body, _ := json.Marshal(map[string]string{
+				"provider": "openai",
+				"base_url": targetSrv.URL + "/v1",
+				"api_key":  "test-key",
+				"proxy":    proxy,
+			})
+			w := httptest.NewRecorder()
+			r := httptest.NewRequest(http.MethodPost, "/api/llm/models", strings.NewReader(string(body)))
+			(&Server{}).pgListModels(w, r)
+
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("pgListModels(%q) status = %d, want 400; body=%s", proxy, w.Code, w.Body.String())
+			}
+			if targetHits.Load() != before {
+				t.Fatalf("pgListModels(%q) dialed target directly despite invalid proxy", proxy)
+			}
+			respBody := w.Body.String()
+			for _, secret := range []string{"alice:supersecret", "alice", "supersecret"} {
+				if strings.Contains(respBody, secret) {
+					t.Errorf("pgListModels response %q leaked %q", respBody, secret)
+				}
+			}
+		})
 	}
 }

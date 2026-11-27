@@ -117,3 +117,65 @@ func TestDoJSONRejectsOversizedResponse(t *testing.T) {
 		t.Errorf("超大响应应被限长读取并截断，错误信息长度 %d", len(err.Error()))
 	}
 }
+
+func TestCheckRedirectEnforcesSchemeAndHost(t *testing.T) {
+	origTLS, _ := http.NewRequest(http.MethodGet, "https://example.com/a", nil)
+	via := []*http.Request{origTLS}
+
+	sameOrigin, _ := http.NewRequest(http.MethodGet, "https://example.com/b", nil)
+	if err := httpClient.CheckRedirect(sameOrigin, via); err != nil {
+		t.Fatalf("same-origin redirect should be allowed, got: %v", err)
+	}
+
+	downgrade, _ := http.NewRequest(http.MethodGet, "http://example.com/b", nil)
+	if err := httpClient.CheckRedirect(downgrade, via); err == nil {
+		t.Fatal("https -> http same-host redirect downgrade should be rejected")
+	}
+
+	crossHost, _ := http.NewRequest(http.MethodGet, "https://other.example.com/b", nil)
+	if err := httpClient.CheckRedirect(crossHost, via); err == nil {
+		t.Fatal("cross-host redirect should be rejected")
+	}
+
+	// End-to-end check with httptest TLS server: same-origin redirect succeeds,
+	// while same-host https -> http redirect is blocked before dialing.
+	var downgradedHit bool
+	tlsSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/same":
+			http.Redirect(w, r, "/ok", http.StatusFound)
+		case "/downgrade":
+			http.Redirect(w, r, "http://"+r.Host+"/ok", http.StatusFound)
+		case "/ok":
+			if r.TLS == nil {
+				downgradedHit = true
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("ok"))
+		}
+	}))
+	defer tlsSrv.Close()
+
+	client := tlsSrv.Client()
+	client.CheckRedirect = httpClient.CheckRedirect
+
+	resp, err := client.Get(tlsSrv.URL + "/same")
+	if err != nil {
+		t.Fatalf("same-origin redirect failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("same-origin redirect status = %d, want 200", resp.StatusCode)
+	}
+
+	resp2, err := client.Get(tlsSrv.URL + "/downgrade")
+	if resp2 != nil {
+		resp2.Body.Close()
+	}
+	if err == nil {
+		t.Fatal("expected https -> http downgrade redirect to fail")
+	}
+	if downgradedHit {
+		t.Fatal("downgraded redirect target was reached")
+	}
+}

@@ -10,7 +10,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,6 +19,7 @@ import (
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/internal/httpsecurity"
 	"github.com/Autumn-27/artex/internal/processenv"
+	"github.com/Autumn-27/artex/traffic"
 	"github.com/Autumn-27/norma/permission"
 	actool "github.com/Autumn-27/norma/tool"
 )
@@ -450,7 +450,11 @@ func (s *Server) runHTTPTool(ctx context.Context, execRaw json.RawMessage, param
 		req.Header.Set(k, renderTemplate(v, params, identity))
 	}
 	client := &http.Client{Timeout: timeoutOr(spec.TimeoutMs, 30000), CheckRedirect: httpsecurity.SameOriginRedirect}
-	if tr := s.httpProxyTransport(spec); tr != nil {
+	tr, err := s.httpProxyTransport(spec)
+	if err != nil {
+		return actool.Errorf("代理配置无效: " + err.Error()), nil
+	}
+	if tr != nil {
 		defer tr.CloseIdleConnections()
 		client.Transport = tr
 	}
@@ -466,8 +470,10 @@ func (s *Server) runHTTPTool(ctx context.Context, execRaw json.RawMessage, param
 }
 
 // httpProxyTransport builds a Transport for the http tool's proxy config, or nil
-// (direct). use_recording_proxy routes through the recording proxy + trusts its CA.
-func (s *Server) httpProxyTransport(spec httpExec) *http.Transport {
+// (direct) when no proxy is configured. use_recording_proxy routes through the
+// recording proxy + trusts its CA. Returns an error on invalid proxy config so
+// callers fail closed instead of falling back to direct dialing.
+func (s *Server) httpProxyTransport(spec httpExec) (*http.Transport, error) {
 	proxyStr := strings.TrimSpace(spec.Proxy)
 	var caFile string
 	if spec.UseRecordingProxy && s != nil && s.m != nil {
@@ -477,14 +483,14 @@ func (s *Server) httpProxyTransport(spec httpExec) *http.Transport {
 		}
 	}
 	if proxyStr == "" {
-		return nil
+		return nil, nil
 	}
 	if !strings.Contains(proxyStr, "://") {
 		proxyStr = "http://" + proxyStr
 	}
-	pu, err := url.Parse(proxyStr)
+	pu, err := traffic.ValidateProxyURL(proxyStr)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	tr := &http.Transport{Proxy: http.ProxyURL(pu)}
 	if caFile != "" {
@@ -495,7 +501,7 @@ func (s *Server) httpProxyTransport(spec httpExec) *http.Transport {
 			}
 		}
 	}
-	return tr
+	return tr, nil
 }
 
 // ---------- helpers ----------

@@ -432,6 +432,9 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	if w.wantConstraints() {
 		constraints = constraintBlock(ts) // 操作约束(若有)注入系统提示,worker 执行时严格遵守
 	}
+	if gate := assetGateBlock(as, taskID); gate != "" {
+		staticSys += gate
+	}
 	var intentAssetsJSON string
 	if as != nil {
 		if ids := intentAssetIDs(intent); len(ids) > 0 {

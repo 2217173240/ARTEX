@@ -227,15 +227,20 @@ func (t *ToolSet) insertAssets() actool.CoreTool {
 			var results []result
 			var errs []errEntry
 
-			// 资产闸门规则一次性载入；读取失败则跳过判定（不阻断插入）。
+			// 资产闸门规则一次性载入；读取失败必须显式阻断插入（fail-closed）。
 			// 拦截规则 = 全局 ∪ 任务级 block；允许规则 = 任务级 allow。
-			blockRules, _ := t.as.ListAssetInterceptRules()
+			blockRules, err := t.as.ListAssetInterceptRules()
+			if err != nil {
+				return actool.Errorf("资产闸门校验失败：" + err.Error()), nil
+			}
 			var allowRules []db.AssetInterceptRule
 			if t.taskID > 0 {
-				if tb, ta, err := t.as.TaskInterceptRulesSplit(t.taskID); err == nil {
-					blockRules = append(blockRules, tb...)
-					allowRules = ta
+				tb, ta, err := t.as.TaskInterceptRulesSplit(t.taskID)
+				if err != nil {
+					return actool.Errorf("资产闸门校验失败：" + err.Error()), nil
 				}
+				blockRules = append(blockRules, tb...)
+				allowRules = ta
 			}
 
 			for i, item := range a.Assets {
@@ -691,4 +696,88 @@ func (t *ToolSet) AllDomainTools() []actool.CoreTool {
 		}
 	}
 	return out
+}
+
+const maxAssetGatePromptRules = 20
+
+func formatAssetGateRule(r db.AssetInterceptRule) string {
+	line := fmt.Sprintf("- [%s] %s", strings.TrimSpace(r.Kind), strings.TrimSpace(r.Pattern))
+	if note := strings.TrimSpace(r.Note); note != "" {
+		line += "（" + note + "）"
+	}
+	return line
+}
+
+// assetGateBlock formats active global + task asset-intercept rules (bounded to
+// at most 20 rules) for upfront visibility in Planner/Worker/MainAgent prompts.
+// Returns "" when as == nil or no enabled rules exist.
+func assetGateBlock(as *db.AssetStore, taskID int64) string {
+	if as == nil {
+		return ""
+	}
+	var allowRules, blockRules []db.AssetInterceptRule
+	if taskID > 0 {
+		if tb, ta, err := as.TaskInterceptRulesSplit(taskID); err == nil {
+			for _, r := range ta {
+				if r.Enabled {
+					allowRules = append(allowRules, r)
+				}
+			}
+			for _, r := range tb {
+				if r.Enabled {
+					blockRules = append(blockRules, r)
+				}
+			}
+		}
+	}
+	if globalRules, err := as.ListAssetInterceptRules(); err == nil {
+		// Prioritize custom global rules ahead of built-ins if the combined list is bounded.
+		var builtinRules []db.AssetInterceptRule
+		for _, r := range globalRules {
+			if !r.Enabled {
+				continue
+			}
+			if r.Builtin {
+				builtinRules = append(builtinRules, r)
+			} else {
+				blockRules = append(blockRules, r)
+			}
+		}
+		blockRules = append(blockRules, builtinRules...)
+	}
+	total := len(allowRules) + len(blockRules)
+	if total == 0 {
+		return ""
+	}
+	var allowLines, blockLines []string
+	remaining := maxAssetGatePromptRules
+	for _, r := range allowRules {
+		if remaining == 0 {
+			break
+		}
+		allowLines = append(allowLines, formatAssetGateRule(r))
+		remaining--
+	}
+	for _, r := range blockRules {
+		if remaining == 0 {
+			break
+		}
+		blockLines = append(blockLines, formatAssetGateRule(r))
+		remaining--
+	}
+	shown := len(allowLines) + len(blockLines)
+	var b strings.Builder
+	b.WriteString("\n\n【资产闸门规则（系统强制执行：禁止测试或插入违例资产，下发意图和写入资产前必须避开）】：")
+	if len(allowLines) > 0 {
+		b.WriteString("\n允许范围（仅允许命中以下规则的资产）：\n")
+		b.WriteString(strings.Join(allowLines, "\n"))
+	}
+	if len(blockLines) > 0 {
+		b.WriteString("\n禁止范围（命中以下规则将被系统拦截）：\n")
+		b.WriteString(strings.Join(blockLines, "\n"))
+	}
+	if total > shown {
+		fmt.Fprintf(&b, "\n（另有 %d 条已启用规则未列出，以系统实际闸门判定为准）", total-shown)
+	}
+	return b.String()
 }

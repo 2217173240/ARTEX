@@ -10,7 +10,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -26,6 +25,7 @@ import (
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/internal/httpsecurity"
+	"github.com/Autumn-27/artex/traffic"
 	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/skill"
 	"gopkg.in/yaml.v3"
@@ -2137,12 +2137,16 @@ func (s *Server) pgListModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Build HTTP client with optional proxy.
+	// Build HTTP client with optional proxy (fail-closed on invalid proxy URL).
 	transport := &http.Transport{}
+	defer transport.CloseIdleConnections()
 	if p := strings.TrimSpace(req.Proxy); p != "" {
-		if pu, err := url.Parse(p); err == nil {
-			transport.Proxy = http.ProxyURL(pu)
+		pu, err := traffic.ValidateProxyURL(p)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
 		}
+		transport.Proxy = http.ProxyURL(pu)
 	}
 	client := &http.Client{Transport: transport, Timeout: 30 * time.Second, CheckRedirect: httpsecurity.SameOriginRedirect}
 

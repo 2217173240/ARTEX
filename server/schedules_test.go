@@ -110,6 +110,13 @@ func calendarFixture(t *testing.T) (*Manager, *Server) {
 		admin.Close()
 	})
 	s := newAdmissionTestServer(m, func(*Task) bool { return false })
+	oldAugment, oldResolve, oldPrompt := agent.ToolAugment, agent.ToolResolve, agent.PromptOverride
+	agent.ToolAugment = nil
+	agent.PromptOverride = nil
+	wireTools(m.pg, buildDomainReg(m.Assets()))
+	t.Cleanup(func() {
+		agent.ToolAugment, agent.ToolResolve, agent.PromptOverride = oldAugment, oldResolve, oldPrompt
+	})
 	if err = m.SetConcurrency(true, 1); err != nil {
 		t.Fatal(err)
 	}
