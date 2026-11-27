@@ -487,8 +487,9 @@ func sameProviderRetryPolicy(r agent.RetryConfig) (retries int, backoff func(int
 }
 
 // isRetryableStreamError 判断「提交前的流失败」是否值得在同一 provider 上重放。
-// 瞬时的传输中断 / 供应商过载 / 限流会自行恢复,可安全重试;而以下三类不重试:
+// 瞬时的传输中断 / 供应商过载 / 限流会自行恢复,可安全重试;而以下四类不重试:
 //   - 额度耗尽:交给 profile 故障转移处理,别在这里白烧重试
+//   - 单次调用超时(*agent.CallTimeoutError):600s 级超时不可同 provider 叠加重试
 //   - 上下文过长:相同请求重放也没用,交给 harness 的 reactive 压缩兜底
 //   - 4xx 确定性拒绝(400/401/403/404/422):到哪个 provider 都一样会失败
 func isRetryableStreamError(err error) bool {
@@ -496,6 +497,9 @@ func isRetryableStreamError(err error) bool {
 		return false
 	}
 	if isQuotaExhaustedError(err) {
+		return false
+	}
+	if errors.As(err, new(*agent.CallTimeoutError)) {
 		return false
 	}
 	s := strings.ToLower(err.Error())

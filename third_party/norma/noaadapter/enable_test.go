@@ -242,6 +242,47 @@ func TestViewDoesNotMutateHistory(t *testing.T) {
 	}
 }
 
+func TestEnablePropagatesModelContextLimit(t *testing.T) {
+	opts := baseOptions()
+	sess, err := EnableWithSession(&opts, Options{
+		ArchiveBaseDir:    t.TempDir(),
+		SessionID:         "ctx-limit",
+		ModelContextLimit: 128000,
+	})
+	if err != nil {
+		t.Fatalf("EnableWithSession: %v", err)
+	}
+	if got := sess.Config().ModelContextLimit; got != 128000 {
+		t.Fatalf("ModelContextLimit = %d, want 128000", got)
+	}
+}
+
+func TestEnablePreservesSplitDynamicBoundary(t *testing.T) {
+	opts := agentcore.Options{
+		SystemPrompt:    []string{"static-0", "static-1", "dynamic-per-intent"},
+		DynamicBoundary: 2,
+		Tools:           []tool.CoreTool{},
+	}
+	if err := Enable(&opts, Options{ArchiveBaseDir: t.TempDir(), SessionID: "split"}); err != nil {
+		t.Fatalf("Enable: %v", err)
+	}
+	if opts.DynamicBoundary != 3 {
+		t.Fatalf("DynamicBoundary = %d, want 3", opts.DynamicBoundary)
+	}
+	if len(opts.AppendSystemPrompt) != 0 {
+		t.Fatalf("AppendSystemPrompt = %v, want empty when splitting SystemPrompt", opts.AppendSystemPrompt)
+	}
+	if len(opts.SystemPrompt) != 4 {
+		t.Fatalf("len(SystemPrompt) = %d, want 4", len(opts.SystemPrompt))
+	}
+	if !strings.Contains(opts.SystemPrompt[2], noa.SystemPromptHeader) {
+		t.Fatalf("SystemPrompt[2] missing noa header: %q", opts.SystemPrompt[2])
+	}
+	if opts.SystemPrompt[3] != "dynamic-per-intent" {
+		t.Fatalf("SystemPrompt[3] = %q, want dynamic-per-intent kept past boundary", opts.SystemPrompt[3])
+	}
+}
+
 const longSummary = "Explored the authentication design and settled on JWT with refresh tokens. " +
 	"Key files: auth/jwt.go (issue/verify), auth/middleware.go (context injection). " +
 	"Refresh tokens live in Redis with a 7-day TTL; access tokens are 15 minutes."

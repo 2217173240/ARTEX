@@ -137,7 +137,16 @@ func compactionConfig(windowTokens int) *compaction.Config {
 	if windowTokens <= 0 {
 		windowTokens = defaultWindowK * 1000
 	}
-	return &compaction.Config{ContextWindow: windowTokens}
+	return &compaction.Config{
+		ContextWindow: windowTokens,
+		ExtraCompactableTools: []string{
+			"traffic_list", "traffic_detail", "traffic_search", "traffic_blob",
+			"list_worker_traces", "worker_trace_detail",
+			"list_assets", "list_untested_assets", "list_facts", "list_observations",
+			"node_detail", "expand_digest", "SearchExtraTools", "list_tasks", "task_detail",
+		},
+		CompactablePrefixes: []string{"mcp__"},
+	}
 }
 
 // FromEnv resolves the LLM provider config:

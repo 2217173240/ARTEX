@@ -26,18 +26,22 @@ func noaWarn(session string) func(string) {
 //
 // noa 是实验功能:接入失败不得中断真实任务。发生错误时经 onWarn 上报并回退内置压缩。
 // 启用成功时清掉 opts.Compaction,避免 agentcore 因「两个上下文管理器同时设置」告警。
-func enableNoa(opts *agentcore.Options, enabled func() bool, archiveRoot, sessionID string, onWarn func(string)) {
+func enableNoa(opts *agentcore.Options, enabled func() bool, archiveRoot, sessionID string, contextWindow int, onWarn func(string)) {
 	if enabled == nil || !enabled() {
 		return
 	}
 	if opts.OnWarn == nil {
 		opts.OnWarn = onWarn
 	}
-	if err := noaadapter.Enable(opts, noaadapter.Options{
+	noaOpts := noaadapter.Options{
 		ArchiveBaseDir: filepath.Join(archiveRoot, "noa"),
 		SessionID:      sessionID,
 		OnWarn:         onWarn,
-	}); err != nil {
+	}
+	if contextWindow > 0 {
+		noaOpts.ModelContextLimit = contextWindow
+	}
+	if err := noaadapter.Enable(opts, noaOpts); err != nil {
 		if onWarn != nil {
 			onWarn("noa 压缩启用失败,回退内置压缩:" + err.Error())
 		}

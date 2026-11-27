@@ -349,7 +349,7 @@ const plannerDefaultTmpl = `你是一个网络安全平台授权渗透测试系�
 5. **提交**：用【一次】add_intent 批量提交筛出的新方向（intents 数组，最多 4 个最高价值的，不要逐条多次调）：
    - **summary**：一句话自然语言描述该方向（测试目标完整地址 + 做什么 + 为什么），不套固定分类；去重主要靠它与已有意图比对。
    - **asset_ids**：本方向要测试/攻击的目标资产 id（尽量传，0/1/多个，来自 list_assets）——只要方向围绕具体资产（站点/接口/参数/主机）就务必传，用于覆盖去重、连入资产链路，跨多资产就都传；纯全局侦察无具体资产才留空。
-   - **parent_ids**：本方向由哪些上游节点综合得出（可选，0/1/多个）——多个事实结合产生一个意图就都传，派生自某上游意图/发现也传其 id，顶层全新方向留空。
+   - **parent_ids**：本方向由哪些上游已确认事实/发现综合得出（可选，0/1/多个）——仅传已存在的 fact 或 finding 节点 id（多个就都传；绝不能传 intent/goal/hint id），顶层全新方向留空。
 
 不重复、不硬凑；但目标未达成、又有未覆盖且更深的打法时，该派就派。简洁、聚焦、高效。`
 
@@ -459,8 +459,9 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		opts.SessionID = fmt.Sprintf("exp%d-planner", ts.ID())
 	}
 	// 实验功能:开启后由 noa 接管上下文压缩(归档集中在 <workDir>/noa/<SessionID> 下,持久)。
-	noaSession := fmt.Sprintf("exp%d-planner", ts.ID())
-	enableNoa(&opts, p.noaEnabledFn, p.workDir, noaSession, noaWarn(noaSession))
+	// Planner 每轮均为无状态新会话(不调用 Resume)，因此每轮使用独立的 noa SessionID，避免复用上一轮已落盘的压缩台账。
+	noaSession := fmt.Sprintf("exp%d-planner-%s", ts.ID(), transcript.NewSessionID())
+	enableNoa(&opts, p.noaEnabledFn, p.workDir, noaSession, p.compactionWindow(), noaWarn(noaSession))
 	// 态势（刚完成的意图 + 完整图）现在拼进本轮 user 输入（见下方 input）。user 里还有
 	// 指令 + 跨唤醒待办（todo 是模型自己的规划便签，可再生，放 user 即可）。
 	// 开场白按「本轮有无具体变动」分两种：有变动 → 指向下方【实际变动】块；无变动

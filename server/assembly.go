@@ -3,10 +3,10 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"log"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
@@ -66,7 +66,6 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 		// OR skill-gated (named in a visible skill's mcps field). Directly-visible
 		// and NOT gated → global (unlocked from session start). Skill-gated →
 		// deferred until that skill is invoked (regardless of direct visibility).
-		var closers []io.Closer
 		serverTools := map[string][]string{} // server name → its tool names
 		var allNames, globalNames []string
 		globalSet := map[string]bool{}
@@ -74,6 +73,12 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 			mcpIDs, _ := pg.AgentVisible(a.ID, "mcp")
 			want := idSet(mcpIDs)
 			all, _ := pg.ListMCPContext(ctx)
+			type mcpCandidate struct {
+				srv           *db.MCPServer
+				directVisible bool
+				skillGated    bool
+			}
+			var candidates []mcpCandidate
 			for _, m := range all {
 				if !m.Enabled || !m.Approved {
 					continue
@@ -83,22 +88,42 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 				if !directVisible && !skillGated {
 					continue // neither directly visible nor referenced by a visible skill
 				}
-				cl, ts, err := setupAuthorizedMCP(ctx, pg, m.ID, m.Revision, mcpSetupTimeout)
-				if err != nil {
-					log.Printf("[mcp] %s 本次运行不可用: %v", m.Name, err)
-					continue
+				candidates = append(candidates, mcpCandidate{
+					srv:           m,
+					directVisible: directVisible,
+					skillGated:    skillGated,
+				})
+			}
+			if len(candidates) > 0 {
+				results := make([][]actool.CoreTool, len(candidates))
+				errs := make([]error, len(candidates))
+				var wg sync.WaitGroup
+				wg.Add(len(candidates))
+				for i, cand := range candidates {
+					go func(idx int, c mcpCandidate) {
+						defer wg.Done()
+						ts, err := defaultMCPPool.acquire(ctx, pg, c.srv.ID, c.srv.Revision, mcpSetupTimeout)
+						results[idx] = ts
+						errs[idx] = err
+					}(i, cand)
 				}
-				closers = append(closers, cl)
-				for _, t := range ts {
-					extra = append(extra, t)
-					allNames = append(allNames, t.Name())
-					serverTools[m.Name] = append(serverTools[m.Name], t.Name())
-					if directVisible && !skillGated {
-						// directly visible and not gated → available from session start
-						globalNames = append(globalNames, t.Name())
-						globalSet[t.Name()] = true
+				wg.Wait()
+				for i, cand := range candidates {
+					if errs[i] != nil {
+						log.Printf("[mcp] %s 本次运行不可用: %v", cand.srv.Name, errs[i])
+						continue
 					}
-					// skill-gated tools stay out of globalNames; unlocked via unlockSkill()
+					for _, t := range results[i] {
+						extra = append(extra, t)
+						allNames = append(allNames, t.Name())
+						serverTools[cand.srv.Name] = append(serverTools[cand.srv.Name], t.Name())
+						if cand.directVisible && !cand.skillGated {
+							// directly visible and not gated → available from session start
+							globalNames = append(globalNames, t.Name())
+							globalSet[t.Name()] = true
+						}
+						// skill-gated tools stay out of globalNames; unlocked via unlockSkill()
+					}
 				}
 			}
 		}
@@ -159,11 +184,9 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 			}
 		}
 
-		cleanup := func() {
-			for _, c := range closers {
-				_ = c.Close()
-			}
-		}
+		// Pooled MCP clients stay live across runs to preserve sessions and circuit breakers;
+		// eviction and Manager.Close() handle closing them.
+		cleanup := func() {}
 		def := agent.DeferredInfo{
 			Deferred:    allNames,
 			GlobalNames: globalNames,

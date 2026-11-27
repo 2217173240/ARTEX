@@ -70,9 +70,9 @@ func reviewCompletion(ctx context.Context, prov llm.Provider, prompt string, inp
 	return streamCollectText(ctx, prov, prompt, string(user))
 }
 
-// streamCollectText runs a single non-streaming-style completion (thinking off,
-// low temperature, bounded output) and returns the concatenated text. The
-// budget includes the explanation and complete closing JSON delimiters.
+// streamCollectText runs a single non-streaming-style completion (low temperature,
+// bounded output) and returns the concatenated text. The budget includes the
+// explanation and complete closing JSON delimiters.
 func streamCollectText(ctx context.Context, prov llm.Provider, system, user string) (string, error) {
 	temp := 0.0
 	req := llm.CompletionRequest{
@@ -80,7 +80,6 @@ func streamCollectText(ctx context.Context, prov llm.Provider, system, user stri
 		Messages:    []llm.Message{llm.UserText(user)},
 		MaxTokens:   1024,
 		Temperature: &temp,
-		Thinking:    "disabled",
 	}
 	var sb strings.Builder
 	for ev, err := range prov.Stream(ctx, req) {

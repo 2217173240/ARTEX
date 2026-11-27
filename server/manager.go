@@ -691,6 +691,7 @@ func (m *Manager) syncBrowserMCPProxy() {
 		log.Printf("[mcp] browser 代理同步失败: %v", err)
 		return
 	}
+	defaultMCPPool.evict(m.pg, srv.ID)
 	if proxy != "" {
 		log.Printf("[mcp] browser MCP 已挂捕获代理 %s (CA %s)", proxy, cert)
 	} else {
@@ -825,7 +826,11 @@ func (m *Manager) Close() error {
 	if m.traffic != nil {
 		m.traffic.Close()
 	}
-	return m.pg.Close()
+	if m.pg != nil {
+		defaultMCPPool.closeForDB(m.pg)
+		return m.pg.Close()
+	}
+	return nil
 }
 
 // isTerminalStatus reports whether a task status is terminal (done/failed/timeout).
