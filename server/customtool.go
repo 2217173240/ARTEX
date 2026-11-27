@@ -469,14 +469,17 @@ func (s *Server) runHTTPTool(ctx context.Context, execRaw json.RawMessage, param
 func (s *Server) httpProxyTransport(spec httpExec) *http.Transport {
 	proxyStr := strings.TrimSpace(spec.Proxy)
 	var caFile string
-	if spec.UseRecordingProxy {
-		if addr := s.m.ProxyAddr(); addr != "" {
-			proxyStr = "http://" + addr
+	if spec.UseRecordingProxy && s != nil && s.m != nil {
+		if addr := strings.TrimSpace(s.m.ProxyAddr()); addr != "" {
+			proxyStr = addr
 			caFile = s.m.ProxyCACert()
 		}
 	}
 	if proxyStr == "" {
 		return nil
+	}
+	if !strings.Contains(proxyStr, "://") {
+		proxyStr = "http://" + proxyStr
 	}
 	pu, err := url.Parse(proxyStr)
 	if err != nil {

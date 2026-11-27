@@ -288,12 +288,39 @@ func ensureRunDir(base string, taskID, intentID int64) string {
 // cmdOutDir is the SDK large-tool-output spill dir under an agent's run dir.
 func cmdOutDir(dir string) string { return filepath.Join(dir, "cmd-output") }
 
-func workerSystem(proxyAddr, caCert, dataDir, runDir string) string {
+func workerStaticSystem(proxyAddr, caCert, dataDir string) string {
 	body := renderSystem("worker", workerDefaultTmpl, WorkerVars{ProxyAddr: proxyAddr, DataDir: dataDir, Now: nowStr()})
 	// caCert is present only when the recording MITM is on, which is exactly when
 	// the traffic_* tools are registered — so it gates the traffic-tool note.
 	// Optional finding guidance is added for every role after tool resolution.
+	return body + workerTrafficBlock(caCert != "") + untrustedDataRule
+}
+
+func workerSystem(proxyAddr, caCert, dataDir, runDir string) string {
+	body := renderSystem("worker", workerDefaultTmpl, WorkerVars{ProxyAddr: proxyAddr, DataDir: dataDir, Now: nowStr()})
 	return body + workerTrafficBlock(caCert != "") + workerArtifactSpec(runDir) + untrustedDataRule
+}
+
+// buildWorkerSystemPrompt splits the worker system prompt at DynamicBoundary so
+// task-level static guidance (worker role prompt + traffic guidance + untrusted data
+// rule + task constraints + finding/case guidance + optional deferred block) sits in
+// the cached prefix, while per-intent data (runDir artifact spec, intent mandate,
+// intent_assets, launch instruction) stays in the system prompt after the boundary so
+// compaction never drops it.
+func buildWorkerSystemPrompt(staticSys, constraints string, def DeferredInfo, runDir string, intent *db.Node, intentAssetsJSON string) ([]string, int) {
+	if constraints != "" {
+		staticSys += constraints
+	}
+	system, boundary := deferredSystem(staticSys, def)
+	system = append(system,
+		strings.TrimSpace(workerArtifactSpec(runDir)),
+		strings.TrimSpace(renderIntentTask(intent)),
+	)
+	if intentAssetsJSON != "" {
+		system = append(system, "本意图 asset_ids 对应的目标资产：\n"+WrapUntrustedData("intent_assets", intentAssetsJSON))
+	}
+	system = append(system, "开始执行上面这条意图：只做它、只产生事实、assets、finding、做完即停。")
+	return system, boundary
 }
 
 // renderIntentTask formats the claimed intent for the worker's launch USER message:
@@ -387,29 +414,30 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		return "", WriteCounts{}, err
 	}
 
-	// 意图是 worker 的【唯一职责、贯穿整个 run 的不变量】→ 连同启动指令、意图锚定的目标资产
-	// 原始数据一起放进 system prompt：system 每次 run 都重新拼一遍、绝不会被 compaction 压掉，
-	// 长 run 里意图永远在场，续跑时也不依赖 transcript 历史是否留住那条首消息。代价是 system
-	// 混入 per-intent 易变数据、失去跨意图缓存复用；这是刻意的取舍（意图丢失比省 token 严重得多）。
-	// 与 planner「态势块放 user turn」分叉是有意的：planner 本身是产意图的那个、没有单一 mandate，
-	// worker 有。仅【全局态势 overview】留在启动 user 消息里——它可降级、容忍 stale，压掉无碍。
+	// 意图是 worker 的【唯一职责、贯穿整个 run 的不变量】→ 连同 per-intent 工作目录规约、
+	// 启动指令、意图锚定的目标资产原始数据一起放进 system prompt：system 每次 run 都重新拼一遍、
+	// 绝不会被 compaction 压掉，长 run 里意图永远在场，续跑时也不依赖 transcript 历史是否留住
+	// 那条首消息。静态任务级前缀放在 DynamicBoundary 之前以复用跨意图 prompt cache，per-intent
+	// 段放在 DynamicBoundary 之后。与 planner「态势块放 user turn」分叉是有意的：planner 本身是
+	// 产意图的那个、没有单一 mandate，worker 有。仅【全局态势 overview】留在启动 user 消息里——
+	// 它可降级、容忍 stale，压掉无碍。
 	// 本次意图的专属工作目录 <workDir>/tasks/<taskID>/i<intentID>，引擎侧先建好。
 	runDir := ensureRunDir(w.workDir, taskID, intent.ID)
 	// The run-wide intent is not the current tool action. Do not forward it or
 	// inherit a parent run's background into the action reviewer.
 	ctx = intercept.WithReviewContext(ctx, runDir, intercept.ReviewBackground{})
 	overview := renderWorkerGraphOverview(tsx.graphOverviewData())
-	sysBody := workerSystem(w.proxyAddr, w.proxyCACert, w.workDir, runDir)
+	staticSys := workerStaticSystem(w.proxyAddr, w.proxyCACert, w.workDir)
+	var constraints string
 	if w.wantConstraints() {
-		sysBody += constraintBlock(ts) // 操作约束(若有)注入系统提示,worker 执行时严格遵守
+		constraints = constraintBlock(ts) // 操作约束(若有)注入系统提示,worker 执行时严格遵守
 	}
-	// 意图块 → 意图锚定资产块 → 启动指令，依次追加到 system 尾部（与 constraintBlock 同一套追加法）。
-	sysBody += renderIntentTask(intent)
+	var intentAssetsJSON string
 	if as != nil {
 		if ids := intentAssetIDs(intent); len(ids) > 0 {
 			if assets, err := as.GetByIDs(ids); err == nil && len(assets) > 0 {
 				if b, err := json.Marshal(assets); err == nil {
-					sysBody += "\n\n本意图 asset_ids 对应的目标资产：\n" + WrapUntrustedData("intent_assets", string(b))
+					intentAssetsJSON = string(b)
 				}
 				// 意图明确针对的这些资产 → 自动纳入任务测试范围（与 insertAssets 同一套
 				// 保守粒度）。upsertTaskScope 的 ON CONFLICT DO NOTHING + uq_task_scope
@@ -423,8 +451,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 			}
 		}
 	}
-	sysBody += "\n\n开始执行上面这条意图：只做它、只产生事实、assets、finding、做完即停。"
-	system, boundary := deferredSystem(sysBody, def)
+	system, boundary := buildWorkerSystemPrompt(staticSys, constraints, def, runDir, intent, intentAssetsJSON)
 	// 任务级 deadline(经 ctx 注入)夹逼本 run 的墙钟预算 + 决定收尾词(见 taskclock.go)。
 	tc := taskClockFrom(ctx)
 	maxDur, clamped := clampMaxDuration(tc.DeadlineUnix, w.runTimeout)

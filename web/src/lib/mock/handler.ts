@@ -1130,20 +1130,21 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
       size,
     };
   }
+  const missingArchiveError = () => Object.assign(new Error("归档不存在"), { status: 404 });
   if (seg[0] === "task-archives" && seg.length === 2 && m === "GET") {
     const archive = mockTaskArchives.find((item) => item.id === Number(seg[1]));
-    if (!archive) throw new Error("归档不存在");
+    if (!archive) throw missingArchiveError();
     return publicMockTaskArchive(archive);
   }
   if (seg[0] === "task-archives" && seg[2] === "restore" && seg.length === 3 && m === "POST") {
     const archive = mockTaskArchives.find((item) => item.id === Number(seg[1]));
-    if (!archive) throw new Error("归档不存在");
+    if (!archive) throw missingArchiveError();
     mockRestoreArchive(archive);
     return publicMockTaskArchive(archive);
   }
   if (seg[0] === "task-archives" && seg.length === 2 && m === "DELETE") {
     const archive = mockTaskArchives.find((item) => item.id === Number(seg[1]));
-    if (!archive) throw new Error("归档不存在");
+    if (!archive) throw missingArchiveError();
     mockDeleteArchive(archive);
     return publicMockTaskArchive(archive);
   }

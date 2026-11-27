@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os/exec"
 	"strings"
 	"testing"
@@ -197,5 +198,92 @@ func TestHTTPToolTruncatesLargeBody(t *testing.T) {
 	out := res.Flatten()
 	if len(out) >= 40000 {
 		t.Fatalf("oversized http body was not truncated: len=%d", len(out))
+	}
+}
+
+func TestHttpProxyTransportNormalizesSchemeAndRoutesThroughRecordingProxy(t *testing.T) {
+	t.Parallel()
+
+	// 1. Scheme-prefixed ProxyAddr() must not produce "http://http://...".
+	sWithScheme := &Server{m: &Manager{globalProxy: "http://127.0.0.1:18080"}}
+	tr := sWithScheme.httpProxyTransport(httpExec{UseRecordingProxy: true})
+	if tr == nil || tr.Proxy == nil {
+		t.Fatal("expected non-nil proxy transport")
+	}
+	dummyReq, _ := http.NewRequest(http.MethodGet, "http://example.com/test", nil)
+	pu, err := tr.Proxy(dummyReq)
+	if err != nil {
+		t.Fatalf("tr.Proxy error: %v", err)
+	}
+	if pu == nil || pu.String() != "http://127.0.0.1:18080" {
+		t.Fatalf("proxy URL = %v, want http://127.0.0.1:18080", pu)
+	}
+
+	// 2. Bare host:port ProxyAddr() still gets "http://" prepended.
+	sBare := &Server{m: &Manager{globalProxy: "127.0.0.1:18081"}}
+	trBare := sBare.httpProxyTransport(httpExec{UseRecordingProxy: true})
+	if trBare == nil || trBare.Proxy == nil {
+		t.Fatal("expected non-nil proxy transport for bare addr")
+	}
+	puBare, err := trBare.Proxy(dummyReq)
+	if err != nil || puBare == nil || puBare.String() != "http://127.0.0.1:18081" {
+		t.Fatalf("bare proxy URL = %v (err=%v), want http://127.0.0.1:18081", puBare, err)
+	}
+
+	// 3. End-to-end: runHTTPTool with UseRecordingProxy=true and scheme-prefixed
+	// ProxyAddr() routes the HTTP request through the local httptest proxy.
+	targetHit := false
+	targetSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetHit = true
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("via-target"))
+	}))
+	defer targetSrv.Close()
+
+	var proxiedURI string
+	proxySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxiedURI = r.RequestURI
+		u, err := url.Parse(r.RequestURI)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		fwdReq, err := http.NewRequestWithContext(r.Context(), r.Method, u.String(), r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		resp, err := http.DefaultClient.Do(fwdReq)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+		w.WriteHeader(resp.StatusCode)
+		_, _ = io.Copy(w, resp.Body)
+	}))
+	defer proxySrv.Close()
+
+	execRaw, _ := json.Marshal(map[string]any{
+		"method":              "GET",
+		"url":                 targetSrv.URL + "/ping",
+		"use_recording_proxy": true,
+	})
+	srv := &Server{m: &Manager{globalProxy: proxySrv.URL}}
+	res, err := srv.runHTTPTool(context.Background(), execRaw, map[string]any{}, nil)
+	if err != nil {
+		t.Fatalf("runHTTPTool error: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("runHTTPTool failed: %s", res.Flatten())
+	}
+	if !targetHit {
+		t.Fatal("target server was not reached")
+	}
+	if proxiedURI != targetSrv.URL+"/ping" {
+		t.Fatalf("proxy did not receive expected URI: got %q, want %q", proxiedURI, targetSrv.URL+"/ping")
+	}
+	if !strings.Contains(res.Flatten(), "via-target") {
+		t.Fatalf("expected proxied response body, got: %s", res.Flatten())
 	}
 }

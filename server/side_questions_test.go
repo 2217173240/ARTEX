@@ -45,7 +45,7 @@ func (p *sideHTTPProvider) Stream(ctx context.Context, req llm.CompletionRequest
 	}
 }
 func (p *sideHTTPProvider) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
-	if req.Thinking == "disabled" && p.summary != nil {
+	if p.summary != nil && len(req.Tools) == 0 && len(req.System) > 0 && strings.Contains(req.System[0], "简短摘要") {
 		msg, usage, err := p.summary(ctx, req)
 		return msg, "end_turn", usage, err
 	}
