@@ -3,6 +3,7 @@ package notify
 import (
 	"bufio"
 	"context"
+	"errors"
 
 	"net"
 	"net/mail"
@@ -380,4 +381,57 @@ func TestFilterValidateIsWriteTimeOnly(t *testing.T) {
 	}
 	// 且该渠道仍能对事件做出判定（不 panic、不阻塞）。
 	_ = Match(f, Snapshot{Kind: EventFindingCreated, Severity: "critical"})
+}
+
+func TestEmailDialImplicitTLSHonorsContextCancellation(t *testing.T) {
+	t.Setenv(AllowLocalTargetsEnv, "1")
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err == nil {
+			accepted <- conn
+		}
+	}()
+	defer func() {
+		select {
+		case c := <-accepted:
+			_ = c.Close()
+		default:
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err = emailDial(ctx, ln.Addr().String(), "127.0.0.1", true)
+	elapsed := time.Since(start)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context.DeadlineExceeded during stalled implicit TLS dial, got %v", err)
+	}
+	if elapsed >= 2*time.Second {
+		t.Fatalf("implicit TLS dial blocked %v instead of honouring context cancellation", elapsed)
+	}
+}
+
+func TestEmailDialImplicitTLSRespectsBlockInternalDial(t *testing.T) {
+	t.Setenv(AllowLocalTargetsEnv, "")
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	_, err = emailDial(context.Background(), ln.Addr().String(), "127.0.0.1", true)
+	if err == nil {
+		t.Fatal("expected blockInternalDial to reject loopback for implicit TLS")
+	}
+	if !strings.Contains(err.Error(), AllowLocalTargetsEnv) {
+		t.Fatalf("unexpected error: %v", err)
+	}
 }

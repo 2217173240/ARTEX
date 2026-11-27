@@ -146,6 +146,11 @@ type Engine struct {
 	steerMu  sync.Mutex
 	steerBox map[int64][]string
 
+	// wakeCh parks idle terminal workers on a broadcast channel (closed & deleted on
+	// wakeup) instead of polling PG/task status on a 1s timer.
+	wakeMu sync.Mutex
+	wakeCh map[string]chan struct{}
+
 	plannerRound sync.Map // taskID -> int, planner round counter (for UI round separators)
 
 	// 任务级超时(见 docs/任务级超时与收尾设计.md):
@@ -229,6 +234,7 @@ func (e *Engine) AbortDelete(taskID string, keepPaused bool) {
 		if t, ok := e.m.Task(taskID); ok {
 			t.Notify()
 		}
+		e.wakeWorkers(taskID)
 	}
 }
 
@@ -291,6 +297,7 @@ func (e *Engine) StopTask(taskID string) {
 		delete(e.runtimes, taskID)
 	}
 	e.runtimeMu.Unlock()
+	e.wakeWorkers(taskID)
 
 	e.started.Delete(taskID)
 	e.bootstrapping.Delete(taskID)
@@ -352,6 +359,7 @@ func (e *Engine) Resume(t *Task) {
 	e.paused.Delete(t.ID)
 	e.execMu.Unlock()
 	t.Notify()
+	e.wakeWorkers(t.ID)
 }
 
 // execContextFor admits a run under the same lock as task cancellation and
@@ -447,7 +455,32 @@ func NewEngine(m *Manager) *Engine {
 	return &Engine{m: m, debounce: 800 * time.Millisecond, bc: NewBroadcaster(),
 		execCancel: map[string]context.CancelCauseFunc{}, execCtx: map[string]context.Context{},
 		work: map[int64]*workExecution{}, steerBox: map[int64][]string{},
+		wakeCh:   map[string]chan struct{}{},
 		runtimes: map[string]*taskRuntime{}}
+}
+
+func (e *Engine) workerWakeChan(taskID string) <-chan struct{} {
+	e.wakeMu.Lock()
+	defer e.wakeMu.Unlock()
+	if e.wakeCh == nil {
+		e.wakeCh = map[string]chan struct{}{}
+	}
+	ch := e.wakeCh[taskID]
+	if ch == nil {
+		ch = make(chan struct{})
+		e.wakeCh[taskID] = ch
+	}
+	return ch
+}
+
+func (e *Engine) wakeWorkers(taskID string) {
+	e.wakeMu.Lock()
+	ch := e.wakeCh[taskID]
+	if ch != nil {
+		close(ch)
+		delete(e.wakeCh, taskID)
+	}
+	e.wakeMu.Unlock()
 }
 
 // registerWork records the cancel for the work currently running intentID.
@@ -815,8 +848,10 @@ func (e *Engine) Run(ctx context.Context, t *Task) {
 		e.deleteMu.RUnlock()
 		e.workerConfigMu.Unlock()
 		t.Notify() // already running — just nudge a planning round
+		e.wakeWorkers(t.ID)
 		return
 	}
+	e.wakeWorkers(t.ID)
 	rt := e.registerTaskRoutines(ctx, t.ID, 2)
 	e.runtimeMu.Lock()
 	pool := newWorkerPool(rt.ctx, workers, func(loopCtx context.Context, i int, pool *workerPool) {
@@ -873,17 +908,16 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 	runRound := func(src string) {
 		// debounce: coalesce a burst of changes into one planning round
 		timer := time.NewTimer(e.debounce)
+		defer timer.Stop()
 	drain:
 		for {
 			select {
 			case <-t.notify:
+			case <-ctx.Done():
+				return
 			case <-timer.C:
 				break drain
 			}
-		}
-		planner, _ := e.snapshotFor(t)
-		if planner == nil {
-			return // idle until LLM configured
 		}
 		if e.IsPaused(t.ID) {
 			return // user-paused: don't plan
@@ -901,6 +935,10 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		// 触发常规规划轮;终局那一轮由协调器(settleTask)直接驱动,不走这里。
 		if e.isSettling(t.ID) {
 			return
+		}
+		planner, _ := e.snapshotFor(t)
+		if planner == nil {
+			return // idle until LLM configured
 		}
 		// goalless（人工直投）分支：任务已无 open 目标时 planner 不跑——跑了会重判
 		// met→cancelExec 杀掉用户经主 agent 直投的意图。是否结束改由 frontier 决定：
@@ -991,10 +1029,16 @@ func (e *Engine) pooledWorkerLoop(ctx context.Context, t *Task, name string, poo
 			return
 		default:
 		}
-		_, worker := e.snapshotFor(t)
-		if worker == nil {
-			if sleepCtx(ctx, 1500*time.Millisecond) {
+		if e.IsDeleting(t.ID) {
+			return
+		}
+		wake := e.workerWakeChan(t.ID)
+		if e.m != nil && isTerminalStatus(e.m.TaskStatus(t.ID)) {
+			// 任务已终态(done/failed/timeout):停止轮询 PG / frontier，挂在唤醒信号上直到重开或关闭。
+			select {
+			case <-ctx.Done():
 				return
+			case <-wake:
 			}
 			continue
 		}
@@ -1004,20 +1048,18 @@ func (e *Engine) pooledWorkerLoop(ctx context.Context, t *Task, name string, poo
 			}
 			continue // user-paused: don't claim/execute intents
 		}
-		if e.IsDeleting(t.ID) {
-			return
-		}
 		if e.isSettling(t.ID) {
 			if sleepCtx(ctx, 1000*time.Millisecond) {
 				return
 			}
 			continue // 任务超时收尾中:不再领新意图(在跑的自行收尾,协调器等其 drain)
 		}
-		if isTerminalStatus(e.m.TaskStatus(t.ID)) {
-			if sleepCtx(ctx, 1000*time.Millisecond) {
+		_, worker := e.snapshotFor(t)
+		if worker == nil {
+			if sleepCtx(ctx, 1500*time.Millisecond) {
 				return
 			}
-			continue // 任务已终态(done/failed/timeout):停止领取遗留意图,别在完成后空跑 frontier
+			continue
 		}
 		if pool != nil && !pool.begin(index) {
 			if sleepCtx(ctx, 100*time.Millisecond) {
@@ -1319,10 +1361,15 @@ func taskExecutionPaused(cause error) bool {
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) (done bool) {
+	if d <= 0 {
+		return ctx.Err() != nil
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
 	select {
 	case <-ctx.Done():
 		return true
-	case <-time.After(d):
+	case <-t.C:
 		return false
 	}
 }

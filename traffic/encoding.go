@@ -32,13 +32,17 @@ func decodeBody(header http.Header, body []byte, limit int) (out []byte, ok bool
 		if err != nil {
 			return nil, false
 		}
+		defer gz.Close()
 		zr = gz
 	case "deflate":
 		// HTTP deflate is zlib (RFC 9110); some servers send a raw deflate stream.
 		if z, err := zlib.NewReader(bytes.NewReader(body)); err == nil {
+			defer z.Close()
 			zr = z
 		} else {
-			zr = flate.NewReader(bytes.NewReader(body))
+			fl := flate.NewReader(bytes.NewReader(body))
+			defer fl.Close()
+			zr = fl
 		}
 	case "br":
 		zr = brotli.NewReader(bytes.NewReader(body))

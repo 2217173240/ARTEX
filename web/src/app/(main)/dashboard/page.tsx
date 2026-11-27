@@ -41,6 +41,7 @@ import type {
   UsageStats,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { startVisibilityPoll } from "@/lib/visibility-poll";
 
 // ── chart constants ───────────────────────────────────────────────────────────
 
@@ -153,11 +154,8 @@ export default function DashboardPage() {
   // so a large history cannot hold back every other dashboard panel.
   React.useEffect(() => {
     let alive = true;
-    let loading = false;
     let signature = "";
-    const load = async () => {
-      if (loading) return;
-      loading = true;
+    const stop = startVisibilityPoll(async () => {
       try {
         const tr = await api.tasks();
         if (!alive) return;
@@ -168,25 +166,18 @@ export default function DashboardPage() {
         }
       } catch {
         /* transient errors — next poll retries */
-      } finally {
-        loading = false;
       }
-    };
-    void load();
-    const t = setInterval(load, 5000);
+    }, 5000);
     return () => {
       alive = false;
-      clearInterval(t);
+      stop();
     };
   }, []);
 
   // The remaining fast sources stay batched so one poll causes a single render.
   React.useEffect(() => {
     let alive = true;
-    let loading = false;
-    const load = async () => {
-      if (loading) return;
-      loading = true;
+    const stop = startVisibilityPoll(async () => {
       try {
         const [findings, stats, settings, pending, activity, conversationTokens] = await Promise.all([
           api.findings(),
@@ -205,22 +196,18 @@ export default function DashboardPage() {
         setConvTokens(conversationTokens);
       } catch {
         // Preserve stale data and retry on the next interval.
-      } finally {
-        loading = false;
       }
-    };
-    void load();
-    const timer = setInterval(load, 5000);
+    }, 5000);
     return () => {
       alive = false;
-      clearInterval(timer);
+      stop();
     };
   }, []);
 
   // slow poll: traffic, assets, system-static (every 15s)
   React.useEffect(() => {
     let alive = true;
-    const load = async () => {
+    const stop = startVisibilityPoll(async () => {
       try {
         const [traf, counts, agentList, mcpList, skillList, toolList, profileList, usage] = await Promise.all([
           api.traffic(0, 50),
@@ -244,12 +231,10 @@ export default function DashboardPage() {
       } catch {
         /* transient errors */
       }
-    };
-    void load();
-    const t = setInterval(load, 15000);
+    }, 15000);
     return () => {
       alive = false;
-      clearInterval(t);
+      stop();
     };
   }, []);
 

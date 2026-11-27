@@ -153,20 +153,77 @@ func (d *DB) ListFindingCases(filter FindingFilter, page, size int) ([]FindingCa
 	if err != nil {
 		return nil, 0, err
 	}
+	var caseIDs []int64
+	seenCase := make(map[int64]struct{})
+	for _, cid := range groups {
+		if cid > 0 {
+			if _, ok := seenCase[cid]; !ok {
+				seenCase[cid] = struct{}{}
+				caseIDs = append(caseIDs, cid)
+			}
+		}
+	}
+	casesByID, err := d.loadFindingCasesByID(caseIDs)
+	if err != nil {
+		return nil, 0, err
+	}
 	for i, cid := range groups {
 		if cid > 0 {
-			c, err := scanCase(d.QueryRow(`SELECT `+strings.Replace(caseColumns, "c.report,", "''::text,", 1)+` FROM finding_cases c WHERE id=$1`, cid))
-			if err != nil {
-				return nil, 0, err
-			}
-			if err := d.QueryRow(`SELECT count(*),count(*) FILTER(WHERE severity='critical'),count(*) FILTER(WHERE severity='high'),count(*) FILTER(WHERE severity='medium'),count(*) FILTER(WHERE severity='low') FROM findings f JOIN finding_case_members m ON m.finding_id=f.id WHERE m.case_id=$1`, cid).Scan(&c.Count, &c.Critical, &c.High, &c.Medium, &c.Low); err != nil {
-				return nil, 0, err
+			c := casesByID[cid]
+			if c == nil {
+				return nil, 0, sql.ErrNoRows
 			}
 			out[i].Case = c
 			out[i].FindingID = 0
 		}
 	}
 	return out, total, nil
+}
+
+func (d *DB) loadFindingCasesByID(ids []int64) (map[int64]*FindingCase, error) {
+	casesByID := make(map[int64]*FindingCase, len(ids))
+	if len(ids) == 0 {
+		return casesByID, nil
+	}
+	rows, err := d.Query(`SELECT `+strings.Replace(caseColumns, "c.report,", "''::text,", 1)+` FROM finding_cases c WHERE id=ANY($1::bigint[])`, ids)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		c, err := scanCase(rows)
+		if err != nil {
+			rows.Close()
+			return nil, err
+		}
+		casesByID[c.ID] = c
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+
+	countRows, err := d.Query(`SELECT m.case_id,count(*),count(*) FILTER(WHERE f.severity='critical'),count(*) FILTER(WHERE f.severity='high'),count(*) FILTER(WHERE f.severity='medium'),count(*) FILTER(WHERE f.severity='low') FROM findings f JOIN finding_case_members m ON m.finding_id=f.id WHERE m.case_id=ANY($1::bigint[]) GROUP BY m.case_id`, ids)
+	if err != nil {
+		return nil, err
+	}
+	for countRows.Next() {
+		var cid int64
+		var totalCount, crit, high, med, low int
+		if err := countRows.Scan(&cid, &totalCount, &crit, &high, &med, &low); err != nil {
+			countRows.Close()
+			return nil, err
+		}
+		if c := casesByID[cid]; c != nil {
+			c.Count, c.Critical, c.High, c.Medium, c.Low = totalCount, crit, high, med, low
+		}
+	}
+	err = countRows.Err()
+	countRows.Close()
+	if err != nil {
+		return nil, err
+	}
+	return casesByID, nil
 }
 
 // CountFindingMatches uses the identical raw-record filters as case pagination.

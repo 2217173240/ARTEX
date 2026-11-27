@@ -173,23 +173,27 @@ WHERE id=$1`,
 // 停用一个渠道时，把它尚未发出的投递一并标记为 skipped：否则重新启用后
 // 会突然收到一批「停用期间积压」的旧漏洞，时效已失且容易误判为新增。
 func (d *DB) SetNotificationChannelEnabled(ctx context.Context, id int64, enabled bool) error {
-	return d.WithEvidenceTx(ctx, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx, `UPDATE notification_channels SET enabled=$2 WHERE id=$1`, id, enabled)
-		if err != nil {
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck // 提交成功后是 no-op
+
+	res, err := tx.ExecContext(ctx, `UPDATE notification_channels SET enabled=$2 WHERE id=$1`, id, enabled)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotificationChannelNotFound
+	}
+	if !enabled {
+		if _, err := tx.ExecContext(ctx, `UPDATE notification_deliveries SET state=$2, last_error=$3
+WHERE channel_id=$1 AND state IN ($4,$5)`,
+			id, NotifyStateSkipped, "渠道已停用", NotifyStatePending, NotifyStateSending); err != nil {
 			return err
 		}
-		if n, _ := res.RowsAffected(); n == 0 {
-			return ErrNotificationChannelNotFound
-		}
-		if !enabled {
-			if _, err := tx.ExecContext(ctx, `UPDATE notification_deliveries SET state=$2, last_error=$3
-WHERE channel_id=$1 AND state IN ($4,$5)`,
-				id, NotifyStateSkipped, "渠道已停用", NotifyStatePending, NotifyStateSending); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
+	}
+	return tx.Commit()
 }
 
 // DeleteNotificationChannel 删除渠道。其投递历史随外键级联删除

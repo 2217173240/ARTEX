@@ -3,10 +3,14 @@
 package sidequestion
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"iter"
+	"maps"
+	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -53,13 +57,161 @@ type Snapshot struct {
 }
 
 func CloneRequest(req llm.CompletionRequest) (llm.CompletionRequest, error) {
-	b, err := json.Marshal(req)
-	if err != nil {
-		return llm.CompletionRequest{}, err
+	out := llm.CompletionRequest{
+		System:          slices.Clone(req.System),
+		DynamicBoundary: req.DynamicBoundary,
+		Messages:        cloneMessages(req.Messages),
+		Tools:           cloneTools(req.Tools),
+		MaxTokens:       req.MaxTokens,
+		Stop:            slices.Clone(req.Stop),
+		Thinking:        req.Thinking,
 	}
-	var out llm.CompletionRequest
-	err = json.Unmarshal(b, &out)
-	return out, err
+	if req.Temperature != nil {
+		temp := *req.Temperature
+		out.Temperature = &temp
+	}
+	return out, nil
+}
+
+func cloneMessages(msgs []llm.Message) []llm.Message {
+	if msgs == nil {
+		return nil
+	}
+	out := make([]llm.Message, len(msgs))
+	for i, m := range msgs {
+		out[i] = llm.Message{
+			Role:    m.Role,
+			Content: cloneContentBlocks(m.Content),
+		}
+	}
+	return out
+}
+
+func cloneContentBlocks(blocks []llm.ContentBlock) []llm.ContentBlock {
+	if blocks == nil {
+		return nil
+	}
+	out := make([]llm.ContentBlock, len(blocks))
+	for i, b := range blocks {
+		b.Input = json.RawMessage(bytes.Clone(b.Input))
+		b.Content = cloneContentBlocks(b.Content)
+		out[i] = b
+	}
+	return out
+}
+
+func cloneTools(tools []llm.ToolSchema) []llm.ToolSchema {
+	if tools == nil {
+		return nil
+	}
+	out := make([]llm.ToolSchema, len(tools))
+	for i, t := range tools {
+		t.InputSchema = cloneStringAnyMap(t.InputSchema)
+		out[i] = t
+	}
+	return out
+}
+
+func cloneStringAnyMap(m map[string]any) map[string]any {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		out[k] = cloneAny(v)
+	}
+	return out
+}
+
+func cloneAny(v any) any {
+	switch x := v.(type) {
+	case nil, string, bool,
+		int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64,
+		float32, float64, json.Number:
+		return x
+	case map[string]any:
+		return cloneStringAnyMap(x)
+	case []any:
+		if x == nil {
+			return nil
+		}
+		out := make([]any, len(x))
+		for i, elem := range x {
+			out[i] = cloneAny(elem)
+		}
+		return out
+	case []string:
+		return slices.Clone(x)
+	case map[string]string:
+		return maps.Clone(x)
+	case []byte:
+		return bytes.Clone(x)
+	case json.RawMessage:
+		return json.RawMessage(bytes.Clone(x))
+	default:
+		return cloneReflectValue(reflect.ValueOf(v)).Interface()
+	}
+}
+
+func cloneReflectValue(rv reflect.Value) reflect.Value {
+	if !rv.IsValid() {
+		return rv
+	}
+	switch rv.Kind() {
+	case reflect.Interface:
+		if rv.IsNil() {
+			return rv
+		}
+		cloned := cloneReflectValue(rv.Elem())
+		out := reflect.New(rv.Type()).Elem()
+		out.Set(cloned)
+		return out
+	case reflect.Pointer:
+		if rv.IsNil() {
+			return rv
+		}
+		out := reflect.New(rv.Type().Elem())
+		out.Elem().Set(cloneReflectValue(rv.Elem()))
+		return out
+	case reflect.Slice:
+		if rv.IsNil() {
+			return rv
+		}
+		n := rv.Len()
+		out := reflect.MakeSlice(rv.Type(), n, n)
+		for i := 0; i < n; i++ {
+			out.Index(i).Set(cloneReflectValue(rv.Index(i)))
+		}
+		return out
+	case reflect.Array:
+		out := reflect.New(rv.Type()).Elem()
+		for i := 0; i < rv.Len(); i++ {
+			out.Index(i).Set(cloneReflectValue(rv.Index(i)))
+		}
+		return out
+	case reflect.Map:
+		if rv.IsNil() {
+			return rv
+		}
+		out := reflect.MakeMapWithSize(rv.Type(), rv.Len())
+		iter := rv.MapRange()
+		for iter.Next() {
+			out.SetMapIndex(cloneReflectValue(iter.Key()), cloneReflectValue(iter.Value()))
+		}
+		return out
+	case reflect.Struct:
+		out := reflect.New(rv.Type()).Elem()
+		out.Set(rv)
+		for i := 0; i < rv.NumField(); i++ {
+			if out.Field(i).CanSet() {
+				out.Field(i).Set(cloneReflectValue(rv.Field(i)))
+			}
+		}
+		return out
+	default:
+		return rv
+	}
 }
 
 type Publisher func(Snapshot)
