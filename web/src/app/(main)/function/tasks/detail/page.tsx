@@ -2,6 +2,7 @@
 
 import * as React from "react";
 
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 
@@ -42,17 +43,56 @@ import { taskTab, taskTabHref } from "@/lib/finding-navigation";
 import { useI18n } from "@/lib/i18n";
 import type { LLMProfile, Task } from "@/lib/types";
 
-import { AssetsTab } from "./_tabs/assets-tab";
-import { BroadcastTab } from "./_tabs/broadcast-tab";
-import { CoverageGraphTab } from "./_tabs/coverage-graph-tab";
-import { EvidenceTab } from "./_tabs/evidence-tab";
-import { FindingsTab } from "./_tabs/findings-tab";
-import { GraphTab } from "./_tabs/graph-tab";
-import { InterceptTab } from "./_tabs/intercept-tab";
-import { OverviewTab } from "./_tabs/overview-tab";
-import { ReportTab } from "./_tabs/report-tab";
-import { RetestsTab } from "./_tabs/retests-tab";
 import { SessionsTab } from "./_tabs/sessions-tab";
+
+function TabLoading() {
+  return (
+    <div className="flex items-center justify-center py-12">
+      <Spinner />
+    </div>
+  );
+}
+
+const AssetsTab = dynamic(() => import("./_tabs/assets-tab").then((m) => m.AssetsTab), {
+  ssr: false,
+  loading: TabLoading,
+});
+const BroadcastTab = dynamic(() => import("./_tabs/broadcast-tab").then((m) => m.BroadcastTab), {
+  ssr: false,
+  loading: TabLoading,
+});
+const CoverageGraphTab = dynamic(() => import("./_tabs/coverage-graph-tab").then((m) => m.CoverageGraphTab), {
+  ssr: false,
+  loading: TabLoading,
+});
+const EvidenceTab = dynamic(() => import("./_tabs/evidence-tab").then((m) => m.EvidenceTab), {
+  ssr: false,
+  loading: TabLoading,
+});
+const FindingsTab = dynamic(() => import("./_tabs/findings-tab").then((m) => m.FindingsTab), {
+  ssr: false,
+  loading: TabLoading,
+});
+const GraphTab = dynamic(() => import("./_tabs/graph-tab").then((m) => m.GraphTab), {
+  ssr: false,
+  loading: TabLoading,
+});
+const InterceptTab = dynamic(() => import("./_tabs/intercept-tab").then((m) => m.InterceptTab), {
+  ssr: false,
+  loading: TabLoading,
+});
+const OverviewTab = dynamic(() => import("./_tabs/overview-tab").then((m) => m.OverviewTab), {
+  ssr: false,
+  loading: TabLoading,
+});
+const ReportTab = dynamic(() => import("./_tabs/report-tab").then((m) => m.ReportTab), {
+  ssr: false,
+  loading: TabLoading,
+});
+const RetestsTab = dynamic(() => import("./_tabs/retests-tab").then((m) => m.RetestsTab), {
+  ssr: false,
+  loading: TabLoading,
+});
 
 const TABS = [
   { value: "sessions", label: "会话" },

@@ -12,6 +12,9 @@
     "check": "biome check",
     "check:fix": "biome check --write",
     "prepare": "husky",
+    "test": "node --test src/lib/*.test.mjs src/lib/i18n/i18n.test.mjs",
+    "typecheck": "tsc --noEmit",
+    "i18n:audit": "node scripts/i18n-audit.mjs",
     "generate:presets": "ts-node -P tsconfig.scripts.json src/scripts/generate-theme-presets.ts"
   },
   "dependencies": {

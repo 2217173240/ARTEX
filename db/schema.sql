@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS companies (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS idx_companies_nkey ON companies(nkey);
+DROP INDEX IF EXISTS idx_companies_nkey;
 DROP TRIGGER IF EXISTS trg_companies_upd ON companies;
 CREATE TRIGGER trg_companies_upd BEFORE UPDATE ON companies
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
@@ -737,7 +737,7 @@ CREATE TABLE IF NOT EXISTS task_llm_profiles (
     PRIMARY KEY (task_id, profile_id),
     UNIQUE (task_id, position)
 );
-CREATE INDEX IF NOT EXISTS idx_task_llm_profiles_order ON task_llm_profiles(task_id, position);
+DROP INDEX IF EXISTS idx_task_llm_profiles_order;
 CREATE INDEX IF NOT EXISTS idx_task_llm_profiles_profile ON task_llm_profiles(profile_id, task_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_llm_profile ON tasks(llm_profile_id) WHERE llm_profile_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_tasks_active_llm_profile ON tasks(active_llm_profile_id) WHERE active_llm_profile_id IS NOT NULL;
@@ -1219,7 +1219,7 @@ CREATE TABLE IF NOT EXISTS server_logs (
     tag        TEXT NOT NULL DEFAULT '',
     text       TEXT NOT NULL DEFAULT ''
 );
-CREATE INDEX IF NOT EXISTS idx_server_logs_id ON server_logs(id DESC);
+DROP INDEX IF EXISTS idx_server_logs_id;
 
 -- Independent /btw history and the latest provider-ready main checkpoint.
 CREATE TABLE IF NOT EXISTS side_question_sessions (

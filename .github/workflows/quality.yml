@@ -178,7 +178,7 @@ jobs:
           key: ${{ runner.os }}-${{ runner.arch }}-node22-next-mock-${{ hashFiles('web/package-lock.json', 'web/next.config.*', 'web/tsconfig.json') }}-${{ hashFiles('web/src/**', 'web/public/**', 'web/scripts/**') }}
           restore-keys: |
             ${{ runner.os }}-${{ runner.arch }}-node22-next-mock-${{ hashFiles('web/package-lock.json', 'web/next.config.*', 'web/tsconfig.json') }}-
-      - run: node --test src/lib/*.test.mjs
+      - run: node --test src/lib/*.test.mjs src/lib/i18n/i18n.test.mjs
       - run: npx --no-install tsc --noEmit
       - name: Check UI translation dictionary coverage
         run: node scripts/i18n-audit.mjs
