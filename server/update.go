@@ -241,6 +241,9 @@ func (s *Server) updateCheck(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, out)
 		return
 	}
+	if tr, ok := client.Transport.(*http.Transport); ok {
+		defer tr.CloseIdleConnections()
+	}
 	rel, err := relCache.get(r.Context(), client, force)
 	if err != nil {
 		out["error"] = err.Error()
@@ -296,6 +299,14 @@ func (s *Server) updateApply(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	launched := false
+	if tr, ok := client.Transport.(*http.Transport); ok {
+		defer func() {
+			if !launched {
+				tr.CloseIdleConnections()
+			}
+		}()
+	}
 	rel, err := relCache.get(r.Context(), client, false)
 	if err != nil {
 		writeErr(w, 502, err.Error())
@@ -315,7 +326,11 @@ func (s *Server) updateApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	launched = true
 	go func() {
+		if tr, ok := client.Transport.(*http.Transport); ok {
+			defer tr.CloseIdleConnections()
+		}
 		// 刻意用 s.ctx 而不是请求的 ctx：HTTP 响应一返回请求就结束了，
 		// 挂在它上面下载会立刻被取消。
 		err := selfupdate.Stage(s.ctx, client, rel, current, func(ph selfupdate.Phase, pct int, msg string) {
@@ -382,6 +397,9 @@ func (s *Server) updateStream(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 	}
 	// 先补一条当前状态，页面刷新后能立刻看到进行中的升级。
+	if s.ctx != nil && s.ctx.Err() != nil {
+		return
+	}
 	cur, _ := updHub.snapshot()
 	if !authorized(false) {
 		return
@@ -389,14 +407,23 @@ func (s *Server) updateStream(w http.ResponseWriter, r *http.Request) {
 	send(cur)
 
 	ctx := r.Context()
+	var serverDone <-chan struct{}
+	if s.ctx != nil {
+		serverDone = s.ctx.Done()
+	}
 	ping := time.NewTicker(streamAuthInterval)
 	defer ping.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-serverDone:
+			return
 		case p, ok := <-ch:
 			if !ok {
+				return
+			}
+			if s.ctx != nil && s.ctx.Err() != nil {
 				return
 			}
 			if !authorized(false) {

@@ -43,6 +43,7 @@ import type {
   TaskNode,
   TaskScopeRow,
 } from "@/lib/types";
+import { startVisibilityPoll } from "@/lib/visibility-poll";
 
 // 紧凑格式化 token 数（12345 → 12.3k，2000000 → 2M）。
 function fmtTokens(n: number): string {
@@ -353,11 +354,8 @@ export function OverviewTab({ taskId }: { taskId: string }) {
 
   React.useEffect(() => {
     let cancelled = false;
-    let loading = false;
 
     const load = async () => {
-      if (loading) return;
-      loading = true;
       try {
         const [taskResp, statsResp, intentsResp, findingsResp] = await Promise.all([
           api.task(taskId),
@@ -394,25 +392,16 @@ export function OverviewTab({ taskId }: { taskId: string }) {
           });
       } catch {
         // transient errors are ignored; the next poll will retry
-      } finally {
-        loading = false;
       }
     };
 
-    void load();
     void loadScope();
-    void loadTokens();
-    void loadGoals();
-    void loadConstraints();
-    const timer = setInterval(() => {
-      void load();
-      void loadTokens();
-      void loadGoals();
-      void loadConstraints();
+    const stop = startVisibilityPoll(async () => {
+      await Promise.all([load(), loadTokens(), loadGoals(), loadConstraints()]);
     }, 3000);
     return () => {
       cancelled = true;
-      clearInterval(timer);
+      stop();
     };
   }, [taskId, loadScope, loadTokens, loadGoals, loadConstraints]);
 

@@ -451,6 +451,7 @@ func (s *Server) runHTTPTool(ctx context.Context, execRaw json.RawMessage, param
 	}
 	client := &http.Client{Timeout: timeoutOr(spec.TimeoutMs, 30000), CheckRedirect: httpsecurity.SameOriginRedirect}
 	if tr := s.httpProxyTransport(spec); tr != nil {
+		defer tr.CloseIdleConnections()
 		client.Transport = tr
 	}
 	resp, err := client.Do(req)

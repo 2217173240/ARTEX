@@ -155,7 +155,10 @@ func emailDial(ctx context.Context, addr, host string, implicitTLS bool) (*smtp.
 	var conn net.Conn
 	var err error
 	if implicitTLS {
-		conn, err = tls.DialWithDialer(d, "tcp", addr, &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12})
+		conn, err = (&tls.Dialer{
+			NetDialer: d,
+			Config:    &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12},
+		}).DialContext(ctx, "tcp", addr)
 	} else {
 		conn, err = d.DialContext(ctx, "tcp", addr)
 	}

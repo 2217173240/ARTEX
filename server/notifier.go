@@ -148,14 +148,19 @@ func (n *Notifier) step(ctx context.Context) {
 			if n.takeTokens(ch.ID, ch.RatePerMin, tokens, now) <= 0 {
 				continue
 			}
-			n.stepDigest(ctx, ch, claimLimit, baseURL)
+			if !n.stepDigest(ctx, ch, claimLimit, baseURL) {
+				n.refundTokens(ch.ID, ch.RatePerMin, tokens)
+			}
 			continue
 		}
 		allow := n.takeTokens(ch.ID, ch.RatePerMin, notifyMaxSendsPerChannelPerTick, now)
 		if allow <= 0 {
 			continue
 		}
-		n.stepRealtime(ctx, ch, allow, baseURL)
+		used := n.stepRealtime(ctx, ch, allow, baseURL)
+		if unused := allow - used; unused > 0 {
+			n.refundTokens(ch.ID, ch.RatePerMin, unused)
+		}
 	}
 }
 
@@ -180,21 +185,22 @@ func digestTickPlan() (tokens, claimLimit int) {
 	return 1, db.MaxDigestBatchSize
 }
 
-// stepRealtime 领取并投递某渠道的实时任务，一条漏洞一条消息。
-func (n *Notifier) stepRealtime(ctx context.Context, ch *db.NotificationChannel, allow int, baseURL string) {
+// stepRealtime 领取并投递某渠道的实时任务，一条漏洞一条消息，返回实际发出的消息数。
+func (n *Notifier) stepRealtime(ctx context.Context, ch *db.NotificationChannel, allow int, baseURL string) int {
 	deliveries, err := n.pg.ClaimRealtimeDeliveries(ctx, ch.ID, allow, notifyLease)
 	if err != nil {
 		log.Printf("[notify] 领取实时投递失败 channel=%d: %v", ch.ID, err)
-		return
+		return 0
 	}
 	if len(deliveries) == 0 {
-		return
+		return 0
 	}
 	channel, cfg, ok := n.adapt(ch)
 	if !ok {
 		_ = n.pg.FailDeliveries(ctx, deliveryIDs(deliveries), fmt.Sprintf("渠道类型 %q 未注册", ch.Kind))
-		return
+		return 0
 	}
+	sent := 0
 	for _, dl := range deliveries {
 		msg, err := n.renderSingle(ctx, dl, baseURL)
 		if err != nil {
@@ -203,37 +209,39 @@ func (n *Notifier) stepRealtime(ctx context.Context, ch *db.NotificationChannel,
 			continue
 		}
 		n.send(ctx, channel, cfg, msg, []*db.NotificationDelivery{dl})
+		sent++
 	}
+	return sent
 }
 
-// stepDigest 在批次到期时把某渠道的待发投递聚合成一条消息发出。
-func (n *Notifier) stepDigest(ctx context.Context, ch *db.NotificationChannel, allow int, baseURL string) {
+// stepDigest 在批次到期时把某渠道的待发投递聚合成一条消息发出，返回是否实际发出了汇总消息。
+func (n *Notifier) stepDigest(ctx context.Context, ch *db.NotificationChannel, allow int, baseURL string) bool {
 	window := n.digestInterval()
 	due, err := n.pg.DigestBatchDue(ctx, ch.ID, window)
 	if err != nil {
 		log.Printf("[notify] 判断汇总批次失败 channel=%d: %v", ch.ID, err)
-		return
+		return false
 	}
 	if !due {
-		return
+		return false
 	}
 	deliveries, err := n.pg.ClaimDigestBatch(ctx, ch.ID, allow, notifyLease)
 	if err != nil {
 		log.Printf("[notify] 领取汇总批次失败 channel=%d: %v", ch.ID, err)
-		return
+		return false
 	}
 	if len(deliveries) == 0 {
-		return
+		return false
 	}
 	channel, cfg, ok := n.adapt(ch)
 	if !ok {
 		_ = n.pg.FailDeliveries(ctx, deliveryIDs(deliveries), fmt.Sprintf("渠道类型 %q 未注册", ch.Kind))
-		return
+		return false
 	}
 	msg, included, err := n.renderBatch(ctx, deliveries, baseURL, int(window.Minutes()))
 	if err != nil {
 		_ = n.pg.FailDeliveries(ctx, deliveryIDs(deliveries), err.Error())
-		return
+		return false
 	}
 	// 快照坏掉、没能进消息的那些投递要显式判失败。不这么做的话它们会留在
 	// included 之外、既不进消息也不进失败列表——发送成功时它们的状态会被
@@ -248,6 +256,7 @@ func (n *Notifier) stepDigest(ctx context.Context, ch *db.NotificationChannel, a
 	// 只把进了消息的那些交给 send：included[i] 与 msg.Items[i] 严格对应，
 	// send 依赖这个对应关系把「渠道回报装下了前 K 条」落到正确的投递行上。
 	n.send(ctx, channel, cfg, msg, included)
+	return true
 }
 
 // send 投递并按结果流转状态。
@@ -487,6 +496,20 @@ func (n *Notifier) takeTokens(channelID int64, ratePerMin, want int, now time.Ti
 	}
 	b.tokens -= float64(take)
 	return take
+}
+
+// refundTokens 将本轮预先扣除但未实际消费的令牌退回渠道令牌桶（不超过桶容量 ratePerMin）。
+func (n *Notifier) refundTokens(channelID int64, ratePerMin, unused int) {
+	if unused <= 0 || ratePerMin <= 0 {
+		return
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	b := n.buckets[channelID]
+	if b == nil {
+		return
+	}
+	b.tokens = minF(float64(ratePerMin), b.tokens+float64(unused))
 }
 
 // enabled 读取总开关。

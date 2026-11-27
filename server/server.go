@@ -280,6 +280,53 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	return s
 }
 
+// Shutdown waits, bounded by ctx, for background server workers (task archive
+// worker and active/flushing side-question runs) to settle before stores close.
+func (s *Server) Shutdown(ctx context.Context) error {
+	if s == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	archiveDone := make(chan struct{})
+	go func() {
+		s.archiveWG.Wait()
+		close(archiveDone)
+	}()
+	select {
+	case <-archiveDone:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	if s.side != nil {
+		s.side.mu.Lock()
+		sideRuns := make([]<-chan struct{}, 0, len(s.side.runs))
+		for _, run := range s.side.runs {
+			if run.done != nil {
+				sideRuns = append(sideRuns, run.done)
+			}
+		}
+		sideDone := s.side.done
+		s.side.mu.Unlock()
+		for _, ch := range sideRuns {
+			select {
+			case <-ch:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		if sideDone != nil && s.ctx != nil && s.ctx.Err() != nil {
+			select {
+			case <-sideDone:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+	}
+	return nil
+}
+
 // Restored deadline and worker loops must inherit the same context as new tasks,
 // including the side-question checkpoint publisher installed during startup.
 func (s *Server) restoreTaskRuntimes() {
@@ -3166,8 +3213,15 @@ func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "data: %s\n\n", b)
 		flusher.Flush()
 	}
+	var serverDone <-chan struct{}
+	if s.ctx != nil {
+		serverDone = s.ctx.Done()
+	}
 	lines, cursor := logSink.recent(since, 1000)
 	for _, l := range lines {
+		if s.ctx != nil && s.ctx.Err() != nil {
+			return
+		}
 		if !authorized(false) {
 			return
 		}
@@ -3183,8 +3237,13 @@ func (s *Server) streamLogs(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-serverDone:
+			return
 		case l, ok := <-ch:
 			if !ok {
+				return
+			}
+			if s.ctx != nil && s.ctx.Err() != nil {
 				return
 			}
 			if l.Seq <= since {
@@ -3264,8 +3323,15 @@ func (s *Server) streamActivity(w http.ResponseWriter, r *http.Request) {
 	// so the client reconnects and retries from its last id (broadcast is lossy — the
 	// DB is the source of truth). The Broadcaster keeps buffering live events meanwhile;
 	// the id<=since skip below drops any that this replay already covered.
+	var serverDone <-chan struct{}
+	if s.ctx != nil {
+		serverDone = s.ctx.Done()
+	}
 	const replayBatch = 500
 	for {
+		if s.ctx != nil && s.ctx.Err() != nil {
+			return
+		}
 		if !authorized(false) {
 			return
 		}
@@ -3275,6 +3341,9 @@ func (s *Server) streamActivity(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for _, a := range items {
+			if s.ctx != nil && s.ctx.Err() != nil {
+				return
+			}
 			if !authorized(false) {
 				return
 			}
@@ -3294,8 +3363,13 @@ func (s *Server) streamActivity(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-serverDone:
+			return
 		case a, ok := <-ch:
 			if !ok {
+				return
+			}
+			if s.ctx != nil && s.ctx.Err() != nil {
 				return
 			}
 			if a.ID <= since {

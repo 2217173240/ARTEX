@@ -177,6 +177,19 @@ type Traffic struct {
 	// transparent-passthrough paths honor it (go-mitmproxy's getUpstreamConn),
 	// so no host escapes it. Hot-swappable at runtime via SetUpstreamProxy.
 	upstream atomic.Pointer[url.URL]
+	// verifiedMu guards verifiedBlobs, caching (size, modNano) for blobs whose
+	// full SHA256 has already been verified so paged BlobRange reads are O(1)
+	// instead of re-hashing the whole file on every page.
+	verifiedMu    sync.RWMutex
+	verifiedBlobs map[string]blobStamp
+	blobVerifyCnt atomic.Int64
+}
+
+const maxVerifiedBlobs = 2048
+
+type blobStamp struct {
+	size    int64
+	modNano int64
 }
 
 // Open initializes the traffic tree, blob store and SQLite index under dir.
@@ -833,43 +846,91 @@ func (t *Traffic) blobPath(hash string) (string, error) {
 	return "", fmt.Errorf("blob %s 不存在", hash)
 }
 
+func (t *Traffic) openBlobRegular(hash string) (*os.File, os.FileInfo, error) {
+	hash = strings.ToLower(strings.TrimSpace(hash))
+	p, err := t.blobPath(hash)
+	if err != nil {
+		return nil, nil, err
+	}
+	info, err := os.Lstat(p)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, nil, fmt.Errorf("traffic blob is not regular: %s", hash)
+	}
+	f, err := os.Open(p)
+	if err != nil {
+		return nil, nil, err
+	}
+	st, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, nil, err
+	}
+	if !st.Mode().IsRegular() || !os.SameFile(info, st) {
+		f.Close()
+		return nil, nil, fmt.Errorf("traffic blob changed while opening: %s", hash)
+	}
+	return f, st, nil
+}
+
+func (t *Traffic) verifyBlobFile(f *os.File, hash string) error {
+	t.blobVerifyCnt.Add(1)
+	checksum := sha256.New()
+	if _, err := io.Copy(checksum, f); err != nil {
+		return err
+	}
+	if hex.EncodeToString(checksum.Sum(nil)) != hash {
+		return fmt.Errorf("traffic blob checksum mismatch: %s", hash)
+	}
+	return nil
+}
+
+func (t *Traffic) isVerifiedBlob(hash string, st os.FileInfo) bool {
+	stamp := blobStamp{size: st.Size(), modNano: st.ModTime().UnixNano()}
+	t.verifiedMu.RLock()
+	cur, ok := t.verifiedBlobs[hash]
+	t.verifiedMu.RUnlock()
+	return ok && cur == stamp
+}
+
+func (t *Traffic) markVerifiedBlob(hash string, st os.FileInfo) {
+	stamp := blobStamp{size: st.Size(), modNano: st.ModTime().UnixNano()}
+	t.verifiedMu.Lock()
+	if t.verifiedBlobs == nil {
+		t.verifiedBlobs = make(map[string]blobStamp)
+	} else if _, exists := t.verifiedBlobs[hash]; !exists && len(t.verifiedBlobs) >= maxVerifiedBlobs {
+		clear(t.verifiedBlobs)
+	}
+	t.verifiedBlobs[hash] = stamp
+	t.verifiedMu.Unlock()
+}
+
+func (t *Traffic) invalidateVerifiedBlob(hash string) {
+	t.verifiedMu.Lock()
+	delete(t.verifiedBlobs, hash)
+	t.verifiedMu.Unlock()
+}
+
+func (t *Traffic) clearVerifiedBlobs() {
+	t.verifiedMu.Lock()
+	clear(t.verifiedBlobs)
+	t.verifiedMu.Unlock()
+}
+
 // Blob opens a spilled body for streaming; the caller must close the file.
 // Streaming matters here: the driver exposes no incremental BLOB API, so keeping
 // large bodies on disk is what lets them be served without loading them whole.
 func (t *Traffic) Blob(hash string) (*os.File, int64, error) {
 	hash = strings.ToLower(strings.TrimSpace(hash))
-	p, err := t.blobPath(hash)
+	f, st, err := t.openBlobRegular(hash)
 	if err != nil {
 		return nil, 0, err
 	}
-	info, err := os.Lstat(p)
-	if err != nil {
-		return nil, 0, err
-	}
-	if !info.Mode().IsRegular() {
-		return nil, 0, fmt.Errorf("traffic blob is not regular: %s", hash)
-	}
-	f, err := os.Open(p)
-	if err != nil {
-		return nil, 0, err
-	}
-	st, err := f.Stat()
-	if err != nil {
+	if err := t.verifyBlobFile(f, hash); err != nil {
 		f.Close()
 		return nil, 0, err
-	}
-	if !st.Mode().IsRegular() || !os.SameFile(info, st) {
-		f.Close()
-		return nil, 0, fmt.Errorf("traffic blob changed while opening: %s", hash)
-	}
-	checksum := sha256.New()
-	if _, err := io.Copy(checksum, f); err != nil {
-		f.Close()
-		return nil, 0, err
-	}
-	if hex.EncodeToString(checksum.Sum(nil)) != hash {
-		f.Close()
-		return nil, 0, fmt.Errorf("traffic blob checksum mismatch: %s", hash)
 	}
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		f.Close()
@@ -882,18 +943,29 @@ func (t *Traffic) Blob(hash string) (*os.File, int64, error) {
 // blob's total size. Used by the agent tool to page through a large body without
 // pulling all of it into the model's context.
 func (t *Traffic) BlobRange(hash string, offset, length int64) (data []byte, total int64, err error) {
-	f, size, err := t.Blob(hash)
+	hash = strings.ToLower(strings.TrimSpace(hash))
+	f, st, err := t.openBlobRegular(hash)
 	if err != nil {
 		return nil, 0, err
 	}
 	defer f.Close()
+
+	if !t.isVerifiedBlob(hash, st) {
+		if err := t.verifyBlobFile(f, hash); err != nil {
+			t.invalidateVerifiedBlob(hash)
+			return nil, 0, err
+		}
+		t.markVerifiedBlob(hash, st)
+	}
+
+	size := st.Size()
 	if offset < 0 {
 		offset = 0
 	}
 	if offset >= size {
 		return nil, size, nil
 	}
-	if length <= 0 || offset+length > size {
+	if length <= 0 || length > size-offset {
 		length = size - offset
 	}
 	buf := make([]byte, length)
@@ -1213,6 +1285,7 @@ func (t *Traffic) DeleteHost(host string) (int64, error) {
 		return 0, errors.Join(fmt.Errorf("提交流量索引删除: %w", err), restoreTrees(stageDir, moves))
 	}
 	t.reapStage(stageDir)
+	t.clearVerifiedBlobs()
 	if n > 0 {
 		t.reclaim()
 		if err := t.gcBlobs(); err != nil {
@@ -1262,6 +1335,7 @@ func (t *Traffic) DeleteAll() (deleted int64, reclaimed int64, err error) {
 		return 0, 0, errors.Join(fmt.Errorf("提交流量索引删除: %w", err), restoreTrees(stageDir, moves))
 	}
 	t.reapStage(stageDir)
+	t.clearVerifiedBlobs()
 	if err := t.gcBlobs(); err != nil {
 		return deleted, 0, err
 	}
@@ -1822,6 +1896,7 @@ func (s *HostDeleteStage) Commit() error {
 	// it now runs in the background, while collection below only needs them to be
 	// out of the live tree — which the staging rename already guaranteed.
 	s.traffic.reapStage(s.stageDir)
+	s.traffic.clearVerifiedBlobs()
 	s.traffic.reclaim()
 	var errs []error
 	if err := s.traffic.gcBlobs(); err != nil {
@@ -2009,6 +2084,7 @@ func (t *Traffic) gcBlobs() error {
 	for _, b := range buckets {
 		os.Remove(b)
 	}
+	t.clearVerifiedBlobs()
 	return nil
 }
 

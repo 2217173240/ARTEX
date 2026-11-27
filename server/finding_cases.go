@@ -77,9 +77,24 @@ func (s *Server) listFindingCases(w http.ResponseWriter, r *http.Request) {
 	for _, c := range contexts {
 		assetIDs = append(assetIDs, c.AssetIDs...)
 	}
+	originalRows := q.Get("original_rows") == "1"
+	summaries := make([]*db.DBFinding, len(rows))
+	for i, row := range rows {
+		if row.FindingID > 0 {
+			f, err := s.m.pg.FindingCaseSummary(row.FindingID, originalRows)
+			if err != nil {
+				caseHTTPError(w, err)
+				return
+			}
+			summaries[i] = f
+			if f != nil {
+				assetIDs = append(assetIDs, f.AssetIDs...)
+			}
+		}
+	}
 	assets := s.resolveAssetIDs(assetIDs)
 	items := []map[string]any{}
-	for _, row := range rows {
+	for i, row := range rows {
 		v := map[string]any{"case": row.Case, "matched_ids": row.MatchedIDs}
 		if row.Case != nil {
 			c := contexts[row.Case.ID]
@@ -87,16 +102,12 @@ func (s *Server) listFindingCases(w http.ResponseWriter, r *http.Request) {
 			v["assets"] = append([]FindingAssetDTO{}, findingFromDB(&db.DBFinding{AssetIDs: c.AssetIDs}, assets).Assets...)
 		}
 		if row.FindingID > 0 {
-			f, err := s.m.pg.FindingCaseSummary(row.FindingID, q.Get("original_rows") == "1")
-			if err != nil {
-				caseHTTPError(w, err)
-				return
-			}
+			f := summaries[i]
 			if f == nil {
 				continue
 			}
 			f.Report = ""
-			v["finding"] = s.caseFindingDTO(f)
+			v["finding"] = findingFromDB(f, assets)
 		}
 		items = append(items, v)
 	}
@@ -385,11 +396,15 @@ func (s *Server) performFindingCaseTool(ctx context.Context, name string, a find
 			return nil, errors.New("漏洞组不存在")
 		}
 		fs, total, err := s.m.pg.FindingCaseMembers(cid, page, 20)
+		if err != nil {
+			return nil, err
+		}
+		assets := s.resolveFindingAssets(fs)
 		members := []FindingDTO{}
 		for _, f := range fs {
-			members = append(members, s.caseFindingDTO(f))
+			members = append(members, findingFromDB(f, assets))
 		}
-		return map[string]any{"case": c, "members": members, "total": total, "page": page, "page_size": 20}, err
+		return map[string]any{"case": c, "members": members, "total": total, "page": page, "page_size": 20}, nil
 	case "update_finding_case_report":
 		if err := validateUnifiedFindingReport(a.Report); err != nil {
 			return nil, err

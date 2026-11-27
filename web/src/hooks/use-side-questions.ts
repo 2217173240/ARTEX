@@ -6,6 +6,7 @@ import { toast } from "sonner";
 
 import { sseUrl } from "@/lib/api";
 import { isBtwCommand, type SideExchange, type SideHistory, sideAPI } from "@/lib/side-questions";
+import { startVisibilityPoll } from "@/lib/visibility-poll";
 
 // crypto.randomUUID 仅在安全上下文可用(https/localhost);经 IP+http 访问时降级。
 function newSideRequestID(): string {
@@ -42,6 +43,10 @@ export function useSideQuestions(parent: string | null) {
   const accepted = useRef<{ id: string; question: string } | null>(null);
   const running = current ? items.find((item) => item.status === "running") : undefined;
   const runningID = running?.id;
+  const runningIDRef = useRef<string | undefined>(runningID);
+  runningIDRef.current = runningID;
+  const openRef = useRef(open);
+  openRef.current = open;
 
   const restoreFailedDraft = useCallback((incoming: SideExchange[]) => {
     const pending = accepted.current;
@@ -119,15 +124,16 @@ export function useSideQuestions(parent: string | null) {
 
   useEffect(() => {
     if (!open || !parent) return;
-    void load();
-    const timer = setInterval(() => void load(), 2000);
-    return () => clearInterval(timer);
+    return startVisibilityPoll(() => load(), 2000, {
+      isPaused: () => Boolean(runningIDRef.current),
+    });
   }, [open, parent, load]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: Reconnect after a clear attempt invalidates older callbacks.
   useEffect(() => {
     if (!runningID) return;
     const version = epoch.current;
+    runningIDRef.current = runningID;
     const stream = new EventSource(sseUrl(`/api/side-questions/${runningID}/events`), { withCredentials: true });
     stream.addEventListener("snapshot", (event) => {
       if (version !== epoch.current) return;
@@ -136,17 +142,30 @@ export function useSideQuestions(parent: string | null) {
         if (item.id !== runningID) return;
         setItems((old) => merge(old, [item]));
         restoreFailedDraft([item]);
-        if (item.status !== "running") stream.close();
+        if (item.status !== "running") {
+          runningIDRef.current = undefined;
+          stream.close();
+        }
       } catch {
         setError("旁路数据解析失败，请重新打开面板");
       }
     });
     stream.addEventListener("cleared", () => {
+      runningIDRef.current = undefined;
       stream.close();
       if (version === epoch.current) setItems([]);
     });
-    return () => stream.close();
-  }, [runningID, streamEpoch, restoreFailedDraft]);
+    stream.addEventListener("error", () => {
+      if (stream.readyState === EventSource.CLOSED) {
+        runningIDRef.current = undefined;
+        if (openRef.current && version === epoch.current) void load();
+      }
+    });
+    return () => {
+      runningIDRef.current = undefined;
+      stream.close();
+    };
+  }, [runningID, streamEpoch, restoreFailedDraft, load]);
 
   const ask = async (input: string) => {
     const question = input.trim();

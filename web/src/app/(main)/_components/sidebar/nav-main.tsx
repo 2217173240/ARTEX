@@ -32,6 +32,7 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import { cn } from "@/lib/utils";
+import { startVisibilityPoll } from "@/lib/visibility-poll";
 import type {
   NavBadge,
   NavGroup,
@@ -173,19 +174,17 @@ function InterceptPendingBadge() {
   const [count, setCount] = React.useState(0);
   React.useEffect(() => {
     let live = true;
-    async function poll() {
+    const stop = startVisibilityPoll(async () => {
       try {
         const list = await api.interceptPending();
         if (live) setCount(list.length);
       } catch {
         /* ignore */
       }
-    }
-    poll();
-    const t = setInterval(poll, 5000);
+    }, 5000);
     return () => {
       live = false;
-      clearInterval(t);
+      stop();
     };
   }, []);
   if (count === 0) return null;
