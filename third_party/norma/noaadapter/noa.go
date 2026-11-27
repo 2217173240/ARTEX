@@ -48,7 +48,7 @@ func Enable(opts *agentcore.Options, o Options) error {
 		// Insert noa's static section at the boundary so it joins the cached
 		// prefix without pulling dynamic segments inside DynamicBoundary.
 		b := opts.DynamicBoundary
-		sys := make([]string, 0, len(opts.SystemPrompt)+1)
+		var sys []string
 		sys = append(sys, opts.SystemPrompt[:b]...)
 		sys = append(sys, noaPrompt)
 		sys = append(sys, opts.SystemPrompt[b:]...)
