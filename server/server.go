@@ -1518,6 +1518,9 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 		ProfileID        *int64 `json:"profile_id"`         // 测已存 profile 时传入：api_key 为空则用它存的 key
 		Streaming        *bool  `json:"streaming"`          // 省略=流式，与保存 profile 时同一套默认
 		SessionHeaderKey string `json:"session_header_key"` // 非空=测试时也带该自定义会话头，值为一次性随机 session id
+		// 输出上限请求字段名（仅 openai 格式）："" = max_tokens，"max_completion_tokens" = 新字段；
+		// 省略（nil）= 回落已存 profile 的设置。
+		MaxTokensField *string `json:"max_tokens_field"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, err.Error())
@@ -1538,7 +1541,7 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 	// 直接 400，必须在测试路径上也带上，否则"对话通、测试 400"。
 	cfg.SessionHeaderKey = req.SessionHeaderKey
 	var stored *agent.Config
-	if req.ProfileID != nil && (cfg.APIKey == "" || cfg.SessionHeaderKey == "") {
+	if req.ProfileID != nil && (cfg.APIKey == "" || cfg.SessionHeaderKey == "" || req.MaxTokensField == nil) {
 		p, err := s.m.pg.ProfileByID(*req.ProfileID)
 		if err != nil && cfg.APIKey == "" {
 			writeJSON(w, 200, map[string]any{"ok": false, "error": "读取已存配置失败: " + err.Error()})
@@ -1546,11 +1549,22 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 		}
 		if p != nil {
 			c := agent.ConfigFrom(p.Format, p.Model, p.BaseURL, p.APIKey, p.Proxy)
+			c.MaxTokensField = p.MaxTokensField
 			stored = &c
 			if cfg.SessionHeaderKey == "" {
 				cfg.SessionHeaderKey = p.SessionHeaderKey
 			}
 		}
+	}
+	// 输出上限字段名同样跟随表单或已存配置，并与保存 profile 保持同一套归一化规则
+	// （仅 openai + max_completion_tokens 保留，其余回落默认 max_tokens）。
+	if req.MaxTokensField != nil {
+		cfg.MaxTokensField = strings.TrimSpace(*req.MaxTokensField)
+	} else if stored != nil {
+		cfg.MaxTokensField = stored.MaxTokensField
+	}
+	if cfg.Format != llm.FormatOpenAI || cfg.MaxTokensField != llm.MaxTokensFieldCompletion {
+		cfg.MaxTokensField = ""
 	}
 	s.cfgMu.Lock()
 	global := s.llmCfg
@@ -4093,7 +4107,8 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	assetCounts, err := s.m.Assets().CountsByType()
+	taskID, _ := strconv.ParseInt(t.ID, 10, 64)
+	assetCounts, err := s.m.Assets().CountsByTypeForTask(taskID)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return

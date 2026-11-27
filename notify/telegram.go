@@ -180,8 +180,10 @@ func telegramHTML(m Message) (string, int) {
 		if m.HomeURL != "" {
 			footer = fmt.Sprintf("\n\n<a href=\"%s\">在平台中查看全部</a>", telegramEscapeAttr(m.HomeURL))
 		}
+		// 按实际写入消息的转义后整行（含前导换行）计预算：若按未转义原文计量，
+		// 含大量 HTML 元字符的摘要转义后可能超出预算，导致 TruncateHTML 截断本已计入发送的条目。
 		kept := packItemCount(m.Items, telegramTextLimit, telegramReservedRunes, footer, runeSize, func(it Item, idx int) string {
-			return telegramBatchLine(it, idx+1)
+			return "\n" + telegramEscape(telegramBatchLine(it, idx+1))
 		})
 		items := m.Items[:kept]
 		b.Reset()

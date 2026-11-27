@@ -1003,6 +1003,47 @@ func (t *ToolSet) listFindings() actool.CoreTool {
 // context, so default to the newest page and let the agent page/filter for more.
 const factsPageSize = 20
 
+// toolPageMax 是 Agent 列表工具允许返回或预分配的最大页大小。
+// list_facts 已固定上限为 100；统一使用该上限可防止模型传入超大 limit 导致
+// 切片预分配过大或产生无界查询。
+const toolPageMax = 100
+
+// toolOffsetMax 限制模型传入的 SQL offset，避免单次调用触发大跨度扫描。
+const toolOffsetMax = 1_000_000
+
+// toolPageIndexMax 限制与页大小相乘的页码，避免 offset 乘法溢出。
+const toolPageIndexMax = 10_000
+
+func clampToolLimit(n, def int) int {
+	if n <= 0 {
+		return def
+	}
+	if n > toolPageMax {
+		return toolPageMax
+	}
+	return n
+}
+
+func clampToolOffset(n int) int {
+	if n < 0 {
+		return 0
+	}
+	if n > toolOffsetMax {
+		return toolOffsetMax
+	}
+	return n
+}
+
+func clampToolPage(n int) int {
+	if n <= 0 {
+		return 1
+	}
+	if n > toolPageIndexMax {
+		return toolPageIndexMax
+	}
+	return n
+}
+
 func (t *ToolSet) listFacts() actool.CoreTool {
 	return t.readExpTool("list_facts", "分页列本任务及直接关联任务的【探索事实/结论】，最新在前(紧凑：id+摘要+状态，摘要过长会截断，全文用 node_detail(id))。参数均可选：limit(默认 20，上限 100)、before(游标，传上一页返回的 next_before 取更旧的一页；省略/0=最新一页)、q(按摘要关键词过滤)。返回 {facts, total, has_more, next_before}：total 是过滤后的总数，has_more=true 时用 next_before 继续翻页。关联任务条目带 source_task_id/inherited=true 且只读。漏洞看 list_findings。",
 		obj(map[string]any{
@@ -1298,10 +1339,11 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 		if !findingTrafficBindingEnabled() {
 			a.TrafficRefs, a.EvidenceHintID = nil, nil
 		}
-		if len(a.EvidenceHintID) > 0 && pid(a.EvidenceHintID) <= 0 {
-			return actool.Errorf("evidence_hint_id 必须为有效的提示节点 ID；无交接提示时省略"), nil
-		}
-		refs, err := t.findingRefsFromHint(pid(a.EvidenceHintID), a.TrafficRefs)
+		// 模型经常会传入 "evidence_hint_id": 0（或 null/""）表示缺省，也可能传入过期或非本任务的节点 ID。
+		// 因 evidence_hint_id 为可选参数且未绑定流量的漏洞同样有效（后续由报告 Agent 绑定），
+		// 过期或非本地提示 ID 应优雅降级为显式传入的有效 traffic_refs（或为空），不能丢弃已确认漏洞。
+		hintID := pid(a.EvidenceHintID)
+		refs, ignoredHintNote, err := resolveFindingTrafficRefs(hintID, a.TrafficRefs, t.findingRefsFromHint)
 		if err != nil {
 			return actool.Errorf(err.Error()), nil
 		}
@@ -1342,6 +1384,13 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 			result.EvidenceNote = "漏洞已保存，未绑定流量。TCP/无包情形可正常继续；若已有核实的 HTTP 流量，请用可用的 bind_finding_traffic 或漏洞页面补绑，再完成证据交接。不要重复创建漏洞。"
 			if !findingTrafficBindingEnabled() {
 				result.EvidenceNote = "漏洞已保存。Agent 自动绑定流量已关闭，可在页面人工关联流量。"
+			}
+		}
+		if ignoredHintNote != "" {
+			if result.EvidenceNote != "" {
+				result.EvidenceNote = ignoredHintNote + " " + result.EvidenceNote
+			} else {
+				result.EvidenceNote = ignoredHintNote
 			}
 		}
 		raw, _ := json.Marshal(result)
@@ -2077,7 +2126,7 @@ func (t *ToolSet) listWorkerTraces() actool.CoreTool {
 			"只列已执行的(running/done/exhausted/blocked/stopped)，不含还没跑的 open。注意：你的任务边界仍是你领到的那条意图，看别的 work 只为复用观察/避免重复劳动。",
 		obj(map[string]any{
 			"q":     str("按 summary 关键字过滤（可选）"),
-			"limit": intp("返回上限，默认 50（可选）"),
+			"limit": intp("返回上限，默认 50，最大 100（可选）"),
 		}),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
@@ -2085,10 +2134,7 @@ func (t *ToolSet) listWorkerTraces() actool.CoreTool {
 				Limit int    `json:"limit"`
 			}
 			_ = json.Unmarshal(in, &a)
-			limit := a.Limit
-			if limit <= 0 {
-				limit = 50
-			}
+			limit := clampToolLimit(a.Limit, 50)
 			all, err := t.ts.ListByKindWithSources(db.KindIntent, 500)
 			if err != nil {
 				return actool.Errorf(err.Error()), nil

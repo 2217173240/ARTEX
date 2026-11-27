@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/Autumn-27/artex/db"
@@ -107,6 +108,11 @@ func HintTrafficSchema() map[string]any {
 	return map[string]any{"type": "array", "description": "可选：已核实且对应本提示中具体漏洞的流量引用，保留顺序；交接后 report_finding 可传 evidence_hint_id 携带这些引用。", "items": obj(map[string]any{"traffic_id": str("真实流量 ID"), "role": str("baseline / proof / verification / supporting"), "note": str("该流量支持什么结论")}, "traffic_id")}
 }
 
+// errEvidenceHintNotFound 标记未能解析为当前任务本地提示节点的 evidence_hint_id
+// （如已过期/已删除 ID、继承提示或非提示节点 ID）。report_finding 据此优雅降级，
+// 避免丢弃已确认漏洞。
+var errEvidenceHintNotFound = errors.New("evidence_hint_id is not a local hint node")
+
 func (t *ToolSet) findingRefsFromHint(hintID int64, explicit []db.TrafficRef) ([]db.TrafficRef, error) {
 	if hintID <= 0 {
 		return db.NormalizeTrafficRefs(explicit)
@@ -116,7 +122,7 @@ func (t *ToolSet) findingRefsFromHint(hintID int64, explicit []db.TrafficRef) ([
 		return nil, err
 	}
 	if n == nil || n.Kind != db.KindHint {
-		return nil, fmt.Errorf("evidence_hint_id=%d 必须是本任务的提示节点（继承提示不可直接用于绑定）", hintID)
+		return nil, fmt.Errorf("%w: evidence_hint_id=%d 必须是本任务的提示节点（继承提示不可直接用于绑定）", errEvidenceHintNotFound, hintID)
 	}
 	var payload struct {
 		Refs []db.TrafficRef `json:"traffic_refs"`
@@ -125,4 +131,22 @@ func (t *ToolSet) findingRefsFromHint(hintID int64, explicit []db.TrafficRef) ([
 		return nil, err
 	}
 	return db.NormalizeTrafficRefs(append(append([]db.TrafficRef{}, explicit...), payload.Refs...))
+}
+
+func resolveFindingTrafficRefs(hintID int64, explicit []db.TrafficRef, lookup func(int64, []db.TrafficRef) ([]db.TrafficRef, error)) ([]db.TrafficRef, string, error) {
+	refs, err := lookup(hintID, explicit)
+	if err == nil {
+		return refs, "", nil
+	}
+	if errors.Is(err, errEvidenceHintNotFound) {
+		degraded, derr := db.NormalizeTrafficRefs(explicit)
+		if derr != nil {
+			return nil, "", derr
+		}
+		return degraded, fmt.Sprintf("已忽略过期或非本任务的 evidence_hint_id=%d，未带提示引用直接登记漏洞。", hintID), nil
+	}
+	if degraded, derr := db.NormalizeTrafficRefs(explicit); derr == nil && len(degraded) > 0 {
+		return degraded, "", nil
+	}
+	return nil, "", err
 }

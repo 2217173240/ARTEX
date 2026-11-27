@@ -137,13 +137,13 @@ func TestTaskCountsExactHTTPAndFallback(t *testing.T) {
 	}
 }
 
-func TestTaskReportGlobalAssetCountsHTTP(t *testing.T) {
+func TestTaskReportTaskAssetCountsHTTP(t *testing.T) {
 	s, task, request := reportCountsServer(t)
 	if code, body := request("/api/report?task="+task.ID, true); code != 200 || !strings.Contains(body, "- 资产：\n") {
 		t.Fatalf("empty assets %d %s", code, body)
 	}
 	for _, typ := range []string{"root_domain", "ip", "subdomain", "app", "service", "endpoint"} {
-		if _, err := s.m.pg.Exec(`INSERT INTO assets(type,task_ids) VALUES($1,$2),($1,'{}')`, typ, "{999999}"); err != nil {
+		if _, err := s.m.pg.Exec(`INSERT INTO assets(type,task_ids) VALUES($1,$2),($1,'{}'),($1,$3)`, typ, "{999999}", "{"+task.ID+"}"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -152,8 +152,8 @@ func TestTaskReportGlobalAssetCountsHTTP(t *testing.T) {
 		t.Fatal(code, body)
 	}
 	for _, typ := range []string{"root_domain", "ip", "subdomain", "app", "service", "endpoint"} {
-		if !strings.Contains(body, typ+" 2") {
-			t.Fatalf("missing global %s count: %s", typ, body)
+		if !strings.Contains(body, typ+" 1") || strings.Contains(body, typ+" 2") || strings.Contains(body, typ+" 3") {
+			t.Fatalf("expected task-only count 1 for %s: %s", typ, body)
 		}
 	}
 }

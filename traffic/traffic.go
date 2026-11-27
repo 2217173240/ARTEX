@@ -505,6 +505,13 @@ func proxyCausedErr(err error) bool {
 // full-text index. Nothing is written to a per-request directory — only bodies
 // above maxInlineBody spill to the content-addressed blob store.
 func (t *Traffic) record(f *mproxy.Flow) {
+	if f == nil || f.Request == nil || f.Response == nil || f.Request.URL == nil {
+		return
+	}
+	// Decoding a compressed body is CPU work on up to maxIndexBody bytes each;
+	// it runs before the write lock so concurrent records do not wait on it.
+	reqIdx, reqDecoded := indexBody(f.Request.Header, f.Request.Body)
+	respIdx, respDecoded := indexBody(f.Response.Header, f.Response.Body)
 	// The write lock covers blob + index writes, so DeleteHost (and its blob GC)
 	// can run under the same lock without racing a concurrent record.
 	t.wmu.Lock()
@@ -527,6 +534,12 @@ func (t *Traffic) record(f *mproxy.Flow) {
 	// work and must not sit inside the SQLite write lock.
 	reqB := t.spill(f.Request.Body, f.Request.Header.Get("Content-Type"))
 	respB := t.spill(f.Response.Body, ct)
+	if reqDecoded {
+		reqB.index = reqIdx
+	}
+	if respDecoded {
+		respB.index = respIdx
+	}
 
 	tx, err := t.db.Begin()
 	if err != nil {
@@ -768,15 +781,33 @@ func sanitize(s string) string {
 	return out
 }
 
-// hostTreePath derives a legacy host directory, excluding dot components rather
-// than aliasing them to a valid host's directory. Their exact index rows can
-// still be deleted, but they never identify the traffic root or its parent.
+// storeDir reports whether name is one of the traffic store's own directories.
+// Host trees never use these names. DeleteAll skips every underscore-prefixed
+// entry for the same reason.
+func storeDir(name string) bool {
+	switch name {
+	case "_index", "_blobs", "_ca", "_delete_staging":
+		return true
+	default:
+		return false
+	}
+}
+
+// hostTreePath derives a legacy host directory, excluding dot components and the
+// store's own reserved directories rather than aliasing them to a valid host's
+// directory or touching store internals. Their exact index rows can still be
+// deleted, but they never identify the traffic root, its parent, or store dirs.
 func (t *Traffic) hostTreePath(host string) (string, bool) {
 	component := sanitize(host)
-	if component == "." || component == ".." {
+	if component == "." || component == ".." || storeDir(component) {
 		return "", false
 	}
-	return filepath.Join(t.dir, component), true
+	dir := filepath.Join(t.dir, component)
+	rel, err := filepath.Rel(t.dir, dir)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return dir, true
 }
 
 var blobHashRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -2047,12 +2078,23 @@ func (t *Traffic) query(host, contains, bodyContains string, page, limit int) ([
 			// so constrain the original URL authority as a compatibility fallback.
 			// New and old captures therefore share the same search contract.
 			authority := net.JoinHostPort(hostName, port)
-			q += ` AND (url LIKE ? OR url LIKE ? OR url LIKE ?)`
-			args = append(args,
-				"%://"+authority+"/%",
-				"%://"+authority+"?%",
-				"%://"+authority,
-			)
+			prefixes := []string{"%://" + authority}
+			// Clients leave a default port out of the Host header, so a capture
+			// of https://host:443 is recorded as https://host, and a WebSocket
+			// over it as wss://host.
+			bare := strings.TrimSuffix(authority, ":"+port)
+			switch port {
+			case "80":
+				prefixes = append(prefixes, "http://"+bare, "ws://"+bare)
+			case "443":
+				prefixes = append(prefixes, "https://"+bare, "wss://"+bare)
+			}
+			var conds []string
+			for _, p := range prefixes {
+				conds = append(conds, `url LIKE ? OR url LIKE ? OR url LIKE ?`)
+				args = append(args, p+"/%", p+"?%", p)
+			}
+			q += ` AND (` + strings.Join(conds, ` OR `) + `)`
 		}
 	}
 	if contains != "" {

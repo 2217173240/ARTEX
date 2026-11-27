@@ -489,11 +489,11 @@ func (t *ToolSet) listUntestedAssets() actool.CoreTool {
 		"list_untested_assets",
 		"查询【本任务及直接关联任务】范围内、还没被事实锚点覆盖的资产（关联范围只读，供你自己判断要不要补测，不代替你决策）。\n"+
 			"可选按资产类型过滤：root_domain/subdomain/service/app/endpoint/ip。\n"+
-			"分页：page 从 1 起、page_size 默认 10。返回 {assets:[{id,type,label}], total, page, page_size}。仅任务上下文可用。",
+			"分页：page 从 1 起、page_size 默认 10（最大 100）。返回 {assets:[{id,type,label}], total, page, page_size}。仅任务上下文可用。",
 		obj(map[string]any{
 			"type":      str("资产类型过滤（可选）：root_domain/subdomain/service/app/endpoint/ip"),
 			"page":      intp("页码，从 1 起（默认 1）"),
-			"page_size": intp("每页数量（默认 10）"),
+			"page_size": intp("每页数量（默认 10，最大 100）"),
 		}),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			if t.as == nil {
@@ -508,12 +508,8 @@ func (t *ToolSet) listUntestedAssets() actool.CoreTool {
 				PageSize int    `json:"page_size"`
 			}
 			_ = json.Unmarshal(in, &a)
-			if a.Page <= 0 {
-				a.Page = 1
-			}
-			if a.PageSize <= 0 {
-				a.PageSize = 10
-			}
+			a.Page = clampToolPage(a.Page)
+			a.PageSize = clampToolLimit(a.PageSize, 10)
 			offset := (a.Page - 1) * a.PageSize
 			assets, total, err := t.as.ListUntestedAssetsWithSources(t.taskID, strings.TrimSpace(a.Type), a.PageSize, offset)
 			if err != nil {
@@ -540,7 +536,7 @@ func (t *ToolSet) listAssets() actool.CoreTool {
 			"type":   str("资产类型过滤：root_domain|ip|subdomain|app|service|endpoint（独立字段，可与 dsl 叠加；单独 type 不足以查询，仍需 dsl）"),
 			"id":     intp("直接按单个资产 id 取（可选，与 dsl/type 互斥）"),
 			"ids":    map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "直接按多个资产 id 取（可选，与 dsl/type 互斥）"},
-			"limit":  intp("返回上限，默认 10（可选）"),
+			"limit":  intp("返回上限，默认 10，最大 100（可选）"),
 			"offset": intp("分页偏移，默认 0（可选）"),
 		}),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
@@ -556,9 +552,8 @@ func (t *ToolSet) listAssets() actool.CoreTool {
 				Offset int     `json:"offset"`
 			}
 			_ = json.Unmarshal(in, &a)
-			if a.Limit <= 0 {
-				a.Limit = 10
-			}
+			a.Limit = clampToolLimit(a.Limit, 10)
+			a.Offset = clampToolOffset(a.Offset)
 
 			var assets []*db.Asset
 			var err error

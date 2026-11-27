@@ -532,6 +532,112 @@ func TestQueryHostPortAndURLForms(t *testing.T) {
 	}
 }
 
+// TestQueryHostDefaultPort covers captures of default-port targets: clients
+// leave :80 and :443 out of the Host header, so the recorded URL carries no
+// port, and a search naming that port must still find them.
+func TestQueryHostDefaultPort(t *testing.T) {
+	tr, _ := openTraffic(t)
+	tls := newFlow("x", "GET", "/", nil, []byte("tls"))
+	tls.Request.URL, _ = url.Parse("https://shop.example.com/login")
+	tr.record(tls)
+	tr.record(newFlow("shop.example.com", "GET", "/plain", nil, []byte("plain")))
+	tr.record(newFlow("shop.example.com:8443", "GET", "/alt", nil, []byte("alt")))
+	v6 := newFlow("x", "GET", "/", nil, []byte("v6"))
+	v6.Request.URL, _ = url.Parse("https://[2001:db8::1]/admin")
+	tr.record(v6)
+	if _, err := tr.DB().Exec(`INSERT INTO exchanges(id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,path)
+VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+		"ws-1", 1, "chat.example.com", "GET", "/socket", "wss://chat.example.com/socket", 101, "", 0, 0, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tr.DB().Exec(`INSERT INTO exchanges(id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,path)
+VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+		"ws-2", 2, "plainws.example.com", "GET", "/socket", "ws://plainws.example.com/socket", 101, "", 0, 0, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		host string
+		want string
+	}{
+		{host: "shop.example.com:443", want: "https://shop.example.com/login"},
+		{host: "https://shop.example.com:443/login", want: "https://shop.example.com/login"},
+		{host: "shop.example.com:80", want: "http://shop.example.com/plain"},
+		{host: "http://shop.example.com:80/", want: "http://shop.example.com/plain"},
+		{host: "shop.example.com:8443", want: "http://shop.example.com:8443/alt"},
+		{host: "[2001:db8::1]:443", want: "https://[2001:db8::1]/admin"},
+		{host: "chat.example.com:443", want: "wss://chat.example.com/socket"},
+		{host: "plainws.example.com:80", want: "ws://plainws.example.com/socket"},
+	} {
+		rows, err := tr.query(tc.host, "", "", 0, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) != 1 || rows[0].URL != tc.want {
+			var got []string
+			for _, r := range rows {
+				got = append(got, r.URL)
+			}
+			t.Errorf("query(%q) = %v, want [%s]", tc.host, got, tc.want)
+		}
+	}
+}
+
+func TestHostTreePathSkipsStoreDirs(t *testing.T) {
+	root := t.TempDir()
+	tr := &Traffic{dir: root}
+	for _, name := range []string{"_index", "_blobs", "_ca", "_delete_staging", ".", ".."} {
+		if path, ok := tr.hostTreePath(name); ok || path != "" {
+			t.Fatalf("hostTreePath(%q) = (%q, %v), want (\"\", false)", name, path, ok)
+		}
+	}
+	dir, ok := tr.hostTreePath("api.example.com")
+	if !ok || dir != filepath.Join(root, "api.example.com") {
+		t.Fatalf("hostTreePath(api.example.com) = (%q, %v)", dir, ok)
+	}
+}
+
+func TestDeleteHostsExactSkipsStoreDirs(t *testing.T) {
+	tr, dir := openTraffic(t)
+	host := "api.example.com"
+	exDir := filepath.Join(dir, host, "GET", "1")
+	if err := os.MkdirAll(exDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tr.DB().Exec(`INSERT INTO exchanges(id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,path)
+VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+		"1", 1, host, "GET", "/", "http://"+host+"/", 200, "text/html", 0, 0, host+"/GET/1"); err != nil {
+		t.Fatal(err)
+	}
+	keep := filepath.Join(dir, "_delete_staging", "keep.txt")
+	if err := os.MkdirAll(filepath.Dir(keep), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keep, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	n, err := tr.DeleteHostsExact([]string{host, "_index", "_blobs", "_ca", "_delete_staging", ".", ".."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("deleted=%d, want 1", n)
+	}
+	for _, path := range []string{
+		filepath.Join(dir, "_index", "index.sqlite"),
+		filepath.Join(dir, "_blobs"),
+		filepath.Join(dir, "_ca"),
+		keep,
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("store path %s gone: %v", path, err)
+		}
+	}
+	if _, err := os.Stat(exDir); !os.IsNotExist(err) {
+		t.Fatalf("host tree still exists: %v", err)
+	}
+}
+
 func TestNormalizeSearchHost(t *testing.T) {
 	for _, tc := range []struct {
 		raw, host, port string
