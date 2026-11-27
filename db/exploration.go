@@ -1359,30 +1359,6 @@ func (s *ExplorationStore) TokenTotal() (TokenUsage, error) {
 	return u, err
 }
 
-// TokenTotalsAll returns the whole-task token total for every exploration in one
-// query (exploration_id → total), so the task list can show per-task consumption
-// without a query per row.
-func (d *DB) TokenTotalsAll() (map[int64]TokenUsage, error) {
-	rows, err := d.Query(`SELECT exploration_id,
-		COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
-		COALESCE(SUM(cache_read_tokens),0), COALESCE(SUM(cache_write_tokens),0)
-	FROM activity WHERE kind='result' GROUP BY exploration_id`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := map[int64]TokenUsage{}
-	for rows.Next() {
-		var eid int64
-		var u TokenUsage
-		if err := rows.Scan(&eid, &u.InputTokens, &u.OutputTokens, &u.CacheReadTokens, &u.CacheWriteTokens); err != nil {
-			return nil, err
-		}
-		out[eid] = u
-	}
-	return out, rows.Err()
-}
-
 // LastActivityAll returns the unix time of the most recent activity per
 // exploration (exploration_id → max created_at epoch), one query for all tasks.
 // Persisted (unlike Engine.LastActivity's in-memory map), so it survives restarts
@@ -1523,32 +1499,6 @@ func (d *DB) taskListMetrics(taskID string) (map[int64]TaskListMetrics, error) {
 			return nil, err
 		}
 		out[explorationID] = metrics
-	}
-	return out, rows.Err()
-}
-
-// GoalCountsAll returns goal totals (total / met) per exploration id, one query
-// for all tasks — used by listTasks so the task list shows progress for every task.
-func (d *DB) GoalCountsAll() (map[int64]GoalCounts, error) {
-	rows, err := d.Query(`
-		SELECT exploration_id,
-		       COUNT(*) AS total,
-		       COUNT(*) FILTER (WHERE state = 'met') AS met
-		FROM exploration_nodes
-		WHERE kind = 'goal'
-		GROUP BY exploration_id`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := map[int64]GoalCounts{}
-	for rows.Next() {
-		var eid int64
-		var gc GoalCounts
-		if err := rows.Scan(&eid, &gc.Total, &gc.Met); err != nil {
-			return nil, err
-		}
-		out[eid] = gc
 	}
 	return out, rows.Err()
 }

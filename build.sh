@@ -121,7 +121,7 @@ else
   command -v rsync >/dev/null 2>&1 || die "未检测到 rsync"
   info "构建前端静态资源"
   if [ "${ARTEX_SKIP_NPM_CI:-0}" != "1" ]; then
-    (cd web && npm ci)
+    (cd web && npm ci --ignore-scripts)
   fi
   (cd web && npm run build:static)
   info "同步前端资源到 server/webui/dist"

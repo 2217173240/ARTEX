@@ -4,6 +4,7 @@ pre-commit:
   piped: true
   commands:
     01-generate-presets:
+      glob: "web/**"
       run: cd web && npm run generate:presets && git add src/lib/preferences/theme.ts
     02-biome:
       root: web/

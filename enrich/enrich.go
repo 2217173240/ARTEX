@@ -39,15 +39,21 @@ type job struct {
 }
 
 // Engine owns the resolver, the proxy-routed HTTP client, and the worker pool.
+// The resolver and workers are initialized lazily on the first enqueue call.
 type Engine struct {
-	as     *db.AssetStore
-	resolv *dnsx.DNSX
-	client *http.Client
+	as      *db.AssetStore
+	resolv  *dnsx.DNSX
+	client  *http.Client
+	workers int
 
-	jobs   chan job
-	cool   sync.Map // dedup/cooldown: "kind:id" -> time.Time (last run)
-	once   sync.Once
-	closed chan struct{}
+	jobs      chan job
+	cool      sync.Map // dedup/cooldown: "kind:id" -> time.Time (last run)
+	mu        sync.Mutex
+	started   bool
+	isClosed  bool
+	startOnce sync.Once
+	wg        sync.WaitGroup
+	closed    chan struct{}
 }
 
 const (
@@ -56,35 +62,23 @@ const (
 	queueSize   = 1024
 )
 
-// New builds the engine. proxy() returns the recording-proxy address to route HTTP
-// probes through (so they land in the traffic store), evaluated per request so the
-// runtime traffic-capture toggle takes effect live; "" = direct. Returns a usable
-// engine even if the resolver fails to init (DNS becomes a no-op).
+// New builds the engine without starting workers or initializing dnsx until
+// the first job is enqueued. proxy() returns the recording-proxy address to
+// route HTTP probes through (so they land in the traffic store), evaluated per
+// request so the runtime traffic-capture toggle takes effect live; "" = direct.
+// Returns a usable engine even if the resolver later fails to init (DNS becomes
+// a no-op).
 func New(as *db.AssetStore, proxy func() string, workers int) *Engine {
 	if workers <= 0 {
 		workers = 4
 	}
-	resolv, err := dnsx.New(dnsx.Options{
-		BaseResolvers: dnsx.DefaultResolvers,
-		MaxRetries:    3,
-		QuestionTypes: []uint16{dns.TypeA, dns.TypeAAAA, dns.TypeCNAME},
-		Timeout:       4 * time.Second,
-	})
-	if err != nil {
-		log.Printf("[enrich] dnsx 初始化失败，DNS 解析停用：%v", err)
-		resolv = nil
+	return &Engine{
+		as:      as,
+		client:  buildClient(proxy),
+		workers: workers,
+		jobs:    make(chan job, queueSize),
+		closed:  make(chan struct{}),
 	}
-	e := &Engine{
-		as:     as,
-		resolv: resolv,
-		client: buildClient(proxy),
-		jobs:   make(chan job, queueSize),
-		closed: make(chan struct{}),
-	}
-	for i := 0; i < workers; i++ {
-		go e.worker()
-	}
-	return e
 }
 
 // buildClient returns an HTTP client that dials via the recording proxy (resolved
@@ -121,8 +115,38 @@ func (e *Engine) ResolveDomain(id int64, host string) { e.enqueue(job{jobDNS, id
 // ProbeSite enqueues an HTTP probe for a web-asset (site). rawURL is the site URL.
 func (e *Engine) ProbeSite(id int64, rawURL string) { e.enqueue(job{jobHTTP, id, rawURL}) }
 
+func (e *Engine) ensureStarted() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.isClosed {
+		return false
+	}
+	e.startOnce.Do(func() {
+		resolv, err := dnsx.New(dnsx.Options{
+			BaseResolvers: dnsx.DefaultResolvers,
+			MaxRetries:    3,
+			QuestionTypes: []uint16{dns.TypeA, dns.TypeAAAA, dns.TypeCNAME},
+			Timeout:       4 * time.Second,
+		})
+		if err != nil {
+			log.Printf("[enrich] dnsx 初始化失败，DNS 解析停用：%v", err)
+			resolv = nil
+		}
+		e.resolv = resolv
+		e.started = true
+		for i := 0; i < e.workers; i++ {
+			e.wg.Add(1)
+			go e.worker()
+		}
+	})
+	return true
+}
+
 func (e *Engine) enqueue(j job) {
 	if e == nil || id0(j.id) || j.arg == "" {
+		return
+	}
+	if !e.ensureStarted() {
 		return
 	}
 	select {
@@ -139,10 +163,17 @@ func (e *Engine) Close() {
 	if e == nil {
 		return
 	}
-	e.once.Do(func() { close(e.closed) })
+	e.mu.Lock()
+	if !e.isClosed {
+		e.isClosed = true
+		close(e.closed)
+	}
+	e.mu.Unlock()
+	e.wg.Wait()
 }
 
 func (e *Engine) worker() {
+	defer e.wg.Done()
 	for {
 		select {
 		case <-e.closed:
@@ -182,7 +213,7 @@ func (e *Engine) doDNS(id int64, host string) {
 		return
 	}
 	data, err := e.resolv.QueryMultiple(host)
-	if err != nil || data == nil {
+	if err != nil || data == nil || e.as == nil {
 		return
 	}
 	ips := uniq(append(append([]string{}, data.A...), data.AAAA...))
@@ -237,6 +268,9 @@ func (e *Engine) doHTTP(id int64, rawURL string) {
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // cap 1 MiB
+	if e.as == nil {
+		return
+	}
 	statusCode := resp.StatusCode
 	bodyLen := int64(len(body))
 	title := extractTitle(body)
